@@ -13,7 +13,8 @@ The user writes one TOML input file and runs `gqteashmd run input.toml`. The pro
 - **The binding spec:** [docs/superpowers/plans/2026-11-06-gqteashmd-master-plan.md](docs/superpowers/plans/2026-11-06-gqteashmd-master-plan.md). It holds the architecture, the stage contracts, the error rules, decisions D1–D20 and open items O1–O20.
 - **Scientific background:** [SHMD_implementation_strategy.md](SHMD_implementation_strategy.md), covering methods, SHARC 4.1 scope, the validation strategy and risks.
 - **The P1 plan:** [docs/superpowers/plans/2026-11-06-p1-foundation-orchestrator.md](docs/superpowers/plans/2026-11-06-p1-foundation-orchestrator.md). It is the historical record of how the foundation was built.
-- **The P1 ledger:** `.superpowers/sdd/2026-11-06-p1-foundation-orchestrator/progress.md`. It is git-ignored and local to the development machine. It contains every ruling made during P1 and the deferred findings that make up the P2/P3 checklist.
+- **The P1 ledger:** `.superpowers/sdd/2026-11-06-p1-foundation-orchestrator/progress.md`. It is git-ignored and local to the development machine. It contains every ruling made during P1 and the deferred findings.
+- **The P2 plan and ledger:** [docs/superpowers/plans/2026-11-06-p2-input-preflight.md](docs/superpowers/plans/2026-11-06-p2-input-preflight.md), and `.superpowers/sdd/2026-11-06-p2-input-preflight/progress.md` (git-ignored, local). The plan's "Scope rulings" say which deferred items stay deferred and to which sub-project they belong.
 - **The user-facing behaviour:** [USER_MANUAL.md](USER_MANUAL.md).
 
 ## Rules that always apply
@@ -37,17 +38,20 @@ The user writes one TOML input file and runs `gqteashmd run input.toml`. The pro
   - `pytest -W error` runs everything, including the slow kill/resume tests, in about 3 min.
   - The tests start real subprocesses, so they need Linux.
 - Lint: `ruff format . && ruff check .`. The line length is 100, with rules E, F, W, I, B, UP and SIM. Markdown is excluded (`extend-exclude`), because ruff ≥0.17 would rewrite code blocks in the plans.
+- Types: `mypy` runs clean on `src/` (configuration in `pyproject.toml`) and is part of CI.
 - CI: `.github/workflows/ci.yml` runs in an `oraclelinux:9` container on push, on PRs and nightly. It has never run, because `main` has not been pushed yet.
 - Workstation facts in WSL: 16 cores and about 7 GB RAM. ORCA 6.1.1 and Gaussian 16 are installed, but they are not used before phase P7.
 
-## Architecture (implemented in P1)
+## Architecture (implemented in P1 and P2)
 Dependencies point down only; domain code never imports stages or the orchestrator.
 
 ```text
-cli.py ─► orchestrator.Orchestrator ─► execution.local.LocalExecutor ─► subprocess: python -m gqteashmd.worker task.json
-             │  project/state.py (SQLite, single writer)          worker ─► stage.run_task() ─► result.json
-             │  project/layout.py, project/lock.py (flock)
-             └► stages/ (Stage contract: plan → run_task → finalize) ─► chem/, util/, (later) electronic/, vib/, dynamics/
+cli.py ─► orchestrator.Orchestrator ─► execution.local.LocalExecutor (one per stage) ─► subprocess: python -m gqteashmd.worker task.json
+   │         │  preflight.py (before the project directory is touched)       worker ─► stage.run_task() ─► result.json
+   │         │  project/state.py (SQLite, single writer), project/provenance.py
+   │         │  project/layout.py, project/lock.py (flock)
+   │         └► stages/ (Stage contract: plan → run_task → finalize) ─► chem/, util/, (later) electronic/, vib/, dynamics/
+   └► logging_setup.py (console INFO, logs/gqteashmd.log DEBUG)
 ```
 
 - **Stage contract** (`stages/base.py`):
@@ -58,6 +62,7 @@ cli.py ─► orchestrator.Orchestrator ─► execution.local.LocalExecutor ─
 - **Worker protocol** (`worker.py`): the worker reads `task.json` and writes `result.json` atomically, either `{"status": "ok", "result": ...}` or `{"status": "error", "error_type", "message", "retryable", "traceback"?}`. Errors are also written to stderr, which goes to `worker.log`. A worker that exits without `result.json` is treated as a crash, which is retryable. Workers read the config snapshot `.gqteashmd/config.json` and never the user's input file.
 - **Executor** (`execution/local.py`):
   - one subprocess per task, each in its own session;
+  - the orchestrator builds **one executor per stage** from that stage's effective resources (`ResourcesSection.for_stage(name)`: a `[resources.stages.<name>]` key, or the global value if unset);
   - at most `max_parallel_tasks` running at once;
   - sets `OMP_NUM_THREADS`, `OPENBLAS_NUM_THREADS` and `MKL_NUM_THREADS` to `threads_per_task`, and `PYSCF_MAX_MEMORY` to `memory_mb_per_task`;
   - on stop: SIGTERM to the process group, SIGKILL after `stop_grace_period_s`;
@@ -69,10 +74,22 @@ cli.py ─► orchestrator.Orchestrator ─► execution.local.LocalExecutor ─
   - **Retries:** a crash or a retryable error is retried while `attempts < max_attempts`. An interrupted task is not counted as an attempt.
   - **Stage failure:** a stage fails when `failed/total > max_failed_fraction`. Any exception inside a stage marks it FAILED.
   - **Restart:** tasks left RUNNING by a dead controller are reconciled. A task with an ok `result.json` becomes DONE; otherwise its orphan is killed (verified via `/proc/<pid>/cmdline`) and the task is requeued.
+  - **`--rerun-from`** is applied once per orchestrator (`self.rerun_from` is cleared after use). The hint printed for a stale stage is shell-quoted. A fingerprint input that is not JSON-serializable raises `ProjectError`.
+  - **Pause:** after a stage listed in `workflow.pause_after` completes **in this run** and is not the last stage, `RunSummary.paused_after` is set, the loop stops and the CLI prints a message and exits 5 (`EXIT_STOPPED`). A rerun continues, because that stage is then up to date. A skipped or up-to-date stage never pauses. Unknown names in `pause_after` and in `[resources.stages]` are a `ConfigError` raised in `Orchestrator.__init__`.
+- **Config** (`config/schema.py`): `[resources]` requires `total_cores` and `total_memory_mb`. A model validator checks `max_parallel_tasks × threads_per_task ≤ total_cores` and `max_parallel_tasks × memory_mb_per_task ≤ total_memory_mb` for the global values and for every stage override (merged with the global values). `execution.min_free_disk_mb` (default 1000) and `[workflow] pause_after` also live here. `loader.py` expands `~` (an unknown `~user` is a `ConfigError`) and resolves relative paths against the input file's directory. The later input sections are not in the schema yet (they arrive with P3–P8).
+- **Preflight** (`preflight.py:run_preflight`): runs from `Orchestrator.preflight()` (called by `cli._cmd_run`; the result is cached, so `run()` does not repeat it), **before** `layout.ensure()` creates anything.
+  - It raises `ConfigError` for: a project directory on a Windows drive in WSL (`/mnt/<letter>/`; `/mnt/data` is fine) or under a OneDrive folder; free disk below `min_free_disk_mb` or a failed disk query; a missing `required_modules` entry of an enabled stage.
+  - It only returns a **warning** (D17) when `total_cores` or `total_memory_mb` exceeds the detected machine (`detect_machine()`: `sched_getaffinity` and `/proc/meminfo`). The CLI logs warnings after logging is configured, so they reach the console and the log file.
+  - The location check is on the path text only; a symlink is not followed.
+- **Provenance** (`project/provenance.py`): each `run` that passes preflight appends one record to `.gqteashmd/provenance.json` (`started_at`, `gqteashmd`, `git_commit`, `git_dirty`, `python`, `platform`, `hostname`, `cpu_count`, `packages`). A damaged file with invalid JSON is replaced by a fresh list; non-UTF-8 bytes are not handled (see limitations).
+- **State** (`project/state.py`): `StateStore(db_path, *, readonly=False)`. Any `sqlite3.DatabaseError` (including a db path that is a directory) becomes `ProjectError` ("unreadable or corrupt", exit 3). `status` opens the db read-only (`mode=ro`) and never writes.
+- **Lock** (`project/lock.py`): `ProjectLock` tries `flock` twice, 0.2 s apart (`locked_by` probes the same lock briefly). The error reads "pid unknown" when the holder's PID cannot be read.
+- **Logging** (`logging_setup.py`): `configure_logging` is called by `run` after the project directory exists; `close_logging` (in `cli.main`'s `finally`) closes all handlers and returns to a `NullHandler`. Records logged with `extra=FILE_ONLY` go to `logs/gqteashmd.log` but not to the console. `cli.main` uses it for errors and tracebacks, so each error is printed **once** on stderr (`gqteashmd: error: <message>`) with no traceback.
 - **Errors** (`errors.py`):
-  - Exit codes: `ShmdError` 1, `ConfigError` 2, `ProjectError` 3 (`StaleStageError` is a subclass), `StageFailedError` 4. Stopped by the user is 5 (`cli.EXIT_STOPPED`).
+  - Exit codes: `ShmdError` 1, `ConfigError` 2, `ProjectError` 3 (`StaleStageError` is a subclass), `StageFailedError` 4. Stopped by the user **or paused for review** is 5 (`cli.EXIT_STOPPED`).
   - `TaskError(msg, retryable=...)` is raised inside tasks.
   - Every error reaches the user as `gqteashmd: error: <message>`.
+  - `.` and `..` are not safe stage or task names (`is_safe_name`). The XYZ parser rejects non-finite coordinates; `validate` also requires the geometry to be a regular file.
 - **Testing seam:** `gqteashmd.testing.fake_stages` provides fake stages whose behaviour is set by the environment variable `GQTEASHMD_FAKE_BEHAVIOUR` (JSON). The keys are `sleep`, `fail`, `unexpected`, `crash_once`, `retryable_once`, `plan_raises` and `skip_optimize`. The CLI's hidden `--pipeline` option selects them in tests.
 - **The production pipeline** (`stages/registry.py:default_pipeline`) contains only `prepare` today.
 
@@ -86,24 +103,30 @@ cli.py ─► orchestrator.Orchestrator ─► execution.local.LocalExecutor ─
 - **P3 validation target.** Ethylene (`C:\AJCamargo\TOPICOS\Eteno\Eteno.xyz` → `tests/data/ethylene.xyz`) at SA2-CASSCF(2,2)/6-31G\* first, then TDA (D19).
 
 ## Current status (2026-11-06)
-- **P1 — foundation & orchestrator: DONE.** It is merged into local `main` at `e4a9319` (111 tests passing) and not pushed. The working branch is now `feat/p2-input-preflight`.
+- **P1 — foundation & orchestrator: DONE.** It is merged into local `main` at `e4a9319` (111 tests passing) and not pushed.
+- **P2 — input schema & preflight: DONE, on branch `feat/p2-input-preflight`, NOT yet merged** (owner decides the merge; `main` is not pushed). Full suite: 168 tests passing (`pytest -W error`), ruff and mypy clean.
 - **Implemented features:**
   - the CLI commands `init`, `validate`, `run [--rerun-from]`, `status` and `stop`;
-  - the input sections `[project]`, `[molecule]`, `[resources]` and `[execution]`;
+  - the input sections `[project]`, `[molecule]`, `[resources]` (with required `total_cores` and `total_memory_mb`, and `[resources.stages.<name>]` overrides), `[execution]` (with `min_free_disk_mb`) and `[workflow]` (`pause_after`);
+  - preflight checks before a run, provenance record per run, review pauses (exit 5), per-stage executors;
   - the `prepare` stage, which validates the XYZ file, the elements and the charge/multiplicity parity, and writes `geometry.xyz` and `molecule.json`;
   - resumable, crash-safe orchestration.
-- **Not implemented yet:** every quantum-chemistry stage (optimize, frequencies, sampling, excitations, selection, dynamics, analysis) and the PySCF backend.
+- **Not implemented yet:** every quantum-chemistry stage (optimize, frequencies, sampling, excitations, selection, dynamics, analysis), the PySCF backend, and the input sections of those stages (`[electronic]`, `[optimize]`, `[frequencies]`, `[sampling]`, `[excitations]`, `[selection]`, `[dynamics]`, `[analysis]`). By ruling, each sub-project adds the input sections it consumes (their keys depend on open items O3, O4, O8, O19). State labels (`S0`/`S1`/`T1`) arrive with `[electronic]` in P3.
 
-## Known limitations (fix first in P2)
-1. **Every error prints twice.** `cli.main()` logs each `ShmdError`, so the message appears twice on stderr (once from the logging fallback or the INFO console handler, once from the print). An internal error also prints a raw traceback before the "internal error" line. Fix: add a `NullHandler` on `gqteashmd`, log in `main()` at DEBUG with `exc_info`, and add a subprocess test that asserts a single message and no "Traceback".
-2. **A bad state-db path gives the wrong error.** `StateStore.__init__` calls `sqlite3.connect` outside its `try`, so a db path that is a directory gives "internal error" (exit 1) instead of `ProjectError` (exit 3).
-3. **More deferred items are in the P1 ledger.** It lists about 40 smaller findings. The ones marked "P2" form the P2 opening checklist, for example: `status` writes to the db, nan/inf coordinates are accepted, `.`/`..` pass the safe-name check, the `locked_by` probe race, and logging handlers are never closed.
+## Known limitations
+1. **Only `prepare` exists.** There is no quantum chemistry yet, so per-stage resources and `pause_after` have no visible effect (the last stage never pauses).
+2. **The project-folder check is a path-text check.** An absolute path that is a symlink into a Windows drive or a OneDrive folder is not detected (relative paths are resolved, so they are).
+3. **A corrupt `provenance.json` with non-UTF-8 bytes would stop a run** (invalid JSON is tolerated and replaced). gqteashmd writes that file itself, so this is unlikely.
+4. **CI has never run**, because `main` has not been pushed.
+5. **Other deferred items** are listed in the P1 and P2 ledgers under `.superpowers/sdd/` (git-ignored, local). The P2 plan's "Scope rulings" assign them: refused runs still writing state, and optional-stage handling (P4); the worker orphan window between `Popen` and `on_start` (P7b); SIGKILL to the group after the leader exits, and an unreadable `task.json` (P3); `.tmp` cleanup, a DONE stage directory deleted by hand, and `ensure()`/logging set up before the lock (no sub-project assigned).
 
 ## Remaining work (master plan §9)
+**P3 is next.**
+
 | ID | Sub-project | Notes |
 |---|---|---|
-| P2 | Input schema & preflight | Limitations 1–2 above, the P2 items in the ledger, the hardware keys (D17), per-stage resources, `[workflow] pause_after`, state labels, provenance, mypy |
-| P3 | PySCF electronic-structure layer | Backend contract (strategy §2.3); SCF/TDA/TDDFT/SA-CASSCF energies, gradients, NACs, Hessian; ethylene validation |
+| P2 | Input schema & preflight | **DONE** on `feat/p2-input-preflight` (not merged); see Status |
+| P3 | PySCF electronic-structure layer | **Next.** Adds `[electronic]` and state labels. Backend contract (strategy §2.3); SCF/TDA/TDDFT/SA-CASSCF energies, gradients, NACs, Hessian; ethylene validation |
 | P4 | `optimize` + `frequencies` stages | geomeTRIC; own harmonic analysis; Molden output |
 | P5 | `sampling` stage | Own Wigner sampler; compare with SHARC `wigner.py` |
 | P6 | `excitations` + `selection` stages | Spectrum and initial-state selection |

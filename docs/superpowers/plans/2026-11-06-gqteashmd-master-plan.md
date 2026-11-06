@@ -196,7 +196,7 @@ Task:   PENDING ─► RUNNING ─► DONE
   3. interrupted tasks go back to PENDING, and the interruption does not count as an attempt.
 
   Dynamics tasks write a restart file every step, so at most one step is lost.
-- **Running unattended.** P1 documents `nohup gqteashmd run input.toml > gqteashmd.out 2>&1 &` and `tmux`. A built-in `--detach` or systemd user service is open item O12.
+- **Running unattended.** P1 documents `nohup gqteashmd run input.toml > gqteashmd.out 2>&1 &` and `tmux`. A built-in `--detach` or systemd user service was considered (O12) and not built: `nohup`/`tmux` stay the supported way (decided in P2).
 - **Executor abstraction.** The `LocalExecutor` interface (`run(jobs, on_start, on_finish, should_stop)`) is small enough that a SLURM executor could be added later without changing stages. That is **not** planned now (YAGNI).
 
 ### 3.6 Reproducibility
@@ -299,7 +299,7 @@ total_memory_mb = 128000             # REQUIRED (P2)
 max_parallel_tasks = 8
 threads_per_task = 4
 memory_mb_per_task = 4000
-scratch = "/scratch/ajc"             # P2
+scratch = "/scratch/ajc"             # P3 (not in the P2 schema: added with the PySCF layer)
 [resources.stages.frequencies]
 max_parallel_tasks = 1
 threads_per_task = 32
@@ -420,7 +420,7 @@ Each sub-project produces working, tested software and gets its own detailed pla
 | ID | Sub-project | Delivers | Depends on | Strategy phase | Est. |
 |---|---|---|---|---|---|
 | **P1** | **Foundation & orchestrator** (detailed plan exists) | Repo, environment, CI, errors, config core, project layout, state store, stage contract, worker, local executor, orchestrator (resume/retry/stop/stale), CLI, `prepare` stage | — | 0 | 3–4 wk |
-| P2 | Complete input schema & preflight | All config sections (§4.3), cross-field validators, state labels, per-stage resources, required user-given hardware keys with detection warning (D17), `pause_after`, environment preflight, provenance, full `gqteashmd init` template, mypy | P1 | 0 | 2 wk |
+| P2 | Input schema & preflight — **DONE** (branch `feat/p2-input-preflight`, not yet merged) | Delivered: required `total_cores` / `total_memory_mb` with the fit rules (`n_p·n_t ≤ total_cores`, `n_p·m ≤ total_memory_mb`, globally and per stage) and a detection **warning** (D17); `[resources.stages.<name>]` overrides with one executor per stage; `execution.min_free_disk_mb`; preflight before the project directory is touched (Windows drive / OneDrive refusal, free disk, required modules); `.gqteashmd/provenance.json`; `[workflow] pause_after` (exit 5); once-only error output with `FILE_ONLY` logging; state-db failures as `ProjectError` and read-only `status`; non-finite coordinates, `~` expansion, `.`/`..` name checks; lock retry; mypy in CI; the `gqteashmd init` template for the implemented sections. **Scope ruling:** the later input sections (`[electronic]`, `[optimize]`, `[frequencies]`, `[sampling]`, `[excitations]`, `[selection]`, `[dynamics]`, `[analysis]`) and state labels are added by the sub-project that consumes them (P3–P8), because their keys depend on open items O3, O4, O8 and O19. The remaining deferred P1 findings stay in the ledgers with an owner (see the P2 plan, "Scope rulings") | P1 | 0 | 2 wk |
 | P3 | PySCF electronic-structure layer | Backend contract (strategy §2.3); SCF/TDA/TDDFT/SA-CASSCF energies, gradients, transition dipoles; Hessian (analytic + finite-difference gradient tasks); retry ladders; threads/memory/scratch handling; chkfile policy. **Validation molecule: ethylene** (`C:\AJCamargo\TOPICOS\Eteno\Eteno.xyz`, copied to `tests/data/ethylene.xyz`) at **SA2-CASSCF(2,2)/6-31G\*** first (vs `SHARC_PYSCF.py`), TDA second (D19) | P1 (P2 for config) | 3 | 5–6 wk |
 | P4 | `optimize` + `frequencies` stages | geomeTRIC driver; own harmonic analysis (mass weighting, Eckart projection, frequencies, normal modes); imaginary-mode policy; Molden writer; `frequencies.h5` | P3 | 5 | 3 wk |
 | P5 | `sampling` stage | Own Wigner sampler (T = 0, thermal option), velocities, momentum removal, `samples.h5`; SHARC `wigner.py` distribution comparison | P4 | 5 | 2–3 wk |
@@ -480,7 +480,7 @@ Each sub-project produces working, tested software and gets its own detailed pla
 | O9 | Data retention: chkfiles, per-step output frequency, disk budget per project | Disk use on the workstation | Keep only last-step chkfile; output every step | P7b |
 | O10 | Required analysis outputs (which observables, plots, fits) | Scope of P8 | Populations (classical + quantum), hop statistics, mono-exponential fit | P8 |
 | O11 | Notifications on completion or failure (email, chat)? | Unattended operation | None; log + exit code | P2 |
-| O12 | Unattended running: `nohup`/`tmux` vs `gqteashmd run --detach` vs systemd user service | Convenience, robustness to logout | Document `nohup`/`tmux` (P1); decide in P2 | P2 |
+| O12 | Unattended running: `nohup`/`tmux` vs `gqteashmd run --detach` vs systemd user service | Convenience, robustness to logout | ~~Resolved (P2):~~ documented `nohup`/`tmux`; no detach (USER_MANUAL §5.2). Revisit only if a need appears | P2 |
 | O13 | ~~Program name, GitHub repository~~ **Resolved → D18/D15.** Still open: keep the repository public, or make it private until the first release? | Visibility of unreleased code | Your choice; the MIT licence is added in P1 Task 1 | P1 Task 12 |
 | O14 | ~~Copyright holder in the MIT licence~~ **Resolved:** "The gqteashmd developers" (user decision 2026-11-06) | | | |
 | O15 | Several molecules or parameter scans per input file? | Input design | No: one project per input | P2 |
