@@ -76,15 +76,22 @@ def _now() -> str:
 class StateStore:
     def __init__(self, db_path: Path) -> None:
         self._conn = sqlite3.connect(db_path, isolation_level=None, timeout=30.0)
-        self._conn.execute("PRAGMA journal_mode=WAL")
-        self._conn.executescript(_SCHEMA)
-        self._conn.execute(
-            "INSERT OR IGNORE INTO meta(key, value) VALUES ('schema_version', ?)",
-            (SCHEMA_VERSION,),
-        )
-        (version,) = self._conn.execute(
-            "SELECT value FROM meta WHERE key = 'schema_version'"
-        ).fetchone()
+        try:
+            self._conn.execute("PRAGMA journal_mode=WAL")
+            self._conn.executescript(_SCHEMA)
+            self._conn.execute(
+                "INSERT OR IGNORE INTO meta(key, value) VALUES ('schema_version', ?)",
+                (SCHEMA_VERSION,),
+            )
+            (version,) = self._conn.execute(
+                "SELECT value FROM meta WHERE key = 'schema_version'"
+            ).fetchone()
+        except sqlite3.DatabaseError as exc:
+            self._conn.close()
+            raise ProjectError(
+                f"State database {db_path} is unreadable or corrupt: {exc}. "
+                "Move it aside to start the project over."
+            ) from exc
         if version != SCHEMA_VERSION:
             self._conn.close()
             raise ProjectError(

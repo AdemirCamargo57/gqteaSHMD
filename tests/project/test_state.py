@@ -82,3 +82,10 @@ def test_state_persists_across_connections(tmp_path):
         s.set_stage("prepare", StageStatus.DONE, fingerprint="f")
     with StateStore(db) as s:
         assert s.get_stage("prepare").status == StageStatus.DONE
+
+
+def test_corrupt_database_is_a_project_error(tmp_path):
+    db = tmp_path / "state.db"
+    db.write_bytes(b"this is definitely not a sqlite database" * 50)
+    with pytest.raises(ProjectError, match="unreadable or corrupt"):
+        StateStore(db)
