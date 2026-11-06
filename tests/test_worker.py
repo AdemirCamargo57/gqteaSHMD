@@ -1,4 +1,5 @@
 import json
+import os
 
 import pytest
 
@@ -40,7 +41,10 @@ def make_task(tmp_path, write_input, monkeypatch):
 def test_worker_writes_ok_result(make_task):
     task_dir = make_task()
     assert run_task_file(task_dir / TASK_FILE) == 0
-    assert read_result(task_dir) == {"status": "ok", "result": {"index": 1, "upstream": []}}
+    assert read_result(task_dir) == {
+        "status": "ok",
+        "result": {"index": 1, "upstream": [], "threads": os.environ.get("OMP_NUM_THREADS")},
+    }
     assert (task_dir / "out.txt").read_text() == "sampling:t001"
 
 

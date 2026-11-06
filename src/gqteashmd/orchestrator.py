@@ -58,12 +58,21 @@ class Orchestrator:
                 f"Unknown stage {rerun_from!r} for --rerun-from; stages are: {', '.join(names)}"
             )
         self.rerun_from = rerun_from
+        unknown = sorted(set(self.config.resources.stages) - set(names))
+        if unknown:
+            raise ConfigError(
+                f"[resources.stages] names unknown stage(s): {', '.join(unknown)}; "
+                f"stages are: {', '.join(names)}"
+            )
         self.layout = ProjectLayout(self.config.project.directory)
-        resources, execution = self.config.resources, self.config.execution
-        self.executor = LocalExecutor(
-            max_parallel=resources.max_parallel_tasks,
-            threads_per_task=resources.threads_per_task,
-            memory_mb_per_task=resources.memory_mb_per_task,
+
+    def _executor_for(self, stage: Stage) -> LocalExecutor:
+        res = self.config.resources.for_stage(stage.name)
+        execution = self.config.execution
+        return LocalExecutor(
+            max_parallel=res.max_parallel_tasks,
+            threads_per_task=res.threads_per_task,
+            memory_mb_per_task=res.memory_mb_per_task,
             poll_interval=execution.poll_interval_s,
             stop_grace_period=execution.stop_grace_period_s,
         )
@@ -187,6 +196,7 @@ class Orchestrator:
         specs = {t.task_id: t for t in tasks}
         max_attempts = self.config.execution.max_attempts
 
+        executor = self._executor_for(stage)
         while True:
             runnable = [
                 r
@@ -196,7 +206,7 @@ class Orchestrator:
             if not runnable:
                 break
             jobs = [self._prepare_job(stage, ctx, specs[r.task_id]) for r in runnable]
-            finished = self.executor.run(
+            finished = executor.run(
                 jobs,
                 on_start=lambda job, pid: state.set_task(
                     stage.name, job.key, TaskStatus.RUNNING, pid=pid, attempts_delta=1

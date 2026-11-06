@@ -233,3 +233,27 @@ def test_attempts_exhaustion_fails_the_stage(tmp_path, write_input, behaviour):
     with _state(path) as state:
         task = state.get_task("sampling", "t001")
     assert (task.status, task.attempts) == (TaskStatus.FAILED, 1)
+
+
+def test_stage_resource_override_reaches_workers(tmp_path, write_input, behaviour):
+    path = write_input(
+        tmp_path, execution=FAST, resources="[resources.stages.sampling]\nthreads_per_task = 2"
+    )
+    _run(path)
+    run = tmp_path / "run"
+    assert (
+        read_json(run / "03_sampling" / "tasks" / "t000" / "result.json")["result"]["threads"]
+        == "2"
+    )
+    assert (
+        read_json(run / "04_dynamics" / "tasks" / "t000" / "result.json")["result"]["threads"]
+        == "1"
+    )
+
+
+def test_unknown_stage_in_resource_overrides_is_config_error(tmp_path, write_input, behaviour):
+    path = write_input(
+        tmp_path, execution=FAST, resources="[resources.stages.nosuch]\nthreads_per_task = 1"
+    )
+    with pytest.raises(ConfigError, match="nosuch"):
+        Orchestrator(load_config(path), pipeline_ref=FAKE)

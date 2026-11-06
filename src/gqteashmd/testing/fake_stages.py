@@ -77,7 +77,11 @@ class FakeStage(Stage):
             name for name, path in ctx.upstream.items() if (path / "summary.json").exists()
         )
         (task_dir / "out.txt").write_text(key)
-        return {"index": task.payload["index"], "upstream": upstream}
+        return {
+            "index": task.payload["index"],
+            "upstream": upstream,
+            "threads": os.environ.get("OMP_NUM_THREADS"),
+        }
 
     def finalize(self, ctx: StageContext, results: Mapping[str, Mapping[str, Any]]) -> None:
         values = sorted(int(r["index"]) for r in results.values())
