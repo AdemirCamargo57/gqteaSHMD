@@ -93,9 +93,14 @@ class ExecutionSection(_Section):
     min_free_disk_mb: int = Field(default=1000, ge=0)
 
 
+class WorkflowSection(_Section):
+    pause_after: list[str] = Field(default_factory=list)
+
+
 class ShmdConfig(_Section):
     schema_version: Literal[1] = 1
     project: ProjectSection
     molecule: MoleculeSection
     resources: ResourcesSection
     execution: ExecutionSection = Field(default_factory=ExecutionSection)
+    workflow: WorkflowSection = Field(default_factory=WorkflowSection)

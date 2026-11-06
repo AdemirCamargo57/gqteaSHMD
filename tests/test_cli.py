@@ -199,3 +199,10 @@ def test_status_does_not_modify_the_state_database(project, capsys):
     capsys.readouterr()
     assert main(["status", str(project), "--pipeline", FAKE]) == 0
     assert db.read_bytes() == before
+
+
+def test_pause_returns_exit_5_with_message(tmp_path, write_input, monkeypatch, capsys):
+    monkeypatch.setenv(BEHAVIOUR_ENV, "{}")
+    path = write_input(tmp_path, execution=FAST, extra='[workflow]\npause_after = ["sampling"]')
+    assert main(["run", str(path), "--pipeline", FAKE]) == EXIT_STOPPED
+    assert "Paused after stage 'sampling'" in capsys.readouterr().out

@@ -34,6 +34,7 @@ class RunSummary:
     up_to_date: list[str] = field(default_factory=list)
     skipped: list[str] = field(default_factory=list)
     stopped: bool = False
+    paused_after: str | None = None
 
 
 def _fingerprint(data: Mapping[str, Any]) -> str:
@@ -64,6 +65,12 @@ class Orchestrator:
         if unknown:
             raise ConfigError(
                 f"[resources.stages] names unknown stage(s): {', '.join(unknown)}; "
+                f"stages are: {', '.join(names)}"
+            )
+        unknown_pauses = sorted(set(self.config.workflow.pause_after) - set(names))
+        if unknown_pauses:
+            raise ConfigError(
+                f"workflow.pause_after names unknown stage(s): {', '.join(unknown_pauses)}; "
                 f"stages are: {', '.join(names)}"
             )
         self.layout = ProjectLayout(self.config.project.directory)
@@ -164,6 +171,13 @@ class Orchestrator:
                 break
             upstream_dirs[stage.name] = stage_dir
             summary.completed.append(stage.name)
+            if stage.name in self.config.workflow.pause_after and index < len(self.stages) - 1:
+                summary.paused_after = stage.name
+                log.info(
+                    "Paused after stage %s (workflow.pause_after); run again to continue",
+                    stage.name,
+                )
+                break
         return summary
 
     def _reset_from(self, state: StateStore, name: str) -> None:

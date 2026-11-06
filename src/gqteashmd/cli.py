@@ -51,6 +51,9 @@ memory_mb_per_task = 2000     # passed to PySCF as max_memory (MB)
 max_attempts = 2              # attempts per task for retryable failures
 stop_grace_period_s = 30.0    # time running tasks get to stop after `gqteashmd stop`
 min_free_disk_mb = 1000      # refuse to start with less free disk space (MB)
+
+[workflow]
+pause_after = []              # stage names to pause after for review, e.g. ["selection"]
 """
 
 
@@ -103,6 +106,12 @@ def _cmd_run(args: argparse.Namespace) -> int:
             signal.signal(sig, handler)
     if summary.stopped:
         print("Stopped. Run the same command again to resume.")
+        return EXIT_STOPPED
+    if summary.paused_after is not None:
+        print(
+            f"Paused after stage '{summary.paused_after}' as requested (workflow.pause_after). "
+            "Review its results, then run the same command again to continue."
+        )
         return EXIT_STOPPED
     print(
         f"Workflow complete: {len(summary.completed)} stage(s) run, "

@@ -257,3 +257,29 @@ def test_unknown_stage_in_resource_overrides_is_config_error(tmp_path, write_inp
     )
     with pytest.raises(ConfigError, match="nosuch"):
         Orchestrator(load_config(path), pipeline_ref=FAKE)
+
+
+PAUSE = '[workflow]\npause_after = ["sampling"]'
+
+
+def test_pause_after_stops_after_the_stage_and_resumes(tmp_path, write_input, behaviour):
+    path = write_input(tmp_path, execution=FAST, extra=PAUSE)
+    first = _run(path)
+    assert first.paused_after == "sampling"
+    assert first.completed[-1] == "sampling"
+    with _state(path) as state:
+        assert state.get_stage("dynamics") is None
+    second = _run(path)
+    assert second.paused_after is None
+    assert second.completed == ["dynamics"]
+
+
+def test_pause_after_the_last_stage_does_not_pause(tmp_path, write_input, behaviour):
+    path = write_input(tmp_path, execution=FAST, extra='[workflow]\npause_after = ["dynamics"]')
+    assert _run(path).paused_after is None
+
+
+def test_unknown_pause_stage_is_config_error(tmp_path, write_input, behaviour):
+    path = write_input(tmp_path, execution=FAST, extra='[workflow]\npause_after = ["nosuch"]')
+    with pytest.raises(ConfigError, match="pause_after.*nosuch"):
+        Orchestrator(load_config(path), pipeline_ref=FAKE)
