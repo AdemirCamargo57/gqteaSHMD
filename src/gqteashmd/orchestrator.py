@@ -138,7 +138,13 @@ class Orchestrator:
             self._reset_stage(state, index, self.stages[index])
 
     def _reset_stage(self, state: StateStore, index: int, stage: Stage) -> None:
-        moved = self.layout.supersede(self.layout.stage_dir(index, stage.name))
+        stage_dir = self.layout.stage_dir(index, stage.name)
+        for record in state.get_tasks(stage.name):
+            if record.status == TaskStatus.RUNNING:
+                self._terminate_orphan(
+                    stage, record, self.layout.task_dir(stage_dir, record.task_id)
+                )
+        moved = self.layout.supersede(stage_dir)
         state.reset_stage(stage.name)
         if moved is not None:
             log.info("Stage %s: previous results moved to %s", stage.name, moved)
@@ -277,20 +283,21 @@ class Orchestrator:
             log.error("Task %s/%s failed: %s", stage.name, task_id, message)
             state.set_task(stage.name, task_id, TaskStatus.FAILED, message=message)
 
+    def _terminate_orphan(self, stage: Stage, record: TaskRecord, task_dir: Path) -> None:
+        """Kill a worker left behind by a controller that died, if it is still ours."""
+        if record.pid is not None and is_worker_process(record.pid, task_dir / TASK_FILE):
+            log.warning(
+                "Terminating orphaned worker %d of %s/%s", record.pid, stage.name, record.task_id
+            )
+            terminate_process_group(record.pid, grace=self.config.execution.stop_grace_period_s)
+
     def _reconcile_running(self, state: StateStore, stage: Stage, ctx: StageContext) -> None:
         """Tasks left RUNNING by a controller that died: finish or requeue them."""
         for record in state.get_tasks(stage.name):
             if record.status != TaskStatus.RUNNING:
                 continue
             task_dir = self.layout.task_dir(ctx.stage_dir, record.task_id)
-            if record.pid is not None and is_worker_process(record.pid, task_dir / TASK_FILE):
-                log.warning(
-                    "Terminating orphaned worker %d of %s/%s",
-                    record.pid,
-                    stage.name,
-                    record.task_id,
-                )
-                terminate_process_group(record.pid, grace=self.config.execution.stop_grace_period_s)
+            self._terminate_orphan(stage, record, task_dir)
             result = read_result(task_dir)
             if result is not None and result.get("status") == "ok":
                 state.set_task(stage.name, record.task_id, TaskStatus.DONE)

@@ -1,4 +1,7 @@
 import json
+import subprocess
+import sys
+import time
 
 import pytest
 
@@ -142,3 +145,25 @@ def test_second_controller_is_refused(project, behaviour):
 def test_unknown_rerun_stage_is_config_error(project, behaviour):
     with pytest.raises(ConfigError, match="frobnicate"):
         Orchestrator(load_config(project), pipeline_ref=FAKE, rerun_from="frobnicate")
+
+
+def test_rerun_from_terminates_orphaned_workers(project, behaviour):
+    _run(project)
+    task_file = _run_dir(project) / "03_sampling" / "tasks" / "t000" / "task.json"
+    proc = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(60)", str(task_file)],
+        start_new_session=True,
+    )
+    try:
+        with _state(project) as state:
+            state.set_stage("sampling", StageStatus.RUNNING)
+            state.set_task("sampling", "t000", TaskStatus.RUNNING, pid=proc.pid)
+        start = time.monotonic()
+        summary = Orchestrator(load_config(project), pipeline_ref=FAKE, rerun_from="sampling").run()
+        assert proc.wait(timeout=10) is not None
+        assert "dynamics" in summary.completed
+        assert time.monotonic() - start < 30
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait()
