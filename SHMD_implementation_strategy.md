@@ -1,6 +1,6 @@
 # Implementation Strategy for a Surface-Hopping MD Program (PySCF first, more backends later)
 
-**Working name:** `shmd` (rename as you like)
+**Working name:** `gqteashmd` (rename as you like)
 **Reference code:** SHARC 4.1, local copy at `\\wsl.localhost\OracleLinux_9_5\home\ajc\sharc4-4.1`
 **Date:** 2026-11-06 (revised 2026-11-06: PySCF-first decision)
 
@@ -100,7 +100,7 @@ This comes from inspecting the local installation, not from memory of the manual
 ### 2.2 Package layout
 
 ```
-shmd/
+gqteashmd/
 ├── core/
 │   ├── constants.py        # CODATA + unit conversions (a.u. internal)
 │   ├── states.py           # StateLabel(mult, index, ms); MCH <-> spin-expanded index maps
@@ -146,7 +146,7 @@ shmd/
 │   ├── populations.py      # classical/quantum/Wigner populations + bootstrap CIs
 │   ├── kinetics.py         # fitting (exp/sequential models)
 │   └── geometry.py         # internal coordinates, hop geometries, clustering
-└── cli/                    # `shmd run`, `shmd setup`, `shmd collect`, `shmd compare-sharc`
+└── cli/                    # `gqteashmd run`, `gqteashmd setup`, `gqteashmd collect`, `gqteashmd compare-sharc`
 tests/                      # mirrors package; plus validation/ (slow, statistical)
 ```
 
@@ -203,13 +203,13 @@ Key design points:
 ### 2.4 Configuration and input
 
 - Use a native **TOML (or YAML) input validated by `pydantic`**. That gives typed, documented, defaulted options and readable errors.
-- Add a **SHARC `input` importer** (`shmd import-sharc input`). It maps `surf sharc`, `coupling overlap`, `ekincorrect parallel_vel`, `decoherence_scheme edc`, and so on to your config. Every validation case can then start from the *same* SHARC input file. Write a mapping table and warn loudly on unsupported keywords instead of ignoring them.
+- Add a **SHARC `input` importer** (`gqteashmd import-sharc input`). It maps `surf sharc`, `coupling overlap`, `ekincorrect parallel_vel`, `decoherence_scheme edc`, and so on to your config. Every validation case can then start from the *same* SHARC input file. Write a mapping table and warn loudly on unsupported keywords instead of ignoring them.
 
 ### 2.5 Output, restart, and data
 
 - **Per-trajectory HDF5** (one file per trajectory, appended each step, chunked datasets) covering everything in `StepRecord`. HDF5 is robust, self-describing, partially readable while running, and works with xarray/pandas.
 - **Restart = one HDF5 group** with the full `TrajectoryState`: geometry, velocities, coefficients, active state, decoherence auxiliaries, RNG bit-generator state, step counter, previous-step matrices needed for interpolation. Add a pointer to the backend's saved state (`.chk`, PySCF `chkfile`, previous MO/CI vectors). Test it by checking that *restart + N steps* is bit-identical to *N continuous steps*.
-- **Converter `shmd export-sharc`** writes a minimal SHARC-like `output.dat` *only if needed*. Comparing via your own reader of SHARC's `output.dat`/`output.lis` is usually simpler and avoids chasing SHARC's output-version changes.
+- **Converter `gqteashmd export-sharc`** writes a minimal SHARC-like `output.dat` *only if needed*. Comparing via your own reader of SHARC's `output.dat`/`output.lis` is usually simpler and avoids chasing SHARC's output-version changes.
 
 ### 2.6 Execution model on clusters
 
@@ -403,7 +403,7 @@ You need SOC matrix elements between singlet and triplet *states*, consistent wi
 | Unit | Pure functions: unit conversions, propagators, rescaling, phase alignment, state index maps, parsers (Gaussian log/fchk/rwf fixtures; SHARC `QM.out` fixtures from `tests/interface/inputs`) | `pytest`, `hypothesis` (property tests: energy and momentum conservation, unitarity, norm) | seconds |
 | Component | Backend vs finite differences: gradients vs FD energies; NACs vs FD overlaps; overlap matrix unitarity at small Δt | `pytest -m slowish` | minutes |
 | Cross-code single point | Same `QM.in` → your backend vs `SHARC_PYSCF.py` / `SHARC_GAUSSIAN.py` | `sharc_external` + comparison script | minutes |
-| Short-trajectory | 10–50 fs, same initial conditions, comparison per step | `shmd compare-sharc` | min–hours |
+| Short-trajectory | 10–50 fs, same initial conditions, comparison per step | `gqteashmd compare-sharc` | min–hours |
 | Ensemble/statistical | Populations, hop times, branching ratios with confidence intervals | job arrays + `analysis/` | hours–days |
 | Regression | SHARC's own `tests/INPUT/PYSCF_ddr`, `GAUSSIAN_overlap`, `LVC_*`, `ANALYTICAL_overlap` inputs | CI (cheap ones) + nightly (ab initio) | varies |
 
@@ -496,7 +496,7 @@ Conda is a good choice. Recommendations:
 Starting `environment.yml`:
 
 ```yaml
-name: shmd
+name: gqteashmd
 channels: [conda-forge]
 dependencies:
   - python=3.12

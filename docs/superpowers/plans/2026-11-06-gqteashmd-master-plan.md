@@ -1,10 +1,10 @@
-# shmd: Master Implementation Plan
+# gqteashmd: Master Implementation Plan
 
 **Date:** 2026-11-06
 **Spec:** [`SHMD_implementation_strategy.md`](../../../SHMD_implementation_strategy.md) (the strategy report, PySCF-first revision)
 **First detailed sub-plan:** [`2026-11-06-p1-foundation-orchestrator.md`](2026-11-06-p1-foundation-orchestrator.md)
 
-This document turns the strategy into a build plan for **`shmd`**, our own surface-hopping MD program. `shmd` is a working name (see open item O13).
+This document turns the strategy into a build plan for **`gqteashmd`**, our own surface-hopping MD program. The repository is `github.com/AdemirCamargo57/gqteaSHMD`; the Python package and command are `gqteashmd` (D18).
 
 It is the *umbrella* plan. It fixes the architecture, the stage contracts and the cross-cutting rules (inputs, errors, testing, development setup), and it splits the work into sub-projects **P1–P9**. Each sub-project gets its own detailed, task-by-task plan when work on it starts. Only P1 is detailed now, because the later plans depend on answers to the open items in §11.
 
@@ -14,11 +14,11 @@ It is the *umbrella* plan. It fixes the architecture, the stage contracts and th
 
 ## 1. What we are automating
 
-### 1.1 The SHARC 4.1 workflow (reference) and its `shmd` equivalent
+### 1.1 The SHARC 4.1 workflow (reference) and its `gqteashmd` equivalent
 
-In SHARC, each step is a separate tool the user runs by hand, often interactively. `shmd` runs them all from one input file.
+In SHARC, each step is a separate tool the user runs by hand, often interactively. `gqteashmd` runs them all from one input file.
 
-| # | SHARC 4.1 (manual) | What the SHARC user does | `shmd` stage | Automated how |
+| # | SHARC 4.1 (manual) | What the SHARC user does | `gqteashmd` stage | Automated how |
 |---|---|---|---|---|
 | 1 | Optimization in an external QM program | Runs an optimization, checks convergence | `optimize` (optional, on by default) | PySCF + geomeTRIC, 1 task |
 | 2 | Frequency job + `*_freq.py` → Molden file | Runs frequencies, converts output | `frequencies` | PySCF analytic Hessian (1 task) or finite differences of gradients (1 + 6N parallel tasks) |
@@ -46,15 +46,15 @@ prepare ─► optimize? ─► frequencies ─► sampling ─► excitations �
 - The user writes one input file and runs one command:
 
 ```bash
-shmd run input.toml          # runs every stage that is not yet done, in order
-shmd status input.toml       # progress: per-stage status and task counts
-shmd stop input.toml         # graceful stop; `shmd run` again resumes
+gqteashmd run input.toml          # runs every stage that is not yet done, in order
+gqteashmd status input.toml       # progress: per-stage status and task counts
+gqteashmd stop input.toml         # graceful stop; `gqteashmd run` again resumes
 ```
 
 ### 1.3 What still needs a human
 
-- Writing the input file (`shmd init` produces a commented template).
-- Fixing problems the program cannot fix itself: for example, imaginary frequencies, or too few samples with the requested excitation. The program stops with a message saying exactly what to change. `shmd run` then resumes.
+- Writing the input file (`gqteashmd init` produces a commented template).
+- Fixing problems the program cannot fix itself: for example, imaginary frequencies, or too few samples with the requested excitation. The program stops with a message saying exactly what to change. `gqteashmd run` then resumes.
 - Optional review pauses (`workflow.pause_after = ["selection"]`). For example, look at the absorption spectrum and the selected initial states before starting the expensive dynamics.
 
 ---
@@ -65,7 +65,7 @@ shmd stop input.toml         # graceful stop; `shmd run` again resumes
 
 ```
 ┌──────────────────────────────────────────────────────────────────────┐
-│ CLI (shmd init | validate | run | status | stop)                     │
+│ CLI (gqteashmd init | validate | run | status | stop)                     │
 ├──────────────────────────────────────────────────────────────────────┤
 │ Orchestrator: stage order, fingerprints, resume, retries, policies   │
 │   ├─ StateStore (SQLite)   ├─ ProjectLayout/Lock   ├─ LocalExecutor  │
@@ -87,11 +87,11 @@ shmd stop input.toml         # graceful stop; `shmd run` again resumes
 ### 2.2 Package layout (target, filled in by P1–P9)
 
 ```
-src/shmd/
+src/gqteashmd/
 ├── __init__.py, __main__.py, cli.py, logging_setup.py
 ├── errors.py                 # error taxonomy (§7)
 ├── orchestrator.py           # P1
-├── worker.py                 # P1: `python -m shmd.worker task.json`
+├── worker.py                 # P1: `python -m gqteashmd.worker task.json`
 ├── config/                   # P1 core, P2 complete schema
 │   ├── schema.py  loader.py  labels.py (state labels "S1", "T2")
 ├── project/                  # P1
@@ -113,8 +113,8 @@ src/shmd/
 ├── artifacts/   (one module per artifact type, from P4 on)
 ├── testing/     fake_stages.py (P1; test-only helpers shipped for subprocess tests)
 └── util/        fileio.py
-tests/            mirrors src/shmd; plus tests/e2e/ and tests/sharc_compare/
-tools/sharc_compare/  scripts that RUN SHARC as a black box (never imported by shmd)
+tests/            mirrors src/gqteashmd; plus tests/e2e/ and tests/sharc_compare/
+tools/sharc_compare/  scripts that RUN SHARC as a black box (never imported by gqteashmd)
 ```
 
 ---
@@ -127,13 +127,13 @@ All results for one input file live in `project.directory`. That should be a loc
 
 ```
 <project>/
-├── .shmd/
+├── .gqteashmd/
 │   ├── state.db            # SQLite: stage + task status (controller is the only writer)
 │   ├── config.json         # resolved config snapshot used by workers
 │   ├── controller.lock     # flock + PID of the running controller
-│   ├── provenance.json     # (P2) shmd/pyscf/numpy versions, git commit, host
+│   ├── provenance.json     # (P2) gqteashmd/pyscf/numpy versions, git commit, host
 │   └── superseded/         # old stage results moved here by --rerun-from (never deleted)
-├── logs/shmd.log           # controller log
+├── logs/gqteashmd.log           # controller log
 ├── 00_prepare/   geometry.xyz  molecule.json  tasks/molecule/{task.json,result.json,worker.log}
 ├── 01_optimize/  …
 ├── 02_frequencies/ …
@@ -178,31 +178,31 @@ Task:   PENDING ─► RUNNING ─► DONE
 ### 3.4 Resume, change detection, re-runs
 
 - **Fingerprints.** Each stage gets a SHA-256 fingerprint of its version, its config sections, its input-file contents (e.g. the geometry), and the fingerprints of the stages it depends on. The fingerprint is stored when the stage starts.
-- **Resume.** On `shmd run`:
+- **Resume.** On `gqteashmd run`:
   - stages that are DONE with a matching fingerprint are skipped ("up to date");
   - a RUNNING or PENDING stage continues where it stopped;
   - tasks that were RUNNING when the controller died are reconciled. A finished `result.json` makes the task DONE. Otherwise any orphaned worker is terminated and the task goes back to PENDING.
-- **Changed inputs are never silently mixed with old results.** If a DONE stage's fingerprint no longer matches, the run stops with `StaleStageError` and tells the user to run `shmd run input.toml --rerun-from <stage>`. That command moves the old results of that stage and all later ones to `.shmd/superseded/`; nothing is deleted. A FAILED stage whose inputs changed (the user fixed the problem) is reset automatically.
-- **Retrying failed work.** Running `shmd run` again after a FAILED stage gives its failed tasks a fresh set of attempts.
+- **Changed inputs are never silently mixed with old results.** If a DONE stage's fingerprint no longer matches, the run stops with `StaleStageError` and tells the user to run `gqteashmd run input.toml --rerun-from <stage>`. That command moves the old results of that stage and all later ones to `.gqteashmd/superseded/`; nothing is deleted. A FAILED stage whose inputs changed (the user fixed the problem) is reset automatically.
+- **Retrying failed work.** Running `gqteashmd run` again after a FAILED stage gives its failed tasks a fresh set of attempts.
 
 ### 3.5 Execution on the workstation
 
 - **One controller per project**, enforced with `flock`. It is the only writer of `state.db`.
-- **One subprocess per task** (`python -m shmd.worker task.json`), each in its own process session. A crash, segfault or out-of-memory kill in PySCF therefore cannot take the controller down. Each task's stdout/stderr goes to `worker.log`.
+- **One subprocess per task** (`python -m gqteashmd.worker task.json`), each in its own process session. A crash, segfault or out-of-memory kill in PySCF therefore cannot take the controller down. Each task's stdout/stderr goes to `worker.log`.
 - **Concurrency.** `resources.max_parallel_tasks` tasks run at a time, each with `threads_per_task` threads. The controller sets `OMP_NUM_THREADS`, `OPENBLAS_NUM_THREADS`, `MKL_NUM_THREADS` and `PYSCF_MAX_MEMORY` for each worker. **Per-stage overrides** (P2), e.g. `[resources.stages.frequencies] threads_per_task = 32`, let single-task stages use the whole machine.
-- **Stopping.** SIGINT/SIGTERM or `shmd stop` triggers a graceful stop:
+- **Stopping.** SIGINT/SIGTERM or `gqteashmd stop` triggers a graceful stop:
   1. no new tasks are started;
   2. running workers get SIGTERM, then SIGKILL after `stop_grace_period_s`;
   3. interrupted tasks go back to PENDING, and the interruption does not count as an attempt.
 
   Dynamics tasks write a restart file every step, so at most one step is lost.
-- **Running unattended.** P1 documents `nohup shmd run input.toml > shmd.out 2>&1 &` and `tmux`. A built-in `--detach` or systemd user service is open item O12.
+- **Running unattended.** P1 documents `nohup gqteashmd run input.toml > gqteashmd.out 2>&1 &` and `tmux`. A built-in `--detach` or systemd user service is open item O12.
 - **Executor abstraction.** The `LocalExecutor` interface (`run(jobs, on_start, on_finish, should_stop)`) is small enough that a SLURM executor could be added later without changing stages. That is **not** planned now (YAGNI).
 
 ### 3.6 Reproducibility
 
 - **Seeds.** One master seed, `project.seed`. Each stage derives its own seed stream with `numpy.random.SeedSequence([project.seed, crc32(stage_name)])`, and each task spawns a child stream by its index. Re-running with the same input reproduces every random choice: Wigner samples, state selection and hopping random numbers.
-- **Provenance (P2).** `.shmd/provenance.json` records the versions of shmd (with git commit), Python, PySCF, NumPy, SciPy and h5py, plus the host and CPU. Every artifact carries `schema_version` and the shmd version.
+- **Provenance (P2).** `.gqteashmd/provenance.json` records the versions of gqteashmd (with git commit), Python, PySCF, NumPy, SciPy and h5py, plus the host and CPU. Every artifact carries `schema_version` and the gqteashmd version.
 
 ---
 
@@ -212,7 +212,7 @@ Task:   PENDING ─► RUNNING ─► DONE
 
 - **One TOML file** per project (stdlib `tomllib`), validated with **pydantic v2**. Validation is strict: unknown keys are errors, which catches typos.
 - **Units are in the key names** (`dt_fs`, `tmax_fs`, `temperature_K`, `energy_window_eV`, `fd_step_bohr`). Everything is converted to atomic units at load time.
-- **Relative paths** resolve against the input file's directory. The resolved config is snapshotted to `.shmd/config.json`, so editing the input file mid-run cannot affect running workers.
+- **Relative paths** resolve against the input file's directory. The resolved config is snapshotted to `.gqteashmd/config.json`, so editing the input file mid-run cannot affect running workers.
 - **States are labelled** `"S0"`, `"S1"`, `"T1"` in the input, which avoids SHARC's 1-based numbering. Internally all indices are 0-based.
 - `schema_version = 1` sits at the top. Later breaking schema changes get a migration message instead of a cryptic error.
 
@@ -222,7 +222,7 @@ Task:   PENDING ─► RUNNING ─► DONE
 |---|---|---|---|
 | Syntax and types | `load_config` | Unknown key, wrong type, value out of range | P1 (core sections), P2 (all sections) |
 | Cross-field rules | `load_config` (pydantic model validators) | Selected states exist in `electronic.states`; `n_trajectories ≥ 1`; `dt_fs < tmax_fs`; CASSCF needs `ncas`/`nelecas` | P2 |
-| Environment preflight | Start of `shmd run`, before any stage | PySCF importable with a supported version; geomeTRIC present if `optimize` is enabled; `max_parallel × memory ≤ RAM`; `max_parallel × threads ≤ cores`; free disk space; scratch directory writable; project directory not on `/mnt/c` | P2 |
+| Environment preflight | Start of `gqteashmd run`, before any stage | PySCF importable with a supported version; geomeTRIC present if `optimize` is enabled; **user-given hardware** (`resources.total_cores`, `resources.total_memory_mb`) bounds the task settings (`max_parallel × threads ≤ total_cores`, `max_parallel × memory ≤ total_memory_mb`; violation = `ConfigError`); the user-given values are compared with the detected cores/RAM and a **warning** (not an error) is printed if they exceed the machine (D17); free disk space; scratch directory writable; project directory not on `/mnt/c` | P2 |
 | Physics preflight | `prepare` stage | xyz syntax, known elements, charge/multiplicity consistent with the electron count | P1 |
 | Smoke calculation | First task of `optimize`/`frequencies` (P3/P4) | SCF converges at the start geometry with the requested method/basis | P3 |
 
@@ -235,7 +235,7 @@ schema_version = 1
 
 [project]
 name = "thiophene_s1"
-directory = "/data/ajc/shmd-runs/thiophene_s1"   # local Linux disk
+directory = "/data/ajc/gqteashmd-runs/thiophene_s1"   # local Linux disk
 seed = 20261106
 
 [molecule]
@@ -293,7 +293,9 @@ max_failed_fraction = 0.1
 [analysis]                           # P8
 enabled = true
 
-[resources]                          # P1 (global), P2 (per-stage)
+[resources]                          # P1 (global), P2 (per-stage, hardware)
+total_cores = 32                     # REQUIRED (P2): the user describes the workstation (D17)
+total_memory_mb = 128000             # REQUIRED (P2)
 max_parallel_tasks = 8
 threads_per_task = 4
 memory_mb_per_task = 4000
@@ -316,8 +318,8 @@ pause_after = ["selection"]          # review spectrum before dynamics
 ## 5. Stage interfaces
 
 **Artifact conventions (decided):**
-- Small metadata goes in JSON. Arrays go in HDF5 (`h5py`), with attributes `schema_version`, `shmd_version` and `units` on each dataset. Files meant for people are XYZ (Å), Molden (frequencies) and CSV/PNG.
-- Internal files store atomic units. Each artifact type has exactly one reader/writer module in `shmd/artifacts/`, and stages never open another stage's files directly.
+- Small metadata goes in JSON. Arrays go in HDF5 (`h5py`), with attributes `schema_version`, `gqteashmd_version` and `units` on each dataset. Files meant for people are XYZ (Å), Molden (frequencies) and CSV/PNG.
+- Internal files store atomic units. Each artifact type has exactly one reader/writer module in `gqteashmd/artifacts/`, and stages never open another stage's files directly.
 
 | Stage | Depends on | Config sections | Tasks | Output artifacts | Checks → failure policy |
 |---|---|---|---|---|---|
@@ -336,7 +338,7 @@ pause_after = ["selection"]          # review spectrum before dynamics
 
 ## 6. Error handling
 
-### 6.1 Taxonomy (`shmd/errors.py`, P1)
+### 6.1 Taxonomy (`gqteashmd/errors.py`, P1)
 
 | Class / situation | Example | Detected by | Result | Exit code |
 |---|---|---|---|---|
@@ -349,7 +351,7 @@ pause_after = ["selection"]          # review spectrum before dynamics
 | `StageFailedError` | Too many failed tasks, imaginary frequencies, too few bright samples | Controller (`finalize`) | Stage FAILED; workflow stops | 4 |
 | Trajectory outcome | Energy drift above limit, electronic-structure failure mid-trajectory | Dynamics worker | Task DONE with `outcome` recorded; analysis decides whether to include it | — |
 | Unexpected exception (bug) | `KeyError` in our code | Worker | Non-retryable; full traceback in `result.json` and `worker.log` | — |
-| Stopped by user | SIGINT/SIGTERM, `shmd stop` | CLI | State saved; resumable | 5 |
+| Stopped by user | SIGINT/SIGTERM, `gqteashmd stop` | CLI | State saved; resumable | 5 |
 
 ### 6.2 Rules
 
@@ -362,7 +364,7 @@ pause_after = ["selection"]          # review spectrum before dynamics
   TDDFT/CASSCF have their own ladders (more roots, a different initial guess). Each rung is logged.
 - **Fail early.** All config and environment checks run before the first expensive calculation.
 - **Never delete results automatically.** Superseded results are moved; cleaning up is an explicit user action.
-- **Logs.** The controller writes `logs/shmd.log` (INFO to console, DEBUG to file). Each task has `worker.log` (stdout/stderr) plus a backend log (e.g. `pyscf.log`) in its task directory.
+- **Logs.** The controller writes `logs/gqteashmd.log` (INFO to console, DEBUG to file). Each task has `worker.log` (stdout/stderr) plus a backend log (e.g. `pyscf.log`) in its task directory.
 
 ---
 
@@ -405,9 +407,9 @@ GitHub Actions runs on `ubuntu-latest` inside an **`oraclelinux:9` container**, 
 | Environment | `micromamba`/conda with `environment.yml` (conda-forge, Python 3.12), created in the WSL home directory, **never inside OneDrive**. `pip install -e . --no-deps`. A lock file (`conda-lock`) is added once the dependency set settles (P3). |
 | Git | **One Git client: Git inside WSL** (VS Code Remote-WSL uses it). `core.autocrlf=false`, `core.filemode=false` (DrvFS reports every file as executable), `.gitattributes` with `* text=auto eol=lf`. |
 | OneDrive caveats | OneDrive syncs `.git/` too. Push to GitHub often (GitHub is the source of truth), mark the folder "Always keep on this device", and never put environments, project runs or large test outputs in the folder. pytest writes temporary files to `/tmp` (Linux disk). |
-| GitHub | Private repository to start (owner/name: O13). `main` is protected: PRs only, CI must pass, one reviewer. Conventional-commit messages. SemVer `0.x` until the first production study. MIT `LICENSE` from the first commit. |
+| GitHub | Repository `github.com/AdemirCamargo57/gqteaSHMD` (currently **public**). Work happens on feature branches (`feat/...`) that are pushed; the owner reviews and merges PRs on github.com (the `gh` CLI is not installed). `main` is protected: PRs only, CI must pass, one reviewer. Conventional-commit messages. SemVer `0.x` until the first production study. MIT `LICENSE` from the first commit. |
 | Style and tools | `src/` layout, `pyproject.toml` (hatchling), ruff (lint + format, line length 100), pytest, pre-commit hooks. Type hints everywhere; mypy added in P2. |
-| Deployment on the workstation | `git clone` → `micromamba create -f environment.yml` → `pip install .`. Users run `shmd` from that environment. Project directories go on a local data disk. |
+| Deployment on the workstation | `git clone` → `micromamba create -f environment.yml` → `pip install .`. Users run `gqteashmd` from that environment. Project directories go on a local data disk. |
 
 ---
 
@@ -418,8 +420,8 @@ Each sub-project produces working, tested software and gets its own detailed pla
 | ID | Sub-project | Delivers | Depends on | Strategy phase | Est. |
 |---|---|---|---|---|---|
 | **P1** | **Foundation & orchestrator** (detailed plan exists) | Repo, environment, CI, errors, config core, project layout, state store, stage contract, worker, local executor, orchestrator (resume/retry/stop/stale), CLI, `prepare` stage | — | 0 | 3–4 wk |
-| P2 | Complete input schema & preflight | All config sections (§4.3), cross-field validators, state labels, per-stage resources, `pause_after`, environment preflight, provenance, full `shmd init` template, mypy | P1 | 0 | 2 wk |
-| P3 | PySCF electronic-structure layer | Backend contract (strategy §2.3); SCF/TDA/TDDFT/SA-CASSCF energies, gradients, transition dipoles; Hessian (analytic + finite-difference gradient tasks); retry ladders; threads/memory/scratch handling; chkfile policy | P1 (P2 for config) | 3 | 5–6 wk |
+| P2 | Complete input schema & preflight | All config sections (§4.3), cross-field validators, state labels, per-stage resources, required user-given hardware keys with detection warning (D17), `pause_after`, environment preflight, provenance, full `gqteashmd init` template, mypy | P1 | 0 | 2 wk |
+| P3 | PySCF electronic-structure layer | Backend contract (strategy §2.3); SCF/TDA/TDDFT/SA-CASSCF energies, gradients, transition dipoles; Hessian (analytic + finite-difference gradient tasks); retry ladders; threads/memory/scratch handling; chkfile policy. **Validation molecule: ethylene** (`C:\AJCamargo\TOPICOS\Eteno\Eteno.xyz`, copied to `tests/data/ethylene.xyz`) at **SA2-CASSCF(2,2)/6-31G\*** first (vs `SHARC_PYSCF.py`), TDA second (D19) | P1 (P2 for config) | 3 | 5–6 wk |
 | P4 | `optimize` + `frequencies` stages | geomeTRIC driver; own harmonic analysis (mass weighting, Eckart projection, frequencies, normal modes); imaginary-mode policy; Molden writer; `frequencies.h5` | P3 | 5 | 3 wk |
 | P5 | `sampling` stage | Own Wigner sampler (T = 0, thermal option), velocities, momentum removal, `samples.h5`; SHARC `wigner.py` distribution comparison | P4 | 5 | 2–3 wk |
 | P6 | `excitations` + `selection` stages | Parallel single points, spectrum, selection modes, `trajectories.json`, review report for `pause_after`; SHARC excite comparison | P3, P5 | 5 | 3–4 wk |
@@ -431,7 +433,7 @@ Each sub-project produces working, tested software and gets its own detailed pla
 **Critical path (one developer):** P1 → P2 → P3 → P4 → P5 → P6 → (P7a) → P7b → P8 ≈ 9–12 months. With a second developer on P7a from month 2, about 7–9 months. ISC (strategy phase 6) and further backends (strategy phase 7) follow afterwards.
 
 **Milestones:**
-- **M1** (end of P2): `shmd run` validates a full input file and runs `prepare`; CI green on Oracle Linux 9.
+- **M1** (end of P2): `gqteashmd run` validates a full input file and runs `prepare`; CI green on Oracle Linux 9.
 - **M2** (end of P5): from one input, the program produces optimized geometry → frequencies → Wigner samples, matching SHARC `wigner.py` statistics.
 - **M3** (end of P6): the full front half of the workflow runs unattended, with a review pause before dynamics.
 - **M4** (end of P8): first complete unattended study (input → populations) on a small molecule, kill-and-resume tested.
@@ -456,15 +458,19 @@ Each sub-project produces working, tested software and gets its own detailed pla
 | D12 | Seed hierarchy from `project.seed` via `SeedSequence` | Full reproducibility |
 | D13 | State labels `S0/S1/T1` in input; 0-based internally | Avoids SHARC's 1-based ambiguity |
 | D14 | CLI: `init`, `validate`, `run [--rerun-from]`, `status`, `stop` | Minimal surface for "inputs once, run to completion" |
-| D15 | Git in WSL only; LF line endings; private GitHub repo; protected `main`; CI in an `oraclelinux:9` container | §8 |
+| D15 | Git in WSL only (commits); LF line endings; GitHub repo `AdemirCamargo57/gqteaSHMD`; protected `main`; CI in an `oraclelinux:9` container | §8 |
 | D16 | Test layers and markers per §7; SHARC comparisons outside CI | §7 |
+| D17 | Workstation hardware is **given by the user** in `[resources]` (`total_cores`, `total_memory_mb`, required from P2). gqteashmd compares it with the detected hardware and only **warns** if the user values exceed the machine | User decision 2026-11-06 |
+| D18 | Python package and command are named **`gqteashmd`** (repository `gqteaSHMD`); internal class names keep the `Shmd` prefix (`ShmdError`, `ShmdConfig`) | User decision 2026-11-06 |
+| D19 | P3 validation target: **ethylene** (`Eteno.xyz`), **SA2-CASSCF(2,2)/6-31G\*** first, then TDA | User decision 2026-11-06 |
+| D20 | Each sub-project is built on a feature branch (`feat/<sub-project>`) with one commit per task, pushed to GitHub; the owner merges the PR. Plans are executed subagent-driven | User decision 2026-11-06 |
 
 ## 11. Open items (still to be specified)
 
 | ID | Item | Why it matters | Proposed default | Needed by |
 |---|---|---|---|---|
-| O1 | Workstation hardware: cores, RAM, local disk, GPU | Resource defaults, preflight limits, `gpu4pyscf` | 1 task × all cores for single-task stages; 4 threads/task otherwise | P2 |
-| O2 | First target molecules and methods (functional, basis, number of states, CASSCF active spaces) | Test fixtures, defaults, performance targets | TDA-B3LYP/def2-SVP, 4 singlets | P3 |
+| O1 | ~~Workstation hardware~~ **Resolved → D17** (user input + warning check) | | | |
+| O2 | ~~First target molecule and method~~ **Resolved → D19** (ethylene, SA2-CASSCF(2,2)/6-31G\*). Still open: number of states and basis for the TDA follow-up | TDA test fixture | TDA-B3LYP/def2-SVP, 3 singlets | P3 |
 | O3 | Excitation selection rule (formula, bright-state threshold, energy-window semantics) | Initial-state distribution | Stochastic, weighted by oscillator strength, within window; exact formula from literature, cross-checked with SHARC `excite.py` | P6 |
 | O4 | Wigner sampling for T > 0 and treatment of very low-frequency modes | Initial-condition quality for floppy molecules | T = 0 only in first release; thermal scheme decided in P5 | P5 |
 | O5 | Mass convention (most-abundant isotope vs average atomic weight) | Frequencies and sampling, and SHARC comparability | Most-abundant isotope masses (verify SHARC's choice in comparison) | P4 |
@@ -474,9 +480,9 @@ Each sub-project produces working, tested software and gets its own detailed pla
 | O9 | Data retention: chkfiles, per-step output frequency, disk budget per project | Disk use on the workstation | Keep only last-step chkfile; output every step | P7b |
 | O10 | Required analysis outputs (which observables, plots, fits) | Scope of P8 | Populations (classical + quantum), hop statistics, mono-exponential fit | P8 |
 | O11 | Notifications on completion or failure (email, chat)? | Unattended operation | None; log + exit code | P2 |
-| O12 | Unattended running: `nohup`/`tmux` vs `shmd run --detach` vs systemd user service | Convenience, robustness to logout | Document `nohup`/`tmux` (P1); decide in P2 | P2 |
-| O13 | Final program name; GitHub owner/repository name | Package name, URLs | `shmd`; private repo under the group account | P1 Task 12 |
-| O14 | Copyright holder in the MIT licence | Licence file | "The shmd developers" | P1 Task 1 |
+| O12 | Unattended running: `nohup`/`tmux` vs `gqteashmd run --detach` vs systemd user service | Convenience, robustness to logout | Document `nohup`/`tmux` (P1); decide in P2 | P2 |
+| O13 | ~~Program name, GitHub repository~~ **Resolved → D18/D15.** Still open: keep the repository public, or make it private until the first release? | Visibility of unreleased code | Your choice; the MIT licence is added in P1 Task 1 | P1 Task 12 |
+| O14 | Copyright holder in the MIT licence | Licence file | "The gqteashmd developers" | P1 Task 1 |
 | O15 | Several molecules or parameter scans per input file? | Input design | No: one project per input | P2 |
 | O16 | Extending finished dynamics (e.g. increasing `tmax_fs`) | Resume semantics | Allowed: `tmax_fs` excluded from the fingerprint and handled as an "extend" | P7b |
 | O17 | SHARC `input`-file importer (strategy §2.4) needed? | Validation convenience | Only inside `tools/sharc_compare/` | P9 |

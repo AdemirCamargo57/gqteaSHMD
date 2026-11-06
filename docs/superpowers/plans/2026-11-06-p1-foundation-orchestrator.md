@@ -2,17 +2,17 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Build the `shmd` repository, development environment and the resumable workflow controller. At the end, `shmd run input.toml` executes an ordered pipeline of stages as parallel subprocess tasks. It survives crashes and restarts, retries failures, detects changed inputs, and stops gracefully. The first real stage (`prepare`) is included.
+**Goal:** Build the `gqteashmd` repository, development environment and the resumable workflow controller. At the end, `gqteashmd run input.toml` executes an ordered pipeline of stages as parallel subprocess tasks. It survives crashes and restarts, retries failures, detects changed inputs, and stops gracefully. The first real stage (`prepare`) is included.
 
 **Architecture:**
 - A single-writer controller (`Orchestrator`) keeps stage and task state in SQLite.
-- It launches one worker subprocess per task (`python -m shmd.worker task.json`) through a `LocalExecutor` with a concurrency limit.
+- It launches one worker subprocess per task (`python -m gqteashmd.worker task.json`) through a `LocalExecutor` with a concurrency limit.
 - Workers report back through atomically written `result.json` files.
-- Stages implement a three-method contract (`plan`, `run_task`, `finalize`). Fake stages in `shmd.testing` exercise the orchestrator; the real pipeline currently contains only `prepare`.
+- Stages implement a three-method contract (`plan`, `run_task`, `finalize`). Fake stages in `gqteashmd.testing` exercise the orchestrator; the real pipeline currently contains only `prepare`.
 
 **Tech Stack:** Python 3.12, pydantic v2, stdlib (`tomllib`, `sqlite3`, `subprocess`, `fcntl`, `argparse`, `logging`), pytest, ruff, micromamba/conda-forge, GitHub Actions (Oracle Linux 9 container).
 
-**Spec:** [`docs/superpowers/plans/2026-11-06-shmd-master-plan.md`](2026-11-06-shmd-master-plan.md) (§2–§8 and decisions D1–D16) and [`SHMD_implementation_strategy.md`](../../../SHMD_implementation_strategy.md).
+**Spec:** [`docs/superpowers/plans/2026-11-06-gqteashmd-master-plan.md`](2026-11-06-gqteashmd-master-plan.md) (§2–§8 and decisions D1–D16) and [`SHMD_implementation_strategy.md`](../../../SHMD_implementation_strategy.md).
 
 ## Global Constraints
 
@@ -25,7 +25,21 @@
 - **Style:** ruff (line length 100, rules E, F, W, I, B, UP, SIM). Type hints on all public functions.
 - **Files written by the program** are written atomically (temporary file + `os.replace`).
 - **State database:** only the controller writes it.
-- **Test commands** are run from the repository root inside the activated `shmd-dev` environment in WSL.
+- **Test commands** are run from the repository root inside the activated `gqteashmd-dev` environment in WSL.
+- **Branch:** all P1 work is committed on `feat/p1-foundation` (one commit per task) and pushed at the end. The owner merges the PR (D20).
+
+## Execution environment (for agents running on the Windows host)
+
+Agents run on Windows, but every command in this plan (`git`, `conda`, `pytest`, `ruff`, `gqteashmd`) must run in WSL. Wrap each command like this:
+
+```bash
+wsl -d OracleLinux_9_5 -- bash -lc 'cd /mnt/c/Users/ajc/OneDrive/gqteaSHMD && conda activate gqteashmd-dev && <command>'
+```
+
+- Before Task 1 Step 7 creates the environment, leave out `conda activate gqteashmd-dev &&`.
+- Create and edit files with the normal file tools, using Windows paths under `C:\Users\ajc\OneDrive\gqteaSHMD\`. Write them with LF line endings.
+- Commit with **WSL Git** (pre-commit hooks installed in Task 12 only work there). The repository already has a repo-local Git identity (`Ademir Camargo <ajc@ueg.br>`), `core.autocrlf=false` and `core.filemode=false`.
+- WSL is Oracle Linux 9.5 with Miniforge conda (no micromamba), 16 cores and about 7 GB RAM. Keep pytest temporary files on the Linux disk (the pytest default `/tmp` is fine).
 
 ## File Structure (created by this plan)
 
@@ -34,35 +48,35 @@
 environment.yml  pyproject.toml
 .github/workflows/ci.yml
 docs/development.md
-src/shmd/__init__.py            # version
-src/shmd/__main__.py            # `python -m shmd` → CLI
-src/shmd/cli.py                 # init | validate | run | status | stop
-src/shmd/errors.py              # error taxonomy + exit codes
-src/shmd/logging_setup.py       # console + file logging
-src/shmd/orchestrator.py        # the controller
-src/shmd/worker.py              # task subprocess entry point; task/result file I/O
-src/shmd/util/__init__.py
-src/shmd/util/fileio.py         # atomic writes, JSON helpers
-src/shmd/config/__init__.py
-src/shmd/config/schema.py       # pydantic models (core sections)
-src/shmd/config/loader.py       # TOML loading, path resolution, snapshot, fingerprint sections
-src/shmd/project/__init__.py
-src/shmd/project/layout.py      # project directory layout
-src/shmd/project/lock.py        # single-controller lock
-src/shmd/project/state.py       # SQLite state store
-src/shmd/execution/__init__.py
-src/shmd/execution/local.py     # LocalExecutor
-src/shmd/execution/processes.py # orphan detection/termination
-src/shmd/stages/__init__.py
-src/shmd/stages/base.py         # Stage, TaskSpec, StageContext
-src/shmd/stages/pipeline.py     # pipeline import + validation
-src/shmd/stages/prepare.py      # PrepareStage
-src/shmd/stages/registry.py     # default_pipeline()
-src/shmd/chem/__init__.py
-src/shmd/chem/elements.py       # element symbols → Z
-src/shmd/chem/xyz.py            # XYZ parse/format
-src/shmd/testing/__init__.py
-src/shmd/testing/fake_stages.py # deterministic fake stages for tests
+src/gqteashmd/__init__.py            # version
+src/gqteashmd/__main__.py            # `python -m gqteashmd` → CLI
+src/gqteashmd/cli.py                 # init | validate | run | status | stop
+src/gqteashmd/errors.py              # error taxonomy + exit codes
+src/gqteashmd/logging_setup.py       # console + file logging
+src/gqteashmd/orchestrator.py        # the controller
+src/gqteashmd/worker.py              # task subprocess entry point; task/result file I/O
+src/gqteashmd/util/__init__.py
+src/gqteashmd/util/fileio.py         # atomic writes, JSON helpers
+src/gqteashmd/config/__init__.py
+src/gqteashmd/config/schema.py       # pydantic models (core sections)
+src/gqteashmd/config/loader.py       # TOML loading, path resolution, snapshot, fingerprint sections
+src/gqteashmd/project/__init__.py
+src/gqteashmd/project/layout.py      # project directory layout
+src/gqteashmd/project/lock.py        # single-controller lock
+src/gqteashmd/project/state.py       # SQLite state store
+src/gqteashmd/execution/__init__.py
+src/gqteashmd/execution/local.py     # LocalExecutor
+src/gqteashmd/execution/processes.py # orphan detection/termination
+src/gqteashmd/stages/__init__.py
+src/gqteashmd/stages/base.py         # Stage, TaskSpec, StageContext
+src/gqteashmd/stages/pipeline.py     # pipeline import + validation
+src/gqteashmd/stages/prepare.py      # PrepareStage
+src/gqteashmd/stages/registry.py     # default_pipeline()
+src/gqteashmd/chem/__init__.py
+src/gqteashmd/chem/elements.py       # element symbols → Z
+src/gqteashmd/chem/xyz.py            # XYZ parse/format
+src/gqteashmd/testing/__init__.py
+src/gqteashmd/testing/fake_stages.py # deterministic fake stages for tests
 tests/conftest.py
 tests/test_package.py
 tests/test_errors_fileio.py
@@ -86,23 +100,23 @@ There are no `__init__.py` files in `tests/` subdirectories. pytest's default `r
 ### Task 1: Repository scaffolding and development environment
 
 **Files:**
-- Create: `pyproject.toml`, `environment.yml`, `LICENSE`, `README.md`, `.gitignore`, `.gitattributes`, `src/shmd/__init__.py`
+- Create: `pyproject.toml`, `environment.yml`, `LICENSE`, `README.md`, `.gitignore`, `.gitattributes`, `src/gqteashmd/__init__.py`
 - Test: `tests/test_package.py`
 
 **Interfaces:**
 - Consumes: nothing.
-- Produces: installable package `shmd` with `shmd.__version__ == "0.1.0.dev0"`. Console script `shmd = "shmd.cli:main"` is declared; `cli.py` arrives in Task 11, and until then the script entry fails on use, which is expected. The `shmd-dev` conda environment.
+- Produces: installable package `gqteashmd` with `gqteashmd.__version__ == "0.1.0.dev0"`. Console script `gqteashmd = "gqteashmd.cli:main"` is declared; `cli.py` arrives in Task 11, and until then the script entry fails on use, which is expected. The `gqteashmd-dev` conda environment.
 
-- [ ] **Step 1: Open a WSL shell in the repository and configure Git**
+- [ ] **Step 1: Check the repository state (it already exists and is on GitHub)**
 
 ```bash
 cd /mnt/c/Users/ajc/OneDrive/gqteaSHMD
-git init -b main
-git config core.autocrlf false
-git config core.filemode false
+git branch --show-current
+git config --local --get core.autocrlf
+git config --local --get core.filemode
 ```
 
-Expected: `Initialized empty Git repository in /mnt/c/Users/ajc/OneDrive/gqteaSHMD/.git/`
+Expected: `feat/p1-foundation`, `false`, `false`. (The repository, branch, repo-local config and Git identity were set up before execution started.)
 
 - [ ] **Step 2: Create `pyproject.toml`**
 
@@ -112,7 +126,7 @@ requires = ["hatchling>=1.24"]
 build-backend = "hatchling.build"
 
 [project]
-name = "shmd"
+name = "gqteashmd"
 version = "0.1.0.dev0"
 description = "Automated surface-hopping molecular dynamics workflow (PySCF backend)"
 readme = "README.md"
@@ -124,10 +138,10 @@ dependencies = ["pydantic>=2.6"]
 dev = ["pytest>=8", "ruff>=0.6", "pre-commit>=3"]
 
 [project.scripts]
-shmd = "shmd.cli:main"
+gqteashmd = "gqteashmd.cli:main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/shmd"]
+packages = ["src/gqteashmd"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -150,7 +164,7 @@ select = ["E", "F", "W", "I", "B", "UP", "SIM"]
 - [ ] **Step 3: Create `environment.yml`**
 
 ```yaml
-name: shmd-dev
+name: gqteashmd-dev
 channels:
   - conda-forge
 dependencies:
@@ -173,7 +187,7 @@ dependencies:
 ```text
 MIT License
 
-Copyright (c) 2026 The shmd developers
+Copyright (c) 2026 The gqteashmd developers
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -199,7 +213,7 @@ SOFTWARE.
 `README.md`:
 
 ````markdown
-# shmd
+# gqteashmd
 
 Automated surface-hopping molecular dynamics workflow:
 geometry optimization → frequencies → Wigner sampling → initial conditions → trajectories,
@@ -208,11 +222,11 @@ driven from a single input file. Electronic structure: PySCF.
 Status: early development (P1: foundation & orchestrator). Linux only.
 
 ```bash
-shmd init input.toml      # write a commented template
-shmd validate input.toml
-shmd run input.toml       # run all stages; re-run to resume
-shmd status input.toml
-shmd stop input.toml
+gqteashmd init input.toml      # write a commented template
+gqteashmd validate input.toml
+gqteashmd run input.toml       # run all stages; re-run to resume
+gqteashmd status input.toml
+gqteashmd stop input.toml
 ```
 
 Developer setup: see [docs/development.md](docs/development.md).
@@ -231,8 +245,8 @@ dist/
 .ruff_cache/
 .mypy_cache/
 .venv/
-# shmd project runs must never live in the repository
-.shmd/
+# gqteashmd project runs must never live in the repository
+.gqteashmd/
 run/
 ```
 
@@ -247,27 +261,27 @@ run/
 - [ ] **Step 6: Write the failing test** `tests/test_package.py`
 
 ```python
-import shmd
+import gqteashmd
 
 
 def test_version_is_defined():
-    assert shmd.__version__ == "0.1.0.dev0"
+    assert gqteashmd.__version__ == "0.1.0.dev0"
 ```
 
 - [ ] **Step 7: Create the environment and run the test to verify it fails**
 
 ```bash
-micromamba create -y -f environment.yml      # or: conda env create -f environment.yml
-micromamba activate shmd-dev
+conda env create -f environment.yml          # WSL has Miniforge conda (micromamba also works)
+conda activate gqteashmd-dev
 pytest tests/test_package.py -v
 ```
 
-Expected: FAIL with `ModuleNotFoundError: No module named 'shmd'`.
+Expected: FAIL with `ModuleNotFoundError: No module named 'gqteashmd'`.
 
-- [ ] **Step 8: Create `src/shmd/__init__.py` and install editable**
+- [ ] **Step 8: Create `src/gqteashmd/__init__.py` and install editable**
 
 ```python
-"""shmd: automated surface-hopping molecular dynamics workflow."""
+"""gqteashmd: automated surface-hopping molecular dynamics workflow."""
 
 __version__ = "0.1.0.dev0"
 ```
@@ -284,8 +298,8 @@ Expected: PASS
 - [ ] **Step 10: Commit**
 
 ```bash
-git add pyproject.toml environment.yml LICENSE README.md .gitignore .gitattributes src/shmd/__init__.py tests/test_package.py
-git commit -m "chore: scaffold shmd package, environment and licence"
+git add pyproject.toml environment.yml LICENSE README.md .gitignore .gitattributes src/gqteashmd/__init__.py tests/test_package.py
+git commit -m "chore: scaffold gqteashmd package, environment and licence"
 ```
 
 ---
@@ -293,7 +307,7 @@ git commit -m "chore: scaffold shmd package, environment and licence"
 ### Task 2: Error taxonomy and atomic file I/O
 
 **Files:**
-- Create: `src/shmd/errors.py`, `src/shmd/util/__init__.py` (empty), `src/shmd/util/fileio.py`
+- Create: `src/gqteashmd/errors.py`, `src/gqteashmd/util/__init__.py` (empty), `src/gqteashmd/util/fileio.py`
 - Test: `tests/test_errors_fileio.py`
 
 **Interfaces:**
@@ -311,7 +325,7 @@ import json
 
 import pytest
 
-from shmd.errors import (
+from gqteashmd.errors import (
     ConfigError,
     ProjectError,
     ShmdError,
@@ -319,7 +333,7 @@ from shmd.errors import (
     StaleStageError,
     TaskError,
 )
-from shmd.util.fileio import read_json, write_json_atomic, write_text_atomic
+from gqteashmd.util.fileio import read_json, write_json_atomic, write_text_atomic
 
 
 def test_exit_codes_distinguish_error_classes():
@@ -367,22 +381,22 @@ def test_read_json_propagates_decode_errors(tmp_path):
 - [ ] **Step 2: Run tests to verify they fail**
 
 Run: `pytest tests/test_errors_fileio.py -v`
-Expected: FAIL with `ModuleNotFoundError: No module named 'shmd.errors'`
+Expected: FAIL with `ModuleNotFoundError: No module named 'gqteashmd.errors'`
 
-- [ ] **Step 3: Implement `src/shmd/errors.py`**
+- [ ] **Step 3: Implement `src/gqteashmd/errors.py`**
 
 ```python
-"""Error taxonomy. Every deliberate error raised by shmd derives from ShmdError.
+"""Error taxonomy. Every deliberate error raised by gqteashmd derives from ShmdError.
 
 Exit codes: 0 ok, 1 generic, 2 configuration, 3 project/state, 4 stage failed,
-5 stopped by user (defined in shmd.cli).
+5 stopped by user (defined in gqteashmd.cli).
 """
 
 from __future__ import annotations
 
 
 class ShmdError(Exception):
-    """Base class for all errors raised deliberately by shmd."""
+    """Base class for all errors raised deliberately by gqteashmd."""
 
     exit_code: int = 1
 
@@ -417,7 +431,7 @@ class TaskError(ShmdError):
         self.retryable = retryable
 ```
 
-- [ ] **Step 4: Implement `src/shmd/util/fileio.py`** (and an empty `src/shmd/util/__init__.py`)
+- [ ] **Step 4: Implement `src/gqteashmd/util/fileio.py`** (and an empty `src/gqteashmd/util/__init__.py`)
 
 ```python
 """Atomic file writes and JSON helpers."""
@@ -458,7 +472,7 @@ Expected: 6 passed
 - [ ] **Step 6: Commit**
 
 ```bash
-git add src/shmd/errors.py src/shmd/util tests/test_errors_fileio.py
+git add src/gqteashmd/errors.py src/gqteashmd/util tests/test_errors_fileio.py
 git commit -m "feat: add error taxonomy and atomic file helpers"
 ```
 
@@ -467,7 +481,7 @@ git commit -m "feat: add error taxonomy and atomic file helpers"
 ### Task 3: Input file schema and loader
 
 **Files:**
-- Create: `src/shmd/config/__init__.py` (empty), `src/shmd/config/schema.py`, `src/shmd/config/loader.py`, `tests/conftest.py`
+- Create: `src/gqteashmd/config/__init__.py` (empty), `src/gqteashmd/config/schema.py`, `src/gqteashmd/config/loader.py`, `tests/conftest.py`
 - Test: `tests/config/test_loader.py`
 
 **Interfaces:**
@@ -537,8 +551,8 @@ def write_input():
 ```python
 import pytest
 
-from shmd.config.loader import load_config, load_snapshot, section_fingerprint, write_snapshot
-from shmd.errors import ConfigError
+from gqteashmd.config.loader import load_config, load_snapshot, section_fingerprint, write_snapshot
+from gqteashmd.errors import ConfigError
 
 
 def test_minimal_input_gets_defaults_and_absolute_paths(tmp_path, write_input):
@@ -609,9 +623,9 @@ def test_section_fingerprint_selects_sections(tmp_path, write_input):
 - [ ] **Step 3: Run tests to verify they fail**
 
 Run: `pytest tests/config/test_loader.py -v`
-Expected: FAIL with `ModuleNotFoundError: No module named 'shmd.config'`
+Expected: FAIL with `ModuleNotFoundError: No module named 'gqteashmd.config'`
 
-- [ ] **Step 4: Implement `src/shmd/config/schema.py`** (and an empty `src/shmd/config/__init__.py`)
+- [ ] **Step 4: Implement `src/gqteashmd/config/schema.py`** (and an empty `src/gqteashmd/config/__init__.py`)
 
 ```python
 """Input file schema (core sections; P2 adds electronic, sampling, dynamics, ...)."""
@@ -660,7 +674,7 @@ class ShmdConfig(_Section):
     execution: ExecutionSection = Field(default_factory=ExecutionSection)
 ```
 
-- [ ] **Step 5: Implement `src/shmd/config/loader.py`**
+- [ ] **Step 5: Implement `src/gqteashmd/config/loader.py`**
 
 ```python
 """Load and validate the TOML input file; snapshot the resolved configuration."""
@@ -675,9 +689,9 @@ from typing import Any
 
 from pydantic import ValidationError
 
-from shmd.config.schema import ShmdConfig
-from shmd.errors import ConfigError
-from shmd.util.fileio import write_text_atomic
+from gqteashmd.config.schema import ShmdConfig
+from gqteashmd.errors import ConfigError
+from gqteashmd.util.fileio import write_text_atomic
 
 
 @dataclass(frozen=True)
@@ -752,7 +766,7 @@ Expected: 9 passed
 - [ ] **Step 7: Commit**
 
 ```bash
-git add src/shmd/config tests/conftest.py tests/config
+git add src/gqteashmd/config tests/conftest.py tests/config
 git commit -m "feat: add strict TOML input schema, loader and config snapshot"
 ```
 
@@ -761,14 +775,14 @@ git commit -m "feat: add strict TOML input schema, loader and config snapshot"
 ### Task 4: Project directory layout and single-controller lock
 
 **Files:**
-- Create: `src/shmd/project/__init__.py` (empty), `src/shmd/project/layout.py`, `src/shmd/project/lock.py`
+- Create: `src/gqteashmd/project/__init__.py` (empty), `src/gqteashmd/project/layout.py`, `src/gqteashmd/project/lock.py`
 - Test: `tests/project/test_layout_lock.py`
 
 **Interfaces:**
 - Consumes: `ProjectError` (Task 2).
 - Produces:
   - `ProjectLayout(root: Path)` with properties `meta_dir`, `state_db`, `lock_file`, `config_snapshot`, `superseded_dir`, `logs_dir`, and methods `stage_dir(index: int, name: str) -> Path`, `task_dir(stage_dir: Path, task_id: str) -> Path`, `ensure() -> None`, `supersede(stage_dir: Path) -> Path | None`.
-  - `ProjectLock(path: Path)`, a context manager that raises `ProjectError("Another shmd controller ...")` if the lock is held.
+  - `ProjectLock(path: Path)`, a context manager that raises `ProjectError("Another gqteashmd controller ...")` if the lock is held.
   - `locked_by(path: Path) -> int | None`.
 
 - [ ] **Step 1: Write the failing tests** `tests/project/test_layout_lock.py`
@@ -778,9 +792,9 @@ import os
 
 import pytest
 
-from shmd.errors import ProjectError
-from shmd.project.layout import ProjectLayout
-from shmd.project.lock import ProjectLock, locked_by
+from gqteashmd.errors import ProjectError
+from gqteashmd.project.layout import ProjectLayout
+from gqteashmd.project.lock import ProjectLock, locked_by
 
 
 def test_stage_and_task_directories(tmp_path):
@@ -788,9 +802,9 @@ def test_stage_and_task_directories(tmp_path):
     stage_dir = layout.stage_dir(3, "sampling")
     assert stage_dir == tmp_path / "03_sampling"
     assert layout.task_dir(stage_dir, "t001") == tmp_path / "03_sampling" / "tasks" / "t001"
-    assert layout.state_db == tmp_path / ".shmd" / "state.db"
-    assert layout.config_snapshot == tmp_path / ".shmd" / "config.json"
-    assert layout.lock_file == tmp_path / ".shmd" / "controller.lock"
+    assert layout.state_db == tmp_path / ".gqteashmd" / "state.db"
+    assert layout.config_snapshot == tmp_path / ".gqteashmd" / "config.json"
+    assert layout.lock_file == tmp_path / ".gqteashmd" / "controller.lock"
 
 
 def test_ensure_creates_meta_and_logs(tmp_path):
@@ -824,7 +838,7 @@ def test_lock_is_exclusive_and_released(tmp_path):
     assert locked_by(lock_path) is None
     with ProjectLock(lock_path):
         assert locked_by(lock_path) == os.getpid()
-        with pytest.raises(ProjectError, match="Another shmd controller"), ProjectLock(lock_path):
+        with pytest.raises(ProjectError, match="Another gqteashmd controller"), ProjectLock(lock_path):
             pass
     assert locked_by(lock_path) is None
     with ProjectLock(lock_path):
@@ -834,12 +848,12 @@ def test_lock_is_exclusive_and_released(tmp_path):
 - [ ] **Step 2: Run tests to verify they fail**
 
 Run: `pytest tests/project/test_layout_lock.py -v`
-Expected: FAIL with `ModuleNotFoundError: No module named 'shmd.project'`
+Expected: FAIL with `ModuleNotFoundError: No module named 'gqteashmd.project'`
 
-- [ ] **Step 3: Implement `src/shmd/project/layout.py`** (and an empty `src/shmd/project/__init__.py`)
+- [ ] **Step 3: Implement `src/gqteashmd/project/layout.py`** (and an empty `src/gqteashmd/project/__init__.py`)
 
 ```python
-"""Directory layout of a shmd project."""
+"""Directory layout of a gqteashmd project."""
 
 from __future__ import annotations
 
@@ -855,7 +869,7 @@ class ProjectLayout:
 
     @property
     def meta_dir(self) -> Path:
-        return self.root / ".shmd"
+        return self.root / ".gqteashmd"
 
     @property
     def state_db(self) -> Path:
@@ -888,7 +902,7 @@ class ProjectLayout:
             directory.mkdir(parents=True, exist_ok=True)
 
     def supersede(self, stage_dir: Path) -> Path | None:
-        """Move an old stage directory into .shmd/superseded/ (never delete results)."""
+        """Move an old stage directory into .gqteashmd/superseded/ (never delete results)."""
         if not stage_dir.exists():
             return None
         stamp = datetime.now().strftime("%Y%m%dT%H%M%S%f")
@@ -898,7 +912,7 @@ class ProjectLayout:
         return target
 ```
 
-- [ ] **Step 4: Implement `src/shmd/project/lock.py`**
+- [ ] **Step 4: Implement `src/gqteashmd/project/lock.py`**
 
 ```python
 """Ensure only one controller runs per project (Linux flock)."""
@@ -910,7 +924,7 @@ import os
 from pathlib import Path
 from typing import IO
 
-from shmd.errors import ProjectError
+from gqteashmd.errors import ProjectError
 
 
 class ProjectLock:
@@ -927,8 +941,9 @@ class ProjectLock:
             fh.close()
             holder = locked_by(self.path)
             raise ProjectError(
-                f"Another shmd controller is running for this project "
-                f"(pid {holder}, lock file {self.path}). Use `shmd status` or `shmd stop`."
+                f"Another gqteashmd controller is running for this project "
+                f"(pid {holder}, lock file {self.path}). "
+                "Use `gqteashmd status` or `gqteashmd stop`."
             ) from exc
         fh.seek(0)
         fh.truncate()
@@ -968,7 +983,7 @@ Expected: 5 passed
 - [ ] **Step 6: Commit**
 
 ```bash
-git add src/shmd/project tests/project/test_layout_lock.py
+git add src/gqteashmd/project tests/project/test_layout_lock.py
 git commit -m "feat: add project layout and single-controller lock"
 ```
 
@@ -977,7 +992,7 @@ git commit -m "feat: add project layout and single-controller lock"
 ### Task 5: Persistent state store (SQLite)
 
 **Files:**
-- Create: `src/shmd/project/state.py`
+- Create: `src/gqteashmd/project/state.py`
 - Test: `tests/project/test_state.py`
 
 **Interfaces:**
@@ -1002,8 +1017,8 @@ git commit -m "feat: add project layout and single-controller lock"
 ```python
 import pytest
 
-from shmd.errors import ProjectError
-from shmd.project.state import StageRecord, StageStatus, StateStore, TaskStatus
+from gqteashmd.errors import ProjectError
+from gqteashmd.project.state import StageRecord, StageStatus, StateStore, TaskStatus
 
 
 @pytest.fixture
@@ -1089,9 +1104,9 @@ def test_state_persists_across_connections(tmp_path):
 - [ ] **Step 2: Run tests to verify they fail**
 
 Run: `pytest tests/project/test_state.py -v`
-Expected: FAIL with `ModuleNotFoundError: No module named 'shmd.project.state'`
+Expected: FAIL with `ModuleNotFoundError: No module named 'gqteashmd.project.state'`
 
-- [ ] **Step 3: Implement `src/shmd/project/state.py`**
+- [ ] **Step 3: Implement `src/gqteashmd/project/state.py`**
 
 ```python
 """Persistent stage/task state. The controller is the only writer."""
@@ -1106,7 +1121,7 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
 
-from shmd.errors import ProjectError
+from gqteashmd.errors import ProjectError
 
 SCHEMA_VERSION = "1"
 
@@ -1185,7 +1200,7 @@ class StateStore:
             self._conn.close()
             raise ProjectError(
                 f"State database {db_path} has schema version {version}; "
-                f"this shmd version expects {SCHEMA_VERSION}."
+                f"this gqteashmd version expects {SCHEMA_VERSION}."
             )
 
     def __enter__(self) -> StateStore:
@@ -1314,7 +1329,7 @@ Expected: 9 passed
 - [ ] **Step 5: Commit**
 
 ```bash
-git add src/shmd/project/state.py tests/project/test_state.py
+git add src/gqteashmd/project/state.py tests/project/test_state.py
 git commit -m "feat: add SQLite stage/task state store"
 ```
 
@@ -1323,7 +1338,7 @@ git commit -m "feat: add SQLite stage/task state store"
 ### Task 6: Stage contract and pipeline loading
 
 **Files:**
-- Create: `src/shmd/stages/__init__.py` (empty), `src/shmd/stages/base.py`, `src/shmd/stages/pipeline.py`
+- Create: `src/gqteashmd/stages/__init__.py` (empty), `src/gqteashmd/stages/base.py`, `src/gqteashmd/stages/pipeline.py`
 - Test: `tests/stages/test_base_pipeline.py`
 
 **Interfaces:**
@@ -1337,18 +1352,18 @@ git commit -m "feat: add SQLite stage/task state store"
     - abstract `plan(ctx) -> list[TaskSpec]`
     - abstract `run_task(ctx, task, task_dir) -> dict`
     - abstract `finalize(ctx, results: Mapping[str, Mapping[str, Any]]) -> None`
-  - `PipelineFactory = Callable[[ShmdConfig], list[Stage]]`, `DEFAULT_PIPELINE = "shmd.stages.registry:default_pipeline"`, `import_pipeline(ref: str) -> PipelineFactory`, `validate_pipeline(stages: Sequence[Stage]) -> None`.
+  - `PipelineFactory = Callable[[ShmdConfig], list[Stage]]`, `DEFAULT_PIPELINE = "gqteashmd.stages.registry:default_pipeline"`, `import_pipeline(ref: str) -> PipelineFactory`, `validate_pipeline(stages: Sequence[Stage]) -> None`.
 
 - [ ] **Step 1: Write the failing tests** `tests/stages/test_base_pipeline.py`
 
 ```python
 import pytest
 
-from shmd.config.loader import load_config
-from shmd.errors import ProjectError
-from shmd.project.layout import ProjectLayout
-from shmd.stages.base import Stage, StageContext, TaskSpec
-from shmd.stages.pipeline import import_pipeline, validate_pipeline
+from gqteashmd.config.loader import load_config
+from gqteashmd.errors import ProjectError
+from gqteashmd.project.layout import ProjectLayout
+from gqteashmd.stages.base import Stage, StageContext, TaskSpec
+from gqteashmd.stages.pipeline import import_pipeline, validate_pipeline
 
 
 class _Dummy(Stage):
@@ -1440,9 +1455,9 @@ def test_validate_pipeline_rejects_unsafe_names():
 - [ ] **Step 2: Run tests to verify they fail**
 
 Run: `pytest tests/stages/test_base_pipeline.py -v`
-Expected: FAIL with `ModuleNotFoundError: No module named 'shmd.stages'`
+Expected: FAIL with `ModuleNotFoundError: No module named 'gqteashmd.stages'`
 
-- [ ] **Step 3: Implement `src/shmd/stages/base.py`** (and an empty `src/shmd/stages/__init__.py`)
+- [ ] **Step 3: Implement `src/gqteashmd/stages/base.py`** (and an empty `src/gqteashmd/stages/__init__.py`)
 
 ```python
 """The stage contract: plan (controller) → run_task (worker) → finalize (controller).
@@ -1465,10 +1480,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from shmd.config.loader import section_fingerprint
-from shmd.config.schema import ShmdConfig
-from shmd.errors import ProjectError
-from shmd.project.layout import ProjectLayout
+from gqteashmd.config.loader import section_fingerprint
+from gqteashmd.config.schema import ShmdConfig
+from gqteashmd.errors import ProjectError
+from gqteashmd.project.layout import ProjectLayout
 
 SAFE_NAME = re.compile(r"[A-Za-z0-9_.-]+")
 
@@ -1522,7 +1537,7 @@ class Stage(ABC):
     def finalize(self, ctx: StageContext, results: Mapping[str, Mapping[str, Any]]) -> None: ...
 ```
 
-- [ ] **Step 4: Implement `src/shmd/stages/pipeline.py`**
+- [ ] **Step 4: Implement `src/gqteashmd/stages/pipeline.py`**
 
 ```python
 """Locate and validate the ordered list of stages."""
@@ -1532,12 +1547,12 @@ from __future__ import annotations
 import importlib
 from collections.abc import Callable, Sequence
 
-from shmd.config.schema import ShmdConfig
-from shmd.errors import ProjectError
-from shmd.stages.base import SAFE_NAME, Stage
+from gqteashmd.config.schema import ShmdConfig
+from gqteashmd.errors import ProjectError
+from gqteashmd.stages.base import SAFE_NAME, Stage
 
 PipelineFactory = Callable[[ShmdConfig], list[Stage]]
-DEFAULT_PIPELINE = "shmd.stages.registry:default_pipeline"
+DEFAULT_PIPELINE = "gqteashmd.stages.registry:default_pipeline"
 
 
 def import_pipeline(ref: str) -> PipelineFactory:
@@ -1578,7 +1593,7 @@ Expected: 11 passed
 - [ ] **Step 6: Commit**
 
 ```bash
-git add src/shmd/stages tests/stages/test_base_pipeline.py
+git add src/gqteashmd/stages tests/stages/test_base_pipeline.py
 git commit -m "feat: add stage contract and pipeline validation"
 ```
 
@@ -1587,7 +1602,7 @@ git commit -m "feat: add stage contract and pipeline validation"
 ### Task 7: Geometry parsing and the `prepare` stage
 
 **Files:**
-- Create: `src/shmd/chem/__init__.py` (empty), `src/shmd/chem/elements.py`, `src/shmd/chem/xyz.py`, `src/shmd/stages/prepare.py`, `src/shmd/stages/registry.py`
+- Create: `src/gqteashmd/chem/__init__.py` (empty), `src/gqteashmd/chem/elements.py`, `src/gqteashmd/chem/xyz.py`, `src/gqteashmd/stages/prepare.py`, `src/gqteashmd/stages/registry.py`
 - Test: `tests/chem/test_xyz.py`, `tests/stages/test_prepare.py`
 
 **Interfaces:**
@@ -1603,8 +1618,8 @@ git commit -m "feat: add stage contract and pipeline validation"
 ```python
 import pytest
 
-from shmd.chem.elements import atomic_number, normalize_symbol
-from shmd.chem.xyz import Geometry, format_xyz, parse_xyz
+from gqteashmd.chem.elements import atomic_number, normalize_symbol
+from gqteashmd.chem.xyz import Geometry, format_xyz, parse_xyz
 
 
 def test_atomic_numbers_and_normalization():
@@ -1661,12 +1676,12 @@ import json
 
 import pytest
 
-from shmd.config.loader import load_config
-from shmd.errors import ConfigError, TaskError
-from shmd.project.layout import ProjectLayout
-from shmd.stages.base import StageContext, TaskSpec
-from shmd.stages.prepare import PrepareStage
-from shmd.stages.registry import default_pipeline
+from gqteashmd.config.loader import load_config
+from gqteashmd.errors import ConfigError, TaskError
+from gqteashmd.project.layout import ProjectLayout
+from gqteashmd.stages.base import StageContext, TaskSpec
+from gqteashmd.stages.prepare import PrepareStage
+from gqteashmd.stages.registry import default_pipeline
 
 
 def _ctx(path) -> StageContext:
@@ -1738,9 +1753,9 @@ def test_default_pipeline_contains_prepare(tmp_path, write_input):
 - [ ] **Step 3: Run tests to verify they fail**
 
 Run: `pytest tests/chem/test_xyz.py tests/stages/test_prepare.py -v`
-Expected: FAIL with `ModuleNotFoundError: No module named 'shmd.chem'`
+Expected: FAIL with `ModuleNotFoundError: No module named 'gqteashmd.chem'`
 
-- [ ] **Step 4: Implement `src/shmd/chem/elements.py`** (and an empty `src/shmd/chem/__init__.py`)
+- [ ] **Step 4: Implement `src/gqteashmd/chem/elements.py`** (and an empty `src/gqteashmd/chem/__init__.py`)
 
 ```python
 """Element symbols H..Rn and atomic numbers."""
@@ -1767,7 +1782,7 @@ def atomic_number(symbol: str) -> int:
     return _Z_BY_SYMBOL[normalize_symbol(symbol)]
 ```
 
-- [ ] **Step 5: Implement `src/shmd/chem/xyz.py`**
+- [ ] **Step 5: Implement `src/gqteashmd/chem/xyz.py`**
 
 ```python
 """XYZ geometry files (coordinates in Angstrom)."""
@@ -1776,7 +1791,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from shmd.chem.elements import normalize_symbol
+from gqteashmd.chem.elements import normalize_symbol
 
 Coord = tuple[float, float, float]
 
@@ -1827,7 +1842,7 @@ def format_xyz(geometry: Geometry) -> str:
     return "\n".join(rows) + "\n"
 ```
 
-- [ ] **Step 6: Implement `src/shmd/stages/prepare.py`**
+- [ ] **Step 6: Implement `src/gqteashmd/stages/prepare.py`**
 
 ```python
 """Stage 0: validate the molecule and store a normalized copy in the project."""
@@ -1839,11 +1854,11 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from shmd.chem.elements import atomic_number
-from shmd.chem.xyz import Geometry, format_xyz, parse_xyz
-from shmd.errors import ConfigError, TaskError
-from shmd.stages.base import Stage, StageContext, TaskSpec
-from shmd.util.fileio import write_json_atomic, write_text_atomic
+from gqteashmd.chem.elements import atomic_number
+from gqteashmd.chem.xyz import Geometry, format_xyz, parse_xyz
+from gqteashmd.errors import ConfigError, TaskError
+from gqteashmd.stages.base import Stage, StageContext, TaskSpec
+from gqteashmd.util.fileio import write_json_atomic, write_text_atomic
 
 
 class PrepareStage(Stage):
@@ -1905,16 +1920,16 @@ class PrepareStage(Stage):
         write_json_atomic(ctx.stage_dir / "molecule.json", {"schema_version": 1, **data})
 ```
 
-- [ ] **Step 7: Implement `src/shmd/stages/registry.py`**
+- [ ] **Step 7: Implement `src/gqteashmd/stages/registry.py`**
 
 ```python
 """The production pipeline. Later sub-plans append optimize, frequencies, sampling, ..."""
 
 from __future__ import annotations
 
-from shmd.config.schema import ShmdConfig
-from shmd.stages.base import Stage
-from shmd.stages.prepare import PrepareStage
+from gqteashmd.config.schema import ShmdConfig
+from gqteashmd.stages.base import Stage
+from gqteashmd.stages.prepare import PrepareStage
 
 
 def default_pipeline(config: ShmdConfig) -> list[Stage]:
@@ -1929,7 +1944,7 @@ Expected: 20 passed (12 + 8)
 - [ ] **Step 9: Commit**
 
 ```bash
-git add src/shmd/chem src/shmd/stages/prepare.py src/shmd/stages/registry.py tests/chem tests/stages/test_prepare.py
+git add src/gqteashmd/chem src/gqteashmd/stages/prepare.py src/gqteashmd/stages/registry.py tests/chem tests/stages/test_prepare.py
 git commit -m "feat: add xyz parsing and the prepare stage"
 ```
 
@@ -1938,7 +1953,7 @@ git commit -m "feat: add xyz parsing and the prepare stage"
 ### Task 8: Fake stages and the task worker
 
 **Files:**
-- Create: `src/shmd/testing/__init__.py` (empty), `src/shmd/testing/fake_stages.py`, `src/shmd/worker.py`
+- Create: `src/gqteashmd/testing/__init__.py` (empty), `src/gqteashmd/testing/fake_stages.py`, `src/gqteashmd/worker.py`
 - Test: `tests/test_worker.py`
 
 **Interfaces:**
@@ -1950,7 +1965,7 @@ git commit -m "feat: add xyz parsing and the prepare stage"
   - `run_task_file(task_file: Path) -> int`: 0 on success, 1 on a handled error.
   - `main(argv: list[str] | None = None) -> int`.
   - Result file format: `{"status": "ok", "result": {...}}` or `{"status": "error", "error_type": str, "message": str, "retryable": bool, "traceback"?: str}`.
-  - `shmd.testing.fake_stages`: `BEHAVIOUR_ENV = "SHMD_FAKE_BEHAVIOUR"`, `FakeStage`, and `make_pipeline(config)`, which returns stages `prepare, optimize, frequencies, sampling(3 tasks), dynamics(4 tasks, max_failed_fraction 0.25)`. The `SHMD_FAKE_BEHAVIOUR` environment variable takes JSON with these keys:
+  - `gqteashmd.testing.fake_stages`: `BEHAVIOUR_ENV = "GQTEASHMD_FAKE_BEHAVIOUR"`, `FakeStage`, and `make_pipeline(config)`, which returns stages `prepare, optimize, frequencies, sampling(3 tasks), dynamics(4 tasks, max_failed_fraction 0.25)`. The `GQTEASHMD_FAKE_BEHAVIOUR` environment variable takes JSON with these keys:
     - `sleep` (seconds);
     - `fail`, `unexpected`, `crash_once`, `retryable_once` (lists of `"stage:task_id"`);
     - `skip_optimize` (bool).
@@ -1962,13 +1977,13 @@ import json
 
 import pytest
 
-from shmd.config.loader import load_config, write_snapshot
-from shmd.project.layout import ProjectLayout
-from shmd.stages.base import StageContext, TaskSpec
-from shmd.testing.fake_stages import BEHAVIOUR_ENV
-from shmd.worker import TASK_FILE, read_result, run_task_file, write_task_file
+from gqteashmd.config.loader import load_config, write_snapshot
+from gqteashmd.project.layout import ProjectLayout
+from gqteashmd.stages.base import StageContext, TaskSpec
+from gqteashmd.testing.fake_stages import BEHAVIOUR_ENV
+from gqteashmd.worker import TASK_FILE, read_result, run_task_file, write_task_file
 
-FAKE = "shmd.testing.fake_stages:make_pipeline"
+FAKE = "gqteashmd.testing.fake_stages:make_pipeline"
 
 
 @pytest.fixture
@@ -2040,14 +2055,14 @@ def test_read_result_missing_or_corrupt_returns_none(tmp_path):
 - [ ] **Step 2: Run tests to verify they fail**
 
 Run: `pytest tests/test_worker.py -v`
-Expected: FAIL with `ModuleNotFoundError: No module named 'shmd.testing'`
+Expected: FAIL with `ModuleNotFoundError: No module named 'gqteashmd.testing'`
 
-- [ ] **Step 3: Implement `src/shmd/testing/fake_stages.py`** (and an empty `src/shmd/testing/__init__.py`)
+- [ ] **Step 3: Implement `src/gqteashmd/testing/fake_stages.py`** (and an empty `src/gqteashmd/testing/__init__.py`)
 
 ```python
 """Deterministic fake stages for orchestrator tests. Not used by production pipelines.
 
-Behaviour is controlled by the JSON environment variable SHMD_FAKE_BEHAVIOUR, which
+Behaviour is controlled by the JSON environment variable GQTEASHMD_FAKE_BEHAVIOUR, which
 worker subprocesses inherit from the controller:
   sleep: float seconds per task
   fail / unexpected / crash_once / retryable_once: lists of "stage:task_id"
@@ -2063,13 +2078,13 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
-from shmd.config.schema import ShmdConfig
-from shmd.errors import TaskError
-from shmd.stages.base import Stage, StageContext, TaskSpec
-from shmd.stages.prepare import PrepareStage
-from shmd.util.fileio import read_json, write_json_atomic
+from gqteashmd.config.schema import ShmdConfig
+from gqteashmd.errors import TaskError
+from gqteashmd.stages.base import Stage, StageContext, TaskSpec
+from gqteashmd.stages.prepare import PrepareStage
+from gqteashmd.util.fileio import read_json, write_json_atomic
 
-BEHAVIOUR_ENV = "SHMD_FAKE_BEHAVIOUR"
+BEHAVIOUR_ENV = "GQTEASHMD_FAKE_BEHAVIOUR"
 
 
 def _behaviour() -> dict[str, Any]:
@@ -2143,10 +2158,10 @@ def read_summary(stage_dir: Path) -> dict[str, Any]:
     return read_json(stage_dir / "summary.json")
 ```
 
-- [ ] **Step 4: Implement `src/shmd/worker.py`**
+- [ ] **Step 4: Implement `src/gqteashmd/worker.py`**
 
 ```python
-"""Task worker: `python -m shmd.worker <task.json>`. Runs exactly one task of one stage."""
+"""Task worker: `python -m gqteashmd.worker <task.json>`. Runs exactly one task of one stage."""
 
 from __future__ import annotations
 
@@ -2156,12 +2171,12 @@ import traceback
 from pathlib import Path
 from typing import Any
 
-from shmd.config.loader import load_snapshot
-from shmd.errors import ProjectError, ShmdError, TaskError
-from shmd.project.layout import ProjectLayout
-from shmd.stages.base import StageContext, TaskSpec
-from shmd.stages.pipeline import import_pipeline
-from shmd.util.fileio import read_json, write_json_atomic
+from gqteashmd.config.loader import load_snapshot
+from gqteashmd.errors import ProjectError, ShmdError, TaskError
+from gqteashmd.project.layout import ProjectLayout
+from gqteashmd.stages.base import StageContext, TaskSpec
+from gqteashmd.stages.pipeline import import_pipeline
+from gqteashmd.util.fileio import read_json, write_json_atomic
 
 TASK_FILE = "task.json"
 RESULT_FILE = "result.json"
@@ -2253,7 +2268,7 @@ def run_task_file(task_file: Path) -> int:
 def main(argv: list[str] | None = None) -> int:
     args = sys.argv[1:] if argv is None else argv
     if len(args) != 1:
-        print("usage: python -m shmd.worker TASK_FILE", file=sys.stderr)
+        print("usage: python -m gqteashmd.worker TASK_FILE", file=sys.stderr)
         return 2
     return run_task_file(Path(args[0]))
 
@@ -2275,7 +2290,7 @@ Expected: the formatter reflows a few long lines (e.g. in `worker.py`), then `Al
 - [ ] **Step 7: Commit**
 
 ```bash
-git add src/shmd/testing src/shmd/worker.py tests/test_worker.py
+git add src/gqteashmd/testing src/gqteashmd/worker.py tests/test_worker.py
 git commit -m "feat: add task worker and deterministic fake stages"
 ```
 
@@ -2284,7 +2299,7 @@ git commit -m "feat: add task worker and deterministic fake stages"
 ### Task 9: Local executor and process utilities
 
 **Files:**
-- Create: `src/shmd/execution/__init__.py` (empty), `src/shmd/execution/local.py`, `src/shmd/execution/processes.py`
+- Create: `src/gqteashmd/execution/__init__.py` (empty), `src/gqteashmd/execution/local.py`, `src/gqteashmd/execution/processes.py`
 - Test: `tests/execution/test_local.py`, `tests/execution/test_processes.py`
 
 **Interfaces:**
@@ -2304,7 +2319,7 @@ import json
 import sys
 import time
 
-from shmd.execution.local import Job, LocalExecutor
+from gqteashmd.execution.local import Job, LocalExecutor
 
 SCRIPT = """
 import json, os, pathlib, sys, time
@@ -2393,7 +2408,7 @@ def test_stop_terminates_running_jobs(tmp_path):
 import subprocess
 import sys
 
-from shmd.execution.processes import is_worker_process, terminate_process_group
+from gqteashmd.execution.processes import is_worker_process, terminate_process_group
 
 
 def test_detects_and_terminates_worker_process(tmp_path):
@@ -2421,9 +2436,9 @@ def test_unknown_pid_is_not_a_worker(tmp_path):
 - [ ] **Step 3: Run tests to verify they fail**
 
 Run: `pytest tests/execution -v`
-Expected: FAIL with `ModuleNotFoundError: No module named 'shmd.execution'`
+Expected: FAIL with `ModuleNotFoundError: No module named 'gqteashmd.execution'`
 
-- [ ] **Step 4: Implement `src/shmd/execution/processes.py`** (and an empty `src/shmd/execution/__init__.py`)
+- [ ] **Step 4: Implement `src/gqteashmd/execution/processes.py`** (and an empty `src/gqteashmd/execution/__init__.py`)
 
 ```python
 """Linux process helpers used to clean up orphaned workers after a controller crash."""
@@ -2470,7 +2485,7 @@ def terminate_process_group(pid: int, grace: float) -> None:
         os.killpg(pid, signal.SIGKILL)
 ```
 
-- [ ] **Step 5: Implement `src/shmd/execution/local.py`**
+- [ ] **Step 5: Implement `src/gqteashmd/execution/local.py`**
 
 ```python
 """Run task subprocesses on the local machine with a concurrency limit."""
@@ -2535,7 +2550,7 @@ class LocalExecutor:
         self.memory_mb_per_task = memory_mb_per_task
         self.poll_interval = poll_interval
         self.stop_grace_period = stop_grace_period
-        self.command = list(command) if command is not None else [sys.executable, "-m", "shmd.worker"]
+        self.command = list(command) if command is not None else [sys.executable, "-m", "gqteashmd.worker"]
 
     def environment(self) -> dict[str, str]:
         env = dict(os.environ)
@@ -2619,7 +2634,7 @@ Expected: 6 passed
 - [ ] **Step 7: Commit**
 
 ```bash
-git add src/shmd/execution tests/execution
+git add src/gqteashmd/execution tests/execution
 git commit -m "feat: add local subprocess executor with graceful stop"
 ```
 
@@ -2628,7 +2643,7 @@ git commit -m "feat: add local subprocess executor with graceful stop"
 ### Task 10: The orchestrator
 
 **Files:**
-- Create: `src/shmd/orchestrator.py`
+- Create: `src/gqteashmd/orchestrator.py`
 - Test: `tests/test_orchestrator.py`
 
 **Interfaces:**
@@ -2653,16 +2668,16 @@ import json
 
 import pytest
 
-from shmd.config.loader import load_config
-from shmd.errors import ConfigError, ProjectError, StageFailedError, StaleStageError
-from shmd.orchestrator import Orchestrator
-from shmd.project.layout import ProjectLayout
-from shmd.project.lock import ProjectLock
-from shmd.project.state import StageStatus, StateStore, TaskStatus
-from shmd.testing.fake_stages import BEHAVIOUR_ENV
-from shmd.util.fileio import read_json
+from gqteashmd.config.loader import load_config
+from gqteashmd.errors import ConfigError, ProjectError, StageFailedError, StaleStageError
+from gqteashmd.orchestrator import Orchestrator
+from gqteashmd.project.layout import ProjectLayout
+from gqteashmd.project.lock import ProjectLock
+from gqteashmd.project.state import StageStatus, StateStore, TaskStatus
+from gqteashmd.testing.fake_stages import BEHAVIOUR_ENV
+from gqteashmd.util.fileio import read_json
 
-FAKE = "shmd.testing.fake_stages:make_pipeline"
+FAKE = "gqteashmd.testing.fake_stages:make_pipeline"
 FAST = "poll_interval_s = 0.05\nstop_grace_period_s = 2.0"
 ALL = ["prepare", "optimize", "frequencies", "sampling", "dynamics"]
 
@@ -2686,7 +2701,7 @@ def _run(path, **kwargs):
 
 
 def _state(path):
-    return StateStore(path.parent / "run" / ".shmd" / "state.db")
+    return StateStore(path.parent / "run" / ".gqteashmd" / "state.db")
 
 
 def _run_dir(path):
@@ -2753,7 +2768,7 @@ def test_changed_input_is_detected_and_rerun_from_recomputes(tmp_path, write_inp
         _run(path)
     summary = _run(path, rerun_from="prepare")
     assert summary.completed == ALL
-    assert any((tmp_path / "run" / ".shmd" / "superseded").iterdir())
+    assert any((tmp_path / "run" / ".gqteashmd" / "superseded").iterdir())
     assert read_json(tmp_path / "run" / "00_prepare" / "molecule.json")["charge"] == 2
 
 
@@ -2783,7 +2798,7 @@ def test_stop_request_pauses_and_resume_completes(project, behaviour):
 def test_second_controller_is_refused(project, behaviour):
     layout = ProjectLayout(load_config(project).config.project.directory)
     layout.ensure()
-    with ProjectLock(layout.lock_file), pytest.raises(ProjectError, match="Another shmd controller"):
+    with ProjectLock(layout.lock_file), pytest.raises(ProjectError, match="Another gqteashmd controller"):
         _run(project)
 
 
@@ -2795,9 +2810,9 @@ def test_unknown_rerun_stage_is_config_error(project, behaviour):
 - [ ] **Step 2: Run tests to verify they fail**
 
 Run: `pytest tests/test_orchestrator.py -v`
-Expected: FAIL with `ModuleNotFoundError: No module named 'shmd.orchestrator'`
+Expected: FAIL with `ModuleNotFoundError: No module named 'gqteashmd.orchestrator'`
 
-- [ ] **Step 3: Implement `src/shmd/orchestrator.py`**
+- [ ] **Step 3: Implement `src/gqteashmd/orchestrator.py`**
 
 ```python
 """The workflow controller: runs stages in order, tasks in parallel, and survives restarts."""
@@ -2812,18 +2827,18 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from shmd.config.loader import LoadedConfig, write_snapshot
-from shmd.errors import ConfigError, ProjectError, ShmdError, StageFailedError, StaleStageError
-from shmd.execution.local import Job, JobOutcome, LocalExecutor
-from shmd.execution.processes import is_worker_process, terminate_process_group
-from shmd.project.layout import ProjectLayout
-from shmd.project.lock import ProjectLock
-from shmd.project.state import StageStatus, StateStore, TaskRecord, TaskStatus
-from shmd.stages.base import Stage, StageContext, TaskSpec
-from shmd.stages.pipeline import DEFAULT_PIPELINE, import_pipeline, validate_pipeline
-from shmd.worker import RESULT_FILE, TASK_FILE, read_result, write_task_file
+from gqteashmd.config.loader import LoadedConfig, write_snapshot
+from gqteashmd.errors import ConfigError, ProjectError, ShmdError, StageFailedError, StaleStageError
+from gqteashmd.execution.local import Job, JobOutcome, LocalExecutor
+from gqteashmd.execution.processes import is_worker_process, terminate_process_group
+from gqteashmd.project.layout import ProjectLayout
+from gqteashmd.project.lock import ProjectLock
+from gqteashmd.project.state import StageStatus, StateStore, TaskRecord, TaskStatus
+from gqteashmd.stages.base import Stage, StageContext, TaskSpec
+from gqteashmd.stages.pipeline import DEFAULT_PIPELINE, import_pipeline, validate_pipeline
+from gqteashmd.worker import RESULT_FILE, TASK_FILE, read_result, write_task_file
 
-log = logging.getLogger("shmd.orchestrator")
+log = logging.getLogger("gqteashmd.orchestrator")
 
 SKIPPED_FINGERPRINT = "skipped"
 
@@ -2916,8 +2931,8 @@ class Orchestrator:
                     raise StaleStageError(
                         f"Stage '{stage.name}' has results produced from different inputs "
                         "(the input file or an earlier stage changed). Run "
-                        f"`shmd run {self.loaded.source} --rerun-from {stage.name}` to move the old "
-                        "results aside and recompute from this stage onward."
+                        f"`gqteashmd run {self.loaded.source} --rerun-from {stage.name}` "
+                        "to move the old results aside and recompute from this stage onward."
                     )
                 log.info("Stage %s: inputs changed since last attempt; starting over", stage.name)
                 self._reset_stage(state, index, stage)
@@ -3122,7 +3137,7 @@ class Orchestrator:
             log_path = self.layout.task_dir(ctx.stage_dir, record.task_id) / "worker.log"
             lines.append(f"  - {record.task_id}: {record.message} (log: {log_path})")
         if len(failed) > 5:
-            lines.append(f"  ... and {len(failed) - 5} more; see `shmd status`.")
+            lines.append(f"  ... and {len(failed) - 5} more; see `gqteashmd status`.")
         lines.append("Fix the cause and run the same command again; failed tasks will be retried.")
         return "\n".join(lines)
 ```
@@ -3140,7 +3155,7 @@ Expected: all tests pass; `All checks passed!`
 - [ ] **Step 6: Commit**
 
 ```bash
-git add src/shmd/orchestrator.py tests/test_orchestrator.py
+git add src/gqteashmd/orchestrator.py tests/test_orchestrator.py
 git commit -m "feat: add resumable workflow orchestrator"
 ```
 
@@ -3149,7 +3164,7 @@ git commit -m "feat: add resumable workflow orchestrator"
 ### Task 11: Command-line interface and logging
 
 **Files:**
-- Create: `src/shmd/cli.py`, `src/shmd/__main__.py`, `src/shmd/logging_setup.py`
+- Create: `src/gqteashmd/cli.py`, `src/gqteashmd/__main__.py`, `src/gqteashmd/logging_setup.py`
 - Test: `tests/test_cli.py`
 
 **Interfaces:**
@@ -3159,7 +3174,7 @@ git commit -m "feat: add resumable workflow orchestrator"
   - `EXIT_STOPPED = 5`.
   - `TEMPLATE` (the commented input file).
   - `configure_logging(log_file: Path | None, *, verbose: bool = False) -> None`.
-  - Commands: `shmd init PATH [--force]`, `shmd validate INPUT`, `shmd run INPUT [--rerun-from STAGE]`, `shmd status INPUT`, `shmd stop INPUT`. `run` and `status` also take a hidden `--pipeline REF` used in tests.
+  - Commands: `gqteashmd init PATH [--force]`, `gqteashmd validate INPUT`, `gqteashmd run INPUT [--rerun-from STAGE]`, `gqteashmd status INPUT`, `gqteashmd stop INPUT`. `run` and `status` also take a hidden `--pipeline REF` used in tests.
 
 - [ ] **Step 1: Write the failing tests** `tests/test_cli.py`
 
@@ -3173,13 +3188,13 @@ import time
 
 import pytest
 
-from shmd.cli import EXIT_STOPPED, main
-from shmd.config.loader import load_config
-from shmd.logging_setup import configure_logging
-from shmd.project.state import StageStatus, StateStore, TaskStatus
-from shmd.testing.fake_stages import BEHAVIOUR_ENV
+from gqteashmd.cli import EXIT_STOPPED, main
+from gqteashmd.config.loader import load_config
+from gqteashmd.logging_setup import configure_logging
+from gqteashmd.project.state import StageStatus, StateStore, TaskStatus
+from gqteashmd.testing.fake_stages import BEHAVIOUR_ENV
 
-FAKE = "shmd.testing.fake_stages:make_pipeline"
+FAKE = "gqteashmd.testing.fake_stages:make_pipeline"
 FAST = "poll_interval_s = 0.05\nstop_grace_period_s = 2.0"
 
 
@@ -3239,10 +3254,10 @@ def test_run_failure_returns_stage_failed_code(project, monkeypatch, capsys):
 
 
 def test_configure_logging_writes_file(tmp_path):
-    log_file = tmp_path / "logs" / "shmd.log"
+    log_file = tmp_path / "logs" / "gqteashmd.log"
     configure_logging(log_file)
-    logging.getLogger("shmd.test").debug("hello file")
-    for handler in logging.getLogger("shmd").handlers:
+    logging.getLogger("gqteashmd.test").debug("hello file")
+    for handler in logging.getLogger("gqteashmd").handlers:
         handler.flush()
     assert "hello file" in log_file.read_text()
 
@@ -3255,12 +3270,12 @@ def test_exit_stopped_constant():
 def test_killed_controller_resumes(project, monkeypatch):
     monkeypatch.setenv(BEHAVIOUR_ENV, json.dumps({"sleep": 1.0}))
     proc = subprocess.Popen(
-        [sys.executable, "-m", "shmd", "run", str(project), "--pipeline", FAKE],
+        [sys.executable, "-m", "gqteashmd", "run", str(project), "--pipeline", FAKE],
         env=dict(os.environ),
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
-    db = project.parent / "run" / ".shmd" / "state.db"
+    db = project.parent / "run" / ".gqteashmd" / "state.db"
     deadline = time.monotonic() + 60
     try:
         while time.monotonic() < deadline:
@@ -3282,9 +3297,9 @@ def test_killed_controller_resumes(project, monkeypatch):
 - [ ] **Step 2: Run tests to verify they fail**
 
 Run: `pytest tests/test_cli.py -v`
-Expected: FAIL with `ModuleNotFoundError: No module named 'shmd.cli'`
+Expected: FAIL with `ModuleNotFoundError: No module named 'gqteashmd.cli'`
 
-- [ ] **Step 3: Implement `src/shmd/logging_setup.py`**
+- [ ] **Step 3: Implement `src/gqteashmd/logging_setup.py`**
 
 ```python
 """Logging: INFO to the console, DEBUG to the project log file."""
@@ -3298,7 +3313,7 @@ _FORMAT = "%(asctime)s %(levelname)-7s %(name)s: %(message)s"
 
 
 def configure_logging(log_file: Path | None, *, verbose: bool = False) -> None:
-    logger = logging.getLogger("shmd")
+    logger = logging.getLogger("gqteashmd")
     logger.setLevel(logging.DEBUG)
     logger.propagate = False
     for handler in list(logger.handlers):
@@ -3317,10 +3332,10 @@ def configure_logging(log_file: Path | None, *, verbose: bool = False) -> None:
         logger.addHandler(file_handler)
 ```
 
-- [ ] **Step 4: Implement `src/shmd/cli.py`**
+- [ ] **Step 4: Implement `src/gqteashmd/cli.py`**
 
 ```python
-"""Command-line interface: shmd init | validate | run | status | stop."""
+"""Command-line interface: gqteashmd init | validate | run | status | stop."""
 
 from __future__ import annotations
 
@@ -3332,20 +3347,20 @@ import sys
 import threading
 from pathlib import Path
 
-from shmd import __version__
-from shmd.config.loader import load_config
-from shmd.errors import ConfigError, ShmdError
-from shmd.logging_setup import configure_logging
-from shmd.orchestrator import Orchestrator
-from shmd.project.layout import ProjectLayout
-from shmd.project.lock import locked_by
-from shmd.project.state import StateStore, TaskStatus
-from shmd.stages.pipeline import DEFAULT_PIPELINE, import_pipeline
+from gqteashmd import __version__
+from gqteashmd.config.loader import load_config
+from gqteashmd.errors import ConfigError, ShmdError
+from gqteashmd.logging_setup import configure_logging
+from gqteashmd.orchestrator import Orchestrator
+from gqteashmd.project.layout import ProjectLayout
+from gqteashmd.project.lock import locked_by
+from gqteashmd.project.state import StateStore, TaskStatus
+from gqteashmd.stages.pipeline import DEFAULT_PIPELINE, import_pipeline
 
 EXIT_STOPPED = 5
 
 TEMPLATE = """\
-# shmd input file. Paths are relative to this file.
+# gqteashmd input file. Paths are relative to this file.
 schema_version = 1
 
 [project]
@@ -3365,7 +3380,7 @@ memory_mb_per_task = 2000     # passed to PySCF as max_memory (MB)
 
 [execution]
 max_attempts = 2              # attempts per task for retryable failures
-stop_grace_period_s = 30.0    # time running tasks get to stop after `shmd stop`
+stop_grace_period_s = 30.0    # time running tasks get to stop after `gqteashmd stop`
 """
 
 
@@ -3393,8 +3408,8 @@ def _cmd_run(args: argparse.Namespace) -> int:
     loaded = load_config(args.input)
     orchestrator = Orchestrator(loaded, pipeline_ref=args.pipeline, rerun_from=args.rerun_from)
     orchestrator.layout.ensure()
-    configure_logging(orchestrator.layout.logs_dir / "shmd.log")
-    logger = logging.getLogger("shmd.cli")
+    configure_logging(orchestrator.layout.logs_dir / "gqteashmd.log")
+    logger = logging.getLogger("gqteashmd.cli")
     stop_requested = threading.Event()
 
     def _on_signal(signum: int, _frame: object) -> None:
@@ -3457,8 +3472,8 @@ def _cmd_stop(args: argparse.Namespace) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="shmd", description="Surface-hopping MD workflow")
-    parser.add_argument("--version", action="version", version=f"shmd {__version__}")
+    parser = argparse.ArgumentParser(prog="gqteashmd", description="Surface-hopping MD workflow")
+    parser.add_argument("--version", action="version", version=f"gqteashmd {__version__}")
     sub = parser.add_subparsers(dest="command", required=True)
 
     p_init = sub.add_parser("init", help="write a commented template input file")
@@ -3492,14 +3507,14 @@ def main(argv: list[str] | None = None) -> int:
     try:
         return args.func(args)
     except ShmdError as exc:
-        print(f"shmd: error: {exc}", file=sys.stderr)
+        print(f"gqteashmd: error: {exc}", file=sys.stderr)
         return exc.exit_code
 ```
 
-- [ ] **Step 5: Implement `src/shmd/__main__.py`**
+- [ ] **Step 5: Implement `src/gqteashmd/__main__.py`**
 
 ```python
-from shmd.cli import main
+from gqteashmd.cli import main
 
 raise SystemExit(main())
 ```
@@ -3512,10 +3527,10 @@ Expected: 10 passed (including the `slow` kill-and-resume test)
 - [ ] **Step 7: Try the real pipeline by hand**
 
 ```bash
-mkdir -p ~/shmd-try && cd ~/shmd-try
-shmd init input.toml
+mkdir -p ~/gqteashmd-try && cd ~/gqteashmd-try
+gqteashmd init input.toml
 printf '3\nwater\nO 0 0 0.1173\nH 0 0.7572 -0.4692\nH 0 -0.7572 -0.4692\n' > molecule.xyz
-shmd validate input.toml && shmd run input.toml && shmd status input.toml
+gqteashmd validate input.toml && gqteashmd run input.toml && gqteashmd status input.toml
 ```
 
 Expected: `Workflow complete: 1 stage(s) run, ...`, and `status` shows `prepare  done`.
@@ -3524,8 +3539,8 @@ Expected: `Workflow complete: 1 stage(s) run, ...`, and `status` shows `prepare 
 
 ```bash
 cd /mnt/c/Users/ajc/OneDrive/gqteaSHMD
-git add src/shmd/cli.py src/shmd/__main__.py src/shmd/logging_setup.py tests/test_cli.py
-git commit -m "feat: add shmd command-line interface"
+git add src/gqteashmd/cli.py src/gqteashmd/__main__.py src/gqteashmd/logging_setup.py tests/test_cli.py
+git commit -m "feat: add gqteashmd command-line interface"
 ```
 
 ---
@@ -3580,7 +3595,7 @@ jobs:
         with:
           environment-file: environment.yml
           cache-environment: true
-      - name: Install shmd
+      - name: Install gqteashmd
         run: pip install -e . --no-deps
       - name: Lint
         run: ruff check . && ruff format --check .
@@ -3599,17 +3614,17 @@ jobs:
 
 ## Where things live
 - Source: `C:\Users\ajc\OneDrive\gqteaSHMD` = `/mnt/c/Users/ajc/OneDrive/gqteaSHMD` in WSL.
-- Run everything (tests, shmd) **inside WSL (Oracle Linux 9.5)** or on the Oracle Linux workstation.
-  shmd is Linux-only (PySCF, fcntl, /proc).
-- Never put conda environments, shmd project runs or large outputs in the OneDrive folder.
-  Use `~/shmd-runs/` (WSL) or a local data disk on the workstation.
+- Run everything (tests, gqteashmd) **inside WSL (Oracle Linux 9.5)** or on the Oracle Linux workstation.
+  gqteashmd is Linux-only (PySCF, fcntl, /proc).
+- Never put conda environments, gqteashmd project runs or large outputs in the OneDrive folder.
+  Use `~/gqteashmd-runs/` (WSL) or a local data disk on the workstation.
 
 ## One-time setup (WSL)
 ```bash
 # micromamba: https://mamba.readthedocs.io/en/latest/installation/micromamba-installation.html
 cd /mnt/c/Users/ajc/OneDrive/gqteaSHMD
 micromamba create -y -f environment.yml
-micromamba activate shmd-dev
+micromamba activate gqteashmd-dev
 pip install -e . --no-deps
 pre-commit install
 git config core.autocrlf false
@@ -3634,18 +3649,18 @@ Commit messages: conventional commits (`feat:`, `fix:`, `test:`, `docs:`, `chore
 - Set the folder to "Always keep on this device".
 - If OneDrive reports a sync conflict inside `.git/`, do not merge the copies. Re-clone from GitHub.
 
-## Running shmd unattended (workstation)
+## Running gqteashmd unattended (workstation)
 ```bash
-cd ~/shmd-runs/my_molecule
-nohup shmd run input.toml > shmd.out 2>&1 &     # or inside tmux
-shmd status input.toml
-shmd stop input.toml                              # graceful; `shmd run` resumes
+cd ~/gqteashmd-runs/my_molecule
+nohup gqteashmd run input.toml > gqteashmd.out 2>&1 &     # or inside tmux
+gqteashmd status input.toml
+gqteashmd stop input.toml                              # graceful; `gqteashmd run` resumes
 ```
 
 ## Clean-room rule
 Do not copy, translate or adapt code from SHARC 4.1. Implement from the literature.
 SHARC may only be executed as a black box by scripts in `tools/sharc_compare/` (comparison
-tests, marker `sharc`), never imported by `shmd`.
+tests, marker `sharc`), never imported by `gqteashmd`.
 ````
 
 - [ ] **Step 4: Run the full suite one last time**
@@ -3660,15 +3675,21 @@ git add .github/workflows/ci.yml .pre-commit-config.yaml docs/development.md
 git commit -m "ci: add Oracle Linux 9 CI, pre-commit hooks and developer guide"
 ```
 
-- [ ] **Step 6: Create the GitHub repository and push (developer action; needs `gh auth login` and the owner name from open item O13)**
+- [ ] **Step 6: Push the feature branch (the repository `AdemirCamargo57/gqteaSHMD` already exists)**
 
 ```bash
-gh repo create <owner>/shmd --private --source . --remote origin --push
+git push -u origin feat/p1-foundation
 ```
 
-Then, in GitHub → Settings → Branches, protect `main`: require a PR, require the `tests (Oracle Linux 9)` check, and require one approval.
+If WSL Git has no GitHub credentials, push from Windows instead (Git Credential Manager): `git -C C:\Users\ajc\OneDrive\gqteaSHMD push -u origin feat/p1-foundation`. Pushing runs no hooks, so using Windows Git for this one command is safe.
 
-Expected: the first CI run on GitHub is green.
+Expected: the branch appears on GitHub, and the CI workflow runs on the push and is green.
+
+- [ ] **Step 7: Owner actions on github.com (not done by the agent)**
+
+  1. Open a PR from `feat/p1-foundation` to `main`, review it and merge it.
+  2. Settings → Branches → protect `main`: require a PR, require the `tests (Oracle Linux 9)` check, and require one approval.
+  3. Decide whether the repository stays public (open item O13).
 
 ---
 
@@ -3690,5 +3711,5 @@ Expected: the first CI run on GitHub is green.
 - **Type consistency:**
   - `StateStore.set_task(..., attempts_delta=...)` is used identically in Tasks 5 and 10.
   - `Job.key` is the task ID throughout.
-  - `read_result` / `RESULT_FILE` / `TASK_FILE` come from `shmd.worker` in Tasks 8 and 10.
+  - `read_result` / `RESULT_FILE` / `TASK_FILE` come from `gqteashmd.worker` in Tasks 8 and 10.
   - `StageContext(config, layout, stage_dir, upstream)` is constructed in the same field order in Tasks 6, 7, 8 and 10.
