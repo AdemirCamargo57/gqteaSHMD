@@ -30,12 +30,15 @@ def write_input():
         resources: str = "",
         execution: str = "",
         extra: str = "",
+        total_cores: int = 4,
+        total_memory_mb: int = 4000,
     ) -> Path:
         (directory / "water.xyz").write_text(WATER_XYZ)
         text = (
             '[project]\nname = "test"\ndirectory = "run"\n\n'
             f'[molecule]\ngeometry = "water.xyz"\n{molecule}\n\n'
-            f"[resources]\n{resources}\n\n"
+            f"[resources]\ntotal_cores = {total_cores}\ntotal_memory_mb = {total_memory_mb}\n"
+            f"{resources}\n\n"
             f"[execution]\n{execution}\n\n"
             f"{extra}\n"
         )

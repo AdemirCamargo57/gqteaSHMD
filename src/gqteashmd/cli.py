@@ -38,9 +38,14 @@ charge = 0
 multiplicity = 1
 
 [resources]
+total_cores = 8               # REQUIRED: cores of this workstation you allow gqteashmd to use
+total_memory_mb = 16000       # REQUIRED: RAM (MB) you allow gqteashmd to use
 max_parallel_tasks = 1        # tasks running at the same time
 threads_per_task = 1          # OpenMP/BLAS threads per task
 memory_mb_per_task = 2000     # passed to PySCF as max_memory (MB)
+# Per-stage overrides (unset keys use the values above), e.g.:
+# [resources.stages.prepare]
+# threads_per_task = 2
 
 [execution]
 max_attempts = 2              # attempts per task for retryable failures
