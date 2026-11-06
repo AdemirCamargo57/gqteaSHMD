@@ -63,8 +63,8 @@ def _cmd_init(args: argparse.Namespace) -> int:
 def _cmd_validate(args: argparse.Namespace) -> int:
     loaded = load_config(args.input)
     cfg = loaded.config
-    if not cfg.molecule.geometry.exists():
-        raise ConfigError(f"Geometry file not found: {cfg.molecule.geometry}")
+    if not cfg.molecule.geometry.is_file():
+        raise ConfigError(f"Geometry file not found or not a regular file: {cfg.molecule.geometry}")
     print(f"Input file {loaded.source} is valid.")
     print(f"  project directory: {cfg.project.directory}")
     print(f"  geometry:          {cfg.molecule.geometry}")

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
 from gqteashmd.chem.elements import normalize_symbol
@@ -45,6 +46,8 @@ def parse_xyz(text: str) -> Geometry:
             coords.append((float(fields[1]), float(fields[2]), float(fields[3])))
         except ValueError as exc:
             raise ValueError(f"line {offset}: {exc}") from exc
+        if not all(math.isfinite(v) for v in coords[-1]):
+            raise ValueError(f"line {offset}: coordinates must be finite numbers, got {line!r}")
     return Geometry(tuple(symbols), tuple(coords), comment)
 
 

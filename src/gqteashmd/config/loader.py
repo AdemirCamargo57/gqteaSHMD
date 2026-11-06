@@ -31,6 +31,7 @@ def _format_validation_error(path: Path, exc: ValidationError) -> str:
 
 def _resolve_paths(cfg: ShmdConfig, base: Path) -> ShmdConfig:
     def absolute(p: Path) -> Path:
+        p = p.expanduser()
         return p if p.is_absolute() else (base / p).resolve()
 
     return cfg.model_copy(

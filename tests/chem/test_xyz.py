@@ -49,3 +49,9 @@ def test_format_roundtrip(water_xyz):
     again = parse_xyz(format_xyz(geom))
     assert again == geom
     assert format_xyz(Geometry(("H",), ((0.0, 0.0, 0.0),))).splitlines()[0] == "1"
+
+
+@pytest.mark.parametrize("value", ["nan", "inf", "-inf", "1e999"])
+def test_non_finite_coordinates_are_rejected(value):
+    with pytest.raises(ValueError, match="line 3: coordinates must be finite"):
+        parse_xyz(f"1\n\nH 0.0 {value} 0.0\n")

@@ -48,6 +48,14 @@ def test_validate_reports_success_and_errors(tmp_path, write_input, capsys):
     assert "Geometry file not found" in capsys.readouterr().err
 
 
+def test_validate_rejects_a_directory_as_geometry(tmp_path, write_input, capsys):
+    path = write_input(tmp_path)
+    (tmp_path / "water.xyz").unlink()
+    (tmp_path / "water.xyz").mkdir()
+    assert main(["validate", str(path)]) == 2
+    assert "not a regular file" in capsys.readouterr().err
+
+
 def test_run_then_status(project, capsys):
     assert main(["run", str(project), "--pipeline", FAKE]) == 0
     assert "Workflow complete" in capsys.readouterr().out

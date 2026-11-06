@@ -86,3 +86,41 @@ def test_geometry_that_is_a_directory_is_a_config_error(tmp_path, write_input):
     with pytest.raises(TaskError, match="Cannot read geometry file") as info:
         PrepareStage().run_task(ctx, TaskSpec("molecule"), tmp_path / "task")
     assert info.value.retryable is False
+
+
+O2_XYZ = "2\noxygen\nO 0.0 0.0 0.0\nO 0.0 0.0 1.21\n"
+
+
+@pytest.mark.parametrize(
+    "molecule, ok",
+    [
+        ("charge = 1\nmultiplicity = 2", True),  # H2O+ : 9 electrons, doublet
+        ("charge = 1\nmultiplicity = 1", False),  # 9 electrons cannot be a singlet
+        ("multiplicity = 12", False),  # 11 unpaired > 10 electrons
+        ("charge = 10", False),  # 0 electrons
+    ],
+)
+def test_electron_count_rules(tmp_path, write_input, molecule, ok):
+    ctx = _ctx(write_input(tmp_path, molecule=molecule))
+    if ok:
+        assert (
+            PrepareStage().run_task(ctx, TaskSpec("molecule"), tmp_path / "t")["n_electrons"] == 9
+        )
+    else:
+        with pytest.raises(TaskError, match="inconsistent"):
+            PrepareStage().run_task(ctx, TaskSpec("molecule"), tmp_path / "t")
+
+
+def test_triplet_oxygen_is_accepted(tmp_path, write_input):
+    path = write_input(tmp_path, molecule="multiplicity = 3")
+    (tmp_path / "water.xyz").write_text(O2_XYZ)
+    result = PrepareStage().run_task(_ctx(path), TaskSpec("molecule"), tmp_path / "t")
+    assert (result["n_electrons"], result["multiplicity"]) == (16, 3)
+
+
+def test_fingerprint_does_not_depend_on_location(tmp_path, write_input):
+    first = PrepareStage().fingerprint_inputs(_ctx(write_input(tmp_path)))
+    other = tmp_path / "elsewhere"
+    other.mkdir()
+    second = PrepareStage().fingerprint_inputs(_ctx(write_input(other)))
+    assert first == second

@@ -3,7 +3,7 @@ import pytest
 from gqteashmd.config.loader import load_config
 from gqteashmd.errors import ProjectError
 from gqteashmd.project.layout import ProjectLayout
-from gqteashmd.stages.base import Stage, StageContext, TaskSpec
+from gqteashmd.stages.base import Stage, StageContext, TaskSpec, is_safe_name
 from gqteashmd.stages.pipeline import import_pipeline, validate_pipeline
 
 
@@ -91,3 +91,16 @@ def test_validate_pipeline_rejects_forward_dependencies():
 def test_validate_pipeline_rejects_unsafe_names():
     with pytest.raises(ProjectError, match="Invalid stage name"):
         validate_pipeline([_stage("bad name")])
+
+
+@pytest.mark.parametrize("name", [".", ".."])
+def test_dot_names_are_not_safe(name):
+    assert is_safe_name(name) is False
+    with pytest.raises(ValueError):
+        TaskSpec(name)
+    with pytest.raises(ProjectError, match="Invalid stage name"):
+        validate_pipeline([_stage(name)])
+
+
+def test_ordinary_names_are_safe():
+    assert is_safe_name("t001") and is_safe_name("03_sampling.v2")

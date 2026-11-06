@@ -26,13 +26,18 @@ from gqteashmd.project.layout import ProjectLayout
 SAFE_NAME = re.compile(r"[A-Za-z0-9_.-]+")
 
 
+def is_safe_name(name: str) -> bool:
+    """True for filesystem-safe task ids and stage names ('.' and '..' are not)."""
+    return bool(SAFE_NAME.fullmatch(name)) and name not in {".", ".."}
+
+
 @dataclass(frozen=True)
 class TaskSpec:
     task_id: str
     payload: Mapping[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        if not SAFE_NAME.fullmatch(self.task_id):
+        if not is_safe_name(self.task_id):
             raise ValueError(f"Invalid task id {self.task_id!r}: use letters, digits, _ . -")
 
 

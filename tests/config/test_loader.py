@@ -85,3 +85,12 @@ def test_input_with_bom_loads(tmp_path, write_input):
 def test_input_path_that_is_a_directory_is_a_config_error(tmp_path):
     with pytest.raises(ConfigError, match="Cannot read input file"):
         load_config(tmp_path)
+
+
+def test_home_directory_is_expanded(tmp_path, write_input, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    path = write_input(tmp_path, extra="")
+    text = path.read_text().replace('directory = "run"', 'directory = "~/runs/test"')
+    path.write_text(text)
+    cfg = load_config(path).config
+    assert cfg.project.directory == (tmp_path / "home" / "runs" / "test").resolve()
