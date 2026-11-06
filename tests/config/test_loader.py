@@ -94,3 +94,11 @@ def test_home_directory_is_expanded(tmp_path, write_input, monkeypatch):
     path.write_text(text)
     cfg = load_config(path).config
     assert cfg.project.directory == (tmp_path / "home" / "runs" / "test").resolve()
+
+
+def test_unknown_user_in_home_path_is_a_config_error(tmp_path, write_input):
+    path = write_input(tmp_path, extra="")
+    text = path.read_text().replace('directory = "run"', 'directory = "~nosuchuser_xyz/run"')
+    path.write_text(text)
+    with pytest.raises(ConfigError, match="Cannot expand '~'"):
+        load_config(path)
