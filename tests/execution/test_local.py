@@ -1,6 +1,9 @@
 import json
+import os
 import sys
 import time
+
+import pytest
 
 from gqteashmd.execution.local import Job, LocalExecutor
 
@@ -93,4 +96,24 @@ def test_stop_terminates_running_jobs(tmp_path):
     assert finished is False
     assert sorted(o.job.key for o in outcomes) == ["job0", "job1"]
     assert all(o.returncode is None for o in outcomes)
+    assert time.monotonic() - t0 < 20
+
+
+def test_exception_in_callback_cleans_up_running_workers(tmp_path):
+    script, jobs = _jobs(tmp_path, [{"sleep": 60}] * 2)
+    pids = []
+
+    def start(job, pid):
+        pids.append(pid)
+        if len(pids) == 2:
+            raise RuntimeError("db full")
+
+    t0 = time.monotonic()
+    with pytest.raises(RuntimeError, match="db full"):
+        _executor(script).run(
+            jobs, on_start=start, on_finish=lambda o: None, should_stop=lambda: False
+        )
+    assert len(pids) == 2
+    for pid in pids:
+        assert not os.path.exists(f"/proc/{pid}")
     assert time.monotonic() - t0 < 20

@@ -83,24 +83,31 @@ class LocalExecutor:
         queue = deque(jobs)
         running: dict[str, _Running] = {}
         env = self.environment()
-        while queue or running:
-            if should_stop():
-                self._terminate_all(running, on_finish)
-                return False
-            while queue and len(running) < self.max_parallel:
-                job = queue.popleft()
-                item = self._launch(job, env)
-                running[job.key] = item
-                on_start(job, item.process.pid)
-            for key in list(running):
-                item = running[key]
-                code = item.process.poll()
-                if code is not None:
-                    item.log.close()
-                    del running[key]
-                    on_finish(JobOutcome(item.job, code))
-            if queue or running:
-                time.sleep(self.poll_interval)
+        try:
+            while queue or running:
+                if should_stop():
+                    items = list(running.values())
+                    self._reap_all(running)
+                    for item in items:
+                        on_finish(JobOutcome(item.job, None))
+                    return False
+                while queue and len(running) < self.max_parallel:
+                    job = queue.popleft()
+                    item = self._launch(job, env)
+                    running[job.key] = item
+                    on_start(job, item.process.pid)
+                for key in list(running):
+                    item = running[key]
+                    code = item.process.poll()
+                    if code is not None:
+                        item.log.close()
+                        del running[key]
+                        on_finish(JobOutcome(item.job, code))
+                if queue or running:
+                    time.sleep(self.poll_interval)
+        except BaseException:
+            self._reap_all(running)  # no on_finish: the caller is already failing
+            raise
         return True
 
     def _launch(self, job: Job, env: dict[str, str]) -> _Running:
@@ -121,9 +128,8 @@ class LocalExecutor:
             raise
         return _Running(job, process, log)
 
-    def _terminate_all(
-        self, running: dict[str, _Running], on_finish: Callable[[JobOutcome], None]
-    ) -> None:
+    def _reap_all(self, running: dict[str, _Running]) -> None:
+        """SIGTERM every running group, wait out the grace period, SIGKILL, reap, close logs."""
         for item in running.values():
             _signal_group(item.process.pid, signal.SIGTERM)
         deadline = time.monotonic() + self.stop_grace_period
@@ -134,5 +140,4 @@ class LocalExecutor:
                 _signal_group(item.process.pid, signal.SIGKILL)
                 item.process.wait()
             item.log.close()
-            on_finish(JobOutcome(item.job, None))
         running.clear()
