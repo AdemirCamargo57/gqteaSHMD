@@ -14,6 +14,7 @@ from gqteashmd.config.loader import LoadedConfig, write_snapshot
 from gqteashmd.errors import ConfigError, ProjectError, ShmdError, StageFailedError, StaleStageError
 from gqteashmd.execution.local import Job, JobOutcome, LocalExecutor
 from gqteashmd.execution.processes import is_worker_process, terminate_process_group
+from gqteashmd.preflight import run_preflight
 from gqteashmd.project.layout import ProjectLayout
 from gqteashmd.project.lock import ProjectLock
 from gqteashmd.project.state import StageStatus, StateStore, TaskRecord, TaskStatus
@@ -65,6 +66,7 @@ class Orchestrator:
                 f"stages are: {', '.join(names)}"
             )
         self.layout = ProjectLayout(self.config.project.directory)
+        self._preflight_warnings: list[str] | None = None
 
     def _executor_for(self, stage: Stage) -> LocalExecutor:
         res = self.config.resources.for_stage(stage.name)
@@ -78,7 +80,18 @@ class Orchestrator:
         )
 
     # ------------------------------------------------------------------ public API
+    def preflight(self) -> list[str]:
+        """Run the preflight checks once; raises ConfigError, returns warnings."""
+        if self._preflight_warnings is None:
+            self._preflight_warnings = run_preflight(self.config, self.stages)
+        return self._preflight_warnings
+
     def run(self, should_stop: Callable[[], bool] = lambda: False) -> RunSummary:
+        already_checked = self._preflight_warnings is not None
+        warnings = self.preflight()
+        if not already_checked:
+            for message in warnings:
+                log.warning("Preflight: %s", message)
         self.layout.ensure()
         with ProjectLock(self.layout.lock_file), StateStore(self.layout.state_db) as state:
             write_snapshot(self.loaded, self.layout.config_snapshot)

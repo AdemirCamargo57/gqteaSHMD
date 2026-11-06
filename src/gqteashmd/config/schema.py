@@ -90,6 +90,7 @@ class ExecutionSection(_Section):
     max_attempts: int = Field(default=2, ge=1)
     poll_interval_s: float = Field(default=0.5, gt=0)
     stop_grace_period_s: float = Field(default=30.0, ge=0)
+    min_free_disk_mb: int = Field(default=1000, ge=0)
 
 
 class ShmdConfig(_Section):

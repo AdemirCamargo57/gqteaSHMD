@@ -7,6 +7,7 @@ Rules for implementers:
   dict; large outputs go to files in `task_dir`.
 - finalize() combines task results into the stage's artifacts inside `ctx.stage_dir`
   and raises StageFailedError if physical/sanity checks fail.
+- required_modules lists the Python modules the stage's tasks import; checked by preflight.
 """
 
 from __future__ import annotations
@@ -63,6 +64,7 @@ class Stage(ABC):
     depends_on: tuple[str, ...] = ()
     config_sections: tuple[str, ...] = ()
     max_failed_fraction: float = 0.0
+    required_modules: tuple[str, ...] = ()
 
     def enabled(self, config: ShmdConfig) -> bool:
         return True

@@ -50,6 +50,7 @@ memory_mb_per_task = 2000     # passed to PySCF as max_memory (MB)
 [execution]
 max_attempts = 2              # attempts per task for retryable failures
 stop_grace_period_s = 30.0    # time running tasks get to stop after `gqteashmd stop`
+min_free_disk_mb = 1000      # refuse to start with less free disk space (MB)
 """
 
 
@@ -79,9 +80,12 @@ def _cmd_validate(args: argparse.Namespace) -> int:
 def _cmd_run(args: argparse.Namespace) -> int:
     loaded = load_config(args.input)
     orchestrator = Orchestrator(loaded, pipeline_ref=args.pipeline, rerun_from=args.rerun_from)
+    warnings = orchestrator.preflight()
     orchestrator.layout.ensure()
     configure_logging(orchestrator.layout.logs_dir / "gqteashmd.log")
     logger = logging.getLogger("gqteashmd.cli")
+    for message in warnings:
+        logger.warning("Preflight: %s", message)
     stop_requested = threading.Event()
 
     def _on_signal(signum: int, _frame: object) -> None:

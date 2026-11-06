@@ -6,6 +6,7 @@ worker subprocesses inherit from the controller:
   fail / unexpected / crash_once / retryable_once: lists of "stage:task_id"
   skip_optimize: bool
   plan_raises: list of stage names whose plan() raises RuntimeError
+  requires: {"stage": ["module", ...]} required_modules per stage (checked by preflight)
 """
 
 from __future__ import annotations
@@ -39,8 +40,10 @@ class FakeStage(Stage):
         *,
         max_failed_fraction: float = 0.0,
         enabled: bool = True,
+        required_modules: Sequence[str] = (),
     ) -> None:
         self.name = name
+        self.required_modules = tuple(required_modules)
         self.n_tasks = n_tasks
         self.depends_on = tuple(depends_on)
         self.max_failed_fraction = max_failed_fraction
@@ -90,12 +93,25 @@ class FakeStage(Stage):
 
 def make_pipeline(config: ShmdConfig) -> list[Stage]:
     behaviour = _behaviour()
+    requires = behaviour.get("requires", {})
     return [
         PrepareStage(),
-        FakeStage("optimize", 1, ("prepare",), enabled=not behaviour.get("skip_optimize", False)),
-        FakeStage("frequencies", 1, ("prepare",)),
-        FakeStage("sampling", 3, ("frequencies",)),
-        FakeStage("dynamics", 4, ("sampling",), max_failed_fraction=0.25),
+        FakeStage(
+            "optimize",
+            1,
+            ("prepare",),
+            enabled=not behaviour.get("skip_optimize", False),
+            required_modules=requires.get("optimize", ()),
+        ),
+        FakeStage("frequencies", 1, ("prepare",), required_modules=requires.get("frequencies", ())),
+        FakeStage("sampling", 3, ("frequencies",), required_modules=requires.get("sampling", ())),
+        FakeStage(
+            "dynamics",
+            4,
+            ("sampling",),
+            max_failed_fraction=0.25,
+            required_modules=requires.get("dynamics", ()),
+        ),
     ]
 
 
