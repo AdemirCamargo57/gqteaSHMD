@@ -40,11 +40,23 @@ def test_warns_when_user_hardware_exceeds_machine(tmp_path, write_input):
     assert "total_memory_mb = 4000 exceeds the 1000 MB" in warnings[1]
 
 
-@pytest.mark.parametrize("directory", ["/mnt/c/Users/x/run", "/home/x/OneDrive/run"])
+@pytest.mark.parametrize(
+    "directory",
+    ["/mnt/c/Users/x/run", "/mnt/D/run", "/home/x/OneDrive/run", "/home/x/OneDrive - UEG/run"],
+)
 def test_windows_or_onedrive_project_directory_is_refused(tmp_path, write_input, directory):
     cfg = _with_directory(load_config(write_input(tmp_path)).config, Path(directory))
     with pytest.raises(ConfigError, match="local Linux disk"):
         run_preflight(cfg, [PrepareStage()], machine=MachineInfo(None, None))
+
+
+@pytest.mark.parametrize(
+    "directory",
+    ["/mnt/data/run", "/mnt/nvme0/run", "/home/x/onedrive-backup/run", "/home/x/run"],
+)
+def test_ordinary_linux_project_directory_is_accepted(tmp_path, write_input, directory):
+    cfg = _with_directory(load_config(write_input(tmp_path)).config, Path(directory))
+    assert run_preflight(cfg, [PrepareStage()], machine=MachineInfo(None, None)) == []
 
 
 def test_too_little_free_disk_is_refused(tmp_path, write_input):

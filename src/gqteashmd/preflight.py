@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import os
+import re
 import shutil
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -46,8 +47,22 @@ def _nearest_existing(path: Path) -> Path:
 def _module_available(name: str) -> bool:
     try:
         return importlib.util.find_spec(name) is not None
-    except (ModuleNotFoundError, ValueError):
+    except (ImportError, ValueError):
         return False
+
+
+_WSL_DRIVE = re.compile(r"^/mnt/[A-Za-z](/|$)")
+
+
+def _unsafe_location(path: Path) -> str | None:
+    """Reason the path is unsuitable for a project directory, or None."""
+    if _WSL_DRIVE.match(path.as_posix()):
+        return "a Windows drive mounted in WSL"
+    for part in path.parts:
+        lowered = part.lower()
+        if lowered == "onedrive" or lowered.startswith("onedrive - "):
+            return "a OneDrive folder"
+    return None
 
 
 def run_preflight(
@@ -58,15 +73,20 @@ def run_preflight(
     warnings: list[str] = []
     project_dir = config.project.directory
 
-    text = str(project_dir)
-    if text.startswith("/mnt/") or "onedrive" in text.lower():
+    reason = _unsafe_location(project_dir)
+    if reason is not None:
         raise ConfigError(
-            f"Project directory {project_dir} is on a Windows or OneDrive folder, where file "
+            f"Project directory {project_dir} is on {reason}, where file "
             "locks and many small files are unreliable. Set project.directory to a local Linux "
             f"disk, e.g. ~/gqteashmd-runs/{config.project.name}."
         )
 
-    free_mb = shutil.disk_usage(_nearest_existing(project_dir)).free // (1024 * 1024)
+    try:
+        free_mb = shutil.disk_usage(_nearest_existing(project_dir)).free // (1024 * 1024)
+    except OSError as exc:
+        raise ConfigError(
+            f"Cannot determine free disk space for {project_dir}: {exc.strerror or exc}"
+        ) from exc
     minimum = config.execution.min_free_disk_mb
     if free_mb < minimum:
         raise ConfigError(
