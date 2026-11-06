@@ -167,3 +167,69 @@ def test_rerun_from_terminates_orphaned_workers(project, behaviour):
         if proc.poll() is None:
             proc.kill()
             proc.wait()
+
+
+def test_plan_error_marks_stage_failed_and_rerun_is_not_stale(project, behaviour):
+    behaviour(plan_raises=["sampling"])
+    with pytest.raises(RuntimeError, match="plan exploded"):
+        _run(project)
+    with _state(project) as state:
+        assert state.get_stage("sampling").status == StageStatus.FAILED
+        assert "RuntimeError" in state.get_stage("sampling").message
+    behaviour()
+    summary = _run(project)
+    assert summary.completed == ["sampling", "dynamics"]
+
+
+def test_stopped_stage_with_finished_tasks_is_protected_from_changed_inputs(
+    tmp_path, write_input, behaviour
+):
+    path = write_input(tmp_path, execution=FAST)
+    behaviour(sleep=0.3)
+    marker = _run_dir(path) / "03_sampling" / "tasks" / "t000" / "result.json"
+    summary = Orchestrator(load_config(path), pipeline_ref=FAKE).run(should_stop=marker.exists)
+    assert summary.stopped is True
+    with _state(path) as state:
+        assert state.get_stage("sampling").status == StageStatus.PENDING
+        assert state.task_counts("sampling")[TaskStatus.DONE] >= 1
+    behaviour()
+    with _state(path) as state:  # simulate changed inputs that reach only this stage
+        state.set_stage("sampling", StageStatus.PENDING, fingerprint="from-older-inputs")
+    with pytest.raises(StaleStageError, match="--rerun-from sampling"):
+        _run(path)
+    assert _run(path, rerun_from="sampling").completed == ["sampling", "dynamics"]
+
+
+def test_orphaned_worker_is_reconciled_on_a_normal_run(project, behaviour):
+    _run(project)
+    task_file = _run_dir(project) / "03_sampling" / "tasks" / "t000" / "task.json"
+    proc = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(60)", str(task_file)],
+        start_new_session=True,
+    )
+    try:
+        with _state(project) as state:
+            before = state.get_task("sampling", "t000").attempts
+            state.set_stage("sampling", StageStatus.RUNNING)
+            state.set_task("sampling", "t000", TaskStatus.RUNNING, pid=proc.pid)
+        summary = _run(project)
+        assert proc.wait(timeout=10) is not None
+        assert "sampling" in summary.completed
+        with _state(project) as state:
+            task = state.get_task("sampling", "t000")
+        assert task.status == TaskStatus.DONE
+        assert task.attempts <= before + 1
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait()
+
+
+def test_attempts_exhaustion_fails_the_stage(tmp_path, write_input, behaviour):
+    path = write_input(tmp_path, execution=FAST + "\nmax_attempts = 1")
+    behaviour(crash_once=["sampling:t001"])
+    with pytest.raises(StageFailedError):
+        _run(path)
+    with _state(path) as state:
+        task = state.get_task("sampling", "t001")
+    assert (task.status, task.attempts) == (TaskStatus.FAILED, 1)

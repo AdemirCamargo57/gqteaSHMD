@@ -182,7 +182,7 @@ Task:   PENDING ─► RUNNING ─► DONE
   - stages that are DONE with a matching fingerprint are skipped ("up to date");
   - a RUNNING or PENDING stage continues where it stopped;
   - tasks that were RUNNING when the controller died are reconciled. A finished `result.json` makes the task DONE. Otherwise any orphaned worker is terminated and the task goes back to PENDING.
-- **Changed inputs are never silently mixed with old results.** If a DONE stage's fingerprint no longer matches, the run stops with `StaleStageError` and tells the user to run `gqteashmd run input.toml --rerun-from <stage>`. That command moves the old results of that stage and all later ones to `.gqteashmd/superseded/`; nothing is deleted. A FAILED stage whose inputs changed (the user fixed the problem) is reset automatically.
+- **Changed inputs are never silently mixed with old results.** If a DONE stage's fingerprint no longer matches, the run stops with `StaleStageError` and tells the user to run `gqteashmd run input.toml --rerun-from <stage>`. That command moves the old results of that stage and all later ones to `.gqteashmd/superseded/`; nothing is deleted. A stage with no finished tasks — FAILED, or stopped before any task finished — whose inputs changed is reset automatically; a stage with finished tasks is protected like a DONE stage.
 - **Retrying failed work.** Running `gqteashmd run` again after a FAILED stage gives its failed tasks a fresh set of attempts.
 
 ### 3.5 Execution on the workstation

@@ -110,7 +110,8 @@ class Orchestrator:
             fingerprints[stage.name] = fp
             record = state.get_stage(stage.name)
             if record is not None and record.fingerprint != fp:
-                if record.status in (StageStatus.DONE, StageStatus.RUNNING):
+                has_finished_tasks = state.task_counts(stage.name)[TaskStatus.DONE] > 0
+                if has_finished_tasks or record.status in (StageStatus.DONE, StageStatus.RUNNING):
                     raise StaleStageError(
                         f"Stage '{stage.name}' has results produced from different inputs "
                         "(the input file or an earlier stage changed). Run "
@@ -125,7 +126,16 @@ class Orchestrator:
                 upstream_dirs[stage.name] = stage_dir
                 log.info("Stage %s: up to date", stage.name)
                 continue
-            if not self._run_stage(state, stage, ctx, fp, should_stop):
+            try:
+                finished = self._run_stage(state, stage, ctx, fp, should_stop)
+            except Exception as exc:
+                current = state.get_stage(stage.name)
+                if current is None or current.status != StageStatus.FAILED:
+                    state.set_stage(
+                        stage.name, StageStatus.FAILED, message=f"{type(exc).__name__}: {exc}"
+                    )
+                raise
+            if not finished:
                 summary.stopped = True
                 break
             upstream_dirs[stage.name] = stage_dir

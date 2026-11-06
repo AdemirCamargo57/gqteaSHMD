@@ -5,6 +5,7 @@ worker subprocesses inherit from the controller:
   sleep: float seconds per task
   fail / unexpected / crash_once / retryable_once: lists of "stage:task_id"
   skip_optimize: bool
+  plan_raises: list of stage names whose plan() raises RuntimeError
 """
 
 from __future__ import annotations
@@ -49,6 +50,8 @@ class FakeStage(Stage):
         return self._enabled
 
     def plan(self, ctx: StageContext) -> list[TaskSpec]:
+        if self.name in _behaviour().get("plan_raises", []):
+            raise RuntimeError(f"plan exploded in {self.name}")
         return [TaskSpec(f"t{i:03d}", {"index": i}) for i in range(self.n_tasks)]
 
     def run_task(self, ctx: StageContext, task: TaskSpec, task_dir: Path) -> dict[str, Any]:
