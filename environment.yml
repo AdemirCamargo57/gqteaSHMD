@@ -6,7 +6,7 @@ dependencies:
   - pip
   - pydantic>=2.6
   - pytest>=8
-  - ruff>=0.6
+  - ruff=0.17.4  # same version as the pre-commit hook
   - pre-commit>=3
   # needed from P3 on; installed now so the environment does not change shape later
   - pyscf

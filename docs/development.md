@@ -9,10 +9,10 @@
 
 ## One-time setup (WSL)
 ```bash
-# micromamba: https://mamba.readthedocs.io/en/latest/installation/micromamba-installation.html
+# This WSL has Miniforge conda. (micromamba works the same way: replace `conda` by `micromamba`.)
 cd /mnt/c/Users/ajc/OneDrive/gqteaSHMD
-micromamba create -y -f environment.yml
-micromamba activate gqteashmd-dev
+conda env create -f environment.yml
+conda activate gqteashmd-dev
 pip install -e . --no-deps
 pre-commit install
 git config core.autocrlf false

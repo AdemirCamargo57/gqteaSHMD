@@ -3,7 +3,7 @@ on:
   push:
   pull_request:
   schedule:
-    - cron: "0 3 * * *"   # nightly: includes slow tests
+    - cron: "0 3 * * *"   # nightly; slow tests run here and on every push
 
 jobs:
   test:
