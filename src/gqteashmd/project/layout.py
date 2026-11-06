@@ -29,6 +29,10 @@ class ProjectLayout:
         return self.meta_dir / "config.json"
 
     @property
+    def provenance_file(self) -> Path:
+        return self.meta_dir / "provenance.json"
+
+    @property
     def superseded_dir(self) -> Path:
         return self.meta_dir / "superseded"
 

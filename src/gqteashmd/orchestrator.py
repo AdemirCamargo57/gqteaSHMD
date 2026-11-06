@@ -17,6 +17,7 @@ from gqteashmd.execution.processes import is_worker_process, terminate_process_g
 from gqteashmd.preflight import run_preflight
 from gqteashmd.project.layout import ProjectLayout
 from gqteashmd.project.lock import ProjectLock
+from gqteashmd.project.provenance import append_provenance, collect_provenance
 from gqteashmd.project.state import StageStatus, StateStore, TaskRecord, TaskStatus
 from gqteashmd.stages.base import Stage, StageContext, TaskSpec
 from gqteashmd.stages.pipeline import DEFAULT_PIPELINE, import_pipeline, validate_pipeline
@@ -95,6 +96,7 @@ class Orchestrator:
         self.layout.ensure()
         with ProjectLock(self.layout.lock_file), StateStore(self.layout.state_db) as state:
             write_snapshot(self.loaded, self.layout.config_snapshot)
+            append_provenance(self.layout.provenance_file, collect_provenance())
             if self.rerun_from is not None:
                 self._reset_from(state, self.rerun_from)
             return self._run_pipeline(state, should_stop)
