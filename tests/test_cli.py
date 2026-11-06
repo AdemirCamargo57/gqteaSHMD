@@ -182,3 +182,12 @@ def test_sigterm_stops_gracefully_and_resume_completes(project, monkeypatch):
     assert main(["run", str(project), "--pipeline", FAKE]) == 0
     with StateStore(db) as state:
         assert state.get_stage("dynamics").status == StageStatus.DONE
+
+
+def test_status_does_not_modify_the_state_database(project, capsys):
+    assert main(["run", str(project), "--pipeline", FAKE]) == 0
+    db = project.parent / "run" / ".gqteashmd" / "state.db"
+    before = db.read_bytes()
+    capsys.readouterr()
+    assert main(["status", str(project), "--pipeline", FAKE]) == 0
+    assert db.read_bytes() == before

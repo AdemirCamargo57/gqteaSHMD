@@ -89,3 +89,45 @@ def test_corrupt_database_is_a_project_error(tmp_path):
     db.write_bytes(b"this is definitely not a sqlite database" * 50)
     with pytest.raises(ProjectError, match="unreadable or corrupt"):
         StateStore(db)
+
+
+import sqlite3  # noqa: E402
+
+
+def test_directory_as_db_path_is_project_error(tmp_path):
+    db = tmp_path / "state.db"
+    db.mkdir()
+    with pytest.raises(ProjectError, match="unreadable or corrupt"):
+        StateStore(db)
+
+
+def test_readonly_open_reads_and_refuses_writes(tmp_path):
+    db = tmp_path / "state.db"
+    with StateStore(db) as s:
+        s.set_stage("prepare", StageStatus.DONE, fingerprint="f")
+    with StateStore(db, readonly=True) as ro:
+        assert ro.get_stage("prepare").status == StageStatus.DONE
+        with pytest.raises(sqlite3.OperationalError):
+            ro.set_stage("prepare", StageStatus.FAILED)
+
+
+def test_readonly_missing_db_is_project_error(tmp_path):
+    with pytest.raises(ProjectError, match="unreadable or corrupt"):
+        StateStore(tmp_path / "missing.db", readonly=True)
+
+
+def test_unknown_status_is_project_error(tmp_path):
+    db = tmp_path / "state.db"
+    with StateStore(db) as s:
+        s.set_stage("prepare", StageStatus.DONE)
+        s.upsert_tasks("prepare", ["t1"])
+    conn = sqlite3.connect(db)
+    conn.execute("UPDATE stages SET status = 'weird'")
+    conn.execute("UPDATE tasks SET status = 'weird'")
+    conn.commit()
+    conn.close()
+    with StateStore(db) as s:
+        with pytest.raises(ProjectError, match="unknown stage status 'weird'"):
+            s.get_stage("prepare")
+        with pytest.raises(ProjectError, match="unknown task status 'weird'"):
+            s.get_tasks("prepare")

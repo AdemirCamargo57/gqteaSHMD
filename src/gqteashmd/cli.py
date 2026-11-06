@@ -114,7 +114,7 @@ def _cmd_status(args: argparse.Namespace) -> int:
     print(
         f"{'stage':<16}{'status':<13}{'done':>6}{'failed':>8}{'pending':>9}{'running':>9}  message"
     )
-    with StateStore(layout.state_db) as state:
+    with StateStore(layout.state_db, readonly=True) as state:
         for stage in import_pipeline(args.pipeline)(cfg):
             record = state.get_stage(stage.name)
             counts = state.task_counts(stage.name)

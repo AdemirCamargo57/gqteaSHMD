@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import sqlite3
 from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
@@ -73,31 +74,59 @@ def _now() -> str:
     return datetime.now(UTC).isoformat(timespec="seconds")
 
 
+def _stage_status(value: str) -> StageStatus:
+    try:
+        return StageStatus(value)
+    except ValueError as exc:
+        raise ProjectError(
+            f"State database contains unknown stage status {value!r}; it was written by a "
+            "newer gqteashmd version or is corrupt."
+        ) from exc
+
+
+def _task_status(value: str) -> TaskStatus:
+    try:
+        return TaskStatus(value)
+    except ValueError as exc:
+        raise ProjectError(
+            f"State database contains unknown task status {value!r}; it was written by a "
+            "newer gqteashmd version or is corrupt."
+        ) from exc
+
+
 class StateStore:
-    def __init__(self, db_path: Path) -> None:
-        self._conn = sqlite3.connect(db_path, isolation_level=None, timeout=30.0)
+    def __init__(self, db_path: Path, *, readonly: bool = False) -> None:
+        conn: sqlite3.Connection | None = None
         try:
-            self._conn.execute("PRAGMA journal_mode=WAL")
-            self._conn.executescript(_SCHEMA)
-            self._conn.execute(
-                "INSERT OR IGNORE INTO meta(key, value) VALUES ('schema_version', ?)",
-                (SCHEMA_VERSION,),
-            )
-            (version,) = self._conn.execute(
-                "SELECT value FROM meta WHERE key = 'schema_version'"
-            ).fetchone()
+            if readonly:
+                uri = Path(db_path).resolve().as_uri() + "?mode=ro"
+                conn = sqlite3.connect(uri, uri=True, isolation_level=None, timeout=30.0)
+            else:
+                conn = sqlite3.connect(db_path, isolation_level=None, timeout=30.0)
+                conn.execute("PRAGMA journal_mode=WAL")
+                conn.executescript(_SCHEMA)
+                conn.execute(
+                    "INSERT OR IGNORE INTO meta(key, value) VALUES ('schema_version', ?)",
+                    (SCHEMA_VERSION,),
+                )
+            row = conn.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()
+            if row is None:
+                raise sqlite3.DatabaseError("schema_version entry is missing")
         except sqlite3.DatabaseError as exc:
-            self._conn.close()
+            if conn is not None:
+                conn.close()
             raise ProjectError(
                 f"State database {db_path} is unreadable or corrupt: {exc}. "
                 "Move it aside to start the project over."
             ) from exc
+        (version,) = row
         if version != SCHEMA_VERSION:
-            self._conn.close()
+            conn.close()
             raise ProjectError(
                 f"State database {db_path} has schema version {version}; "
                 f"this gqteashmd version expects {SCHEMA_VERSION}."
             )
+        self._conn = conn
 
     def __enter__(self) -> StateStore:
         return self
@@ -113,10 +142,11 @@ class StateStore:
         self._conn.execute("BEGIN IMMEDIATE")
         try:
             yield
+            self._conn.execute("COMMIT")
         except BaseException:
-            self._conn.execute("ROLLBACK")
+            with contextlib.suppress(sqlite3.Error):
+                self._conn.execute("ROLLBACK")
             raise
-        self._conn.execute("COMMIT")
 
     # ---- stages -----------------------------------------------------------------
     def get_stage(self, name: str) -> StageRecord | None:
@@ -125,7 +155,7 @@ class StateStore:
         ).fetchone()
         if row is None:
             return None
-        return StageRecord(row[0], StageStatus(row[1]), row[2], row[3])
+        return StageRecord(row[0], _stage_status(row[1]), row[2], row[3])
 
     def set_stage(
         self,
@@ -169,7 +199,7 @@ class StateStore:
             "WHERE stage = ? ORDER BY task_id",
             (stage,),
         ).fetchall()
-        return [TaskRecord(r[0], r[1], TaskStatus(r[2]), r[3], r[4], r[5]) for r in rows]
+        return [TaskRecord(r[0], r[1], _task_status(r[2]), r[3], r[4], r[5]) for r in rows]
 
     def get_task(self, stage: str, task_id: str) -> TaskRecord:
         row = self._conn.execute(
@@ -179,7 +209,7 @@ class StateStore:
         ).fetchone()
         if row is None:
             raise ProjectError(f"Unknown task {stage}/{task_id} in state database")
-        return TaskRecord(row[0], row[1], TaskStatus(row[2]), row[3], row[4], row[5])
+        return TaskRecord(row[0], row[1], _task_status(row[2]), row[3], row[4], row[5])
 
     def set_task(
         self,
@@ -213,5 +243,5 @@ class StateStore:
         for status, count in self._conn.execute(
             "SELECT status, COUNT(*) FROM tasks WHERE stage = ? GROUP BY status", (stage,)
         ):
-            counts[TaskStatus(status)] = count
+            counts[_task_status(status)] = count
         return counts
