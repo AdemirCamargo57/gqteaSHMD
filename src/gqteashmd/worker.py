@@ -82,21 +82,26 @@ def run_task_file(task_file: Path) -> int:
         )
         result = stage.run_task(ctx, TaskSpec(spec["task_id"], spec["payload"]), task_dir)
     except TaskError as exc:
+        print(f"{type(exc).__name__}: {exc}", file=sys.stderr)
         write_json_atomic(
             task_dir / RESULT_FILE, _error(exc, retryable=exc.retryable, with_traceback=False)
         )
         return 1
     except ShmdError as exc:
+        print(f"{type(exc).__name__}: {exc}", file=sys.stderr)
         write_json_atomic(
             task_dir / RESULT_FILE, _error(exc, retryable=False, with_traceback=False)
         )
         return 1
     except Exception as exc:  # a bug: keep the traceback for the developer
+        print(f"{type(exc).__name__}: {exc}", file=sys.stderr)
+        traceback.print_exc()
         write_json_atomic(task_dir / RESULT_FILE, _error(exc, retryable=False, with_traceback=True))
         return 1
     try:
         write_json_atomic(task_dir / RESULT_FILE, {"status": "ok", "result": result})
     except TypeError as exc:
+        print(f"TypeError: task result is not JSON-serializable: {exc}", file=sys.stderr)
         write_json_atomic(
             task_dir / RESULT_FILE,
             _error(

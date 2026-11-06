@@ -75,3 +75,19 @@ def test_read_result_missing_or_corrupt_returns_none(tmp_path):
     assert read_result(tmp_path) is None
     (tmp_path / "result.json").write_text("{half")
     assert read_result(tmp_path) is None
+
+
+def test_worker_task_error_goes_to_stderr(make_task, capsys):
+    task_dir = make_task(behaviour={"fail": ["sampling:t001"]})
+    assert run_task_file(task_dir / TASK_FILE) == 1
+    err = capsys.readouterr().err
+    assert "TaskError: fake failure in sampling:t001" in err
+    assert "Traceback" not in err
+
+
+def test_worker_unexpected_exception_traceback_goes_to_stderr(make_task, capsys):
+    task_dir = make_task(behaviour={"unexpected": ["sampling:t001"]})
+    assert run_task_file(task_dir / TASK_FILE) == 1
+    err = capsys.readouterr().err
+    assert "RuntimeError: unexpected fake error" in err
+    assert "Traceback" in err
