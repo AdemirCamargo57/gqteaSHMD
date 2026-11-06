@@ -482,7 +482,7 @@ Each sub-project produces working, tested software and gets its own detailed pla
 | O11 | Notifications on completion or failure (email, chat)? | Unattended operation | None; log + exit code | P2 |
 | O12 | Unattended running: `nohup`/`tmux` vs `gqteashmd run --detach` vs systemd user service | Convenience, robustness to logout | Document `nohup`/`tmux` (P1); decide in P2 | P2 |
 | O13 | ~~Program name, GitHub repository~~ **Resolved → D18/D15.** Still open: keep the repository public, or make it private until the first release? | Visibility of unreleased code | Your choice; the MIT licence is added in P1 Task 1 | P1 Task 12 |
-| O14 | Copyright holder in the MIT licence | Licence file | "The gqteashmd developers" | P1 Task 1 |
+| O14 | ~~Copyright holder in the MIT licence~~ **Resolved:** "The gqteashmd developers" (user decision 2026-11-06) | | | |
 | O15 | Several molecules or parameter scans per input file? | Input design | No: one project per input | P2 |
 | O16 | Extending finished dynamics (e.g. increasing `tmax_fs`) | Resume semantics | Allowed: `tmax_fs` excluded from the fingerprint and handled as an "extend" | P7b |
 | O17 | SHARC `input`-file importer (strategy §2.4) needed? | Validation convenience | Only inside `tools/sharc_compare/` | P9 |
