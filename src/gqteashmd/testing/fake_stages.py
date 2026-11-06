@@ -29,7 +29,8 @@ BEHAVIOUR_ENV = "GQTEASHMD_FAKE_BEHAVIOUR"
 
 
 def _behaviour() -> dict[str, Any]:
-    return json.loads(os.environ.get(BEHAVIOUR_ENV, "{}"))
+    behaviour: dict[str, Any] = json.loads(os.environ.get(BEHAVIOUR_ENV, "{}"))
+    return behaviour
 
 
 class FakeStage(Stage):
@@ -122,4 +123,5 @@ def make_pipeline(config: ShmdConfig) -> list[Stage]:
 
 
 def read_summary(stage_dir: Path) -> dict[str, Any]:
-    return read_json(stage_dir / "summary.json")
+    summary: dict[str, Any] = read_json(stage_dir / "summary.json")
+    return summary

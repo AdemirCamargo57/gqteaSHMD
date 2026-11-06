@@ -22,7 +22,8 @@ def import_pipeline(ref: str) -> PipelineFactory:
     except ImportError as exc:
         raise ProjectError(f"Cannot import pipeline module {module_name!r}: {exc}") from exc
     try:
-        return getattr(module, attribute)
+        factory: PipelineFactory = getattr(module, attribute)
+        return factory
     except AttributeError as exc:
         raise ProjectError(f"Module {module_name!r} has no attribute {attribute!r}") from exc
 

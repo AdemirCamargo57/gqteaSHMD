@@ -102,8 +102,8 @@ def _cmd_run(args: argparse.Namespace) -> int:
             previous[sig] = signal.signal(sig, _on_signal)
         summary = orchestrator.run(should_stop=stop_requested.is_set)
     finally:
-        for sig, handler in previous.items():
-            signal.signal(sig, handler)
+        for prev_sig, handler in previous.items():
+            signal.signal(prev_sig, handler)
     if summary.stopped:
         print("Stopped. Run the same command again to resume.")
         return EXIT_STOPPED
@@ -198,7 +198,8 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     log = logging.getLogger("gqteashmd.cli")
     try:
-        return args.func(args)
+        code: int = args.func(args)
+        return code
     except ShmdError as exc:
         log.error("%s", exc, extra=FILE_ONLY)
         print(f"gqteashmd: error: {exc}", file=sys.stderr)

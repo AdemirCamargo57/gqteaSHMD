@@ -48,7 +48,8 @@ def write_task_file(
 
 def read_result(task_dir: Path) -> dict[str, Any] | None:
     try:
-        return read_json(Path(task_dir) / RESULT_FILE)
+        result: dict[str, Any] = read_json(Path(task_dir) / RESULT_FILE)
+        return result
     except (FileNotFoundError, json.JSONDecodeError):
         return None
 
