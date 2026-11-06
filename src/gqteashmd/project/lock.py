@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import fcntl
 import os
+import time
 from pathlib import Path
 from typing import IO
 
@@ -18,16 +19,22 @@ class ProjectLock:
     def __enter__(self) -> ProjectLock:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         fh = open(self.path, "a+", encoding="utf-8")
-        try:
-            fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError as exc:
-            fh.close()
-            holder = locked_by(self.path)
-            raise ProjectError(
-                f"Another gqteashmd controller is running for this project "
-                f"(pid {holder}, lock file {self.path}). "
-                "Use `gqteashmd status` or `gqteashmd stop`."
-            ) from exc
+        for attempt in range(2):
+            try:
+                fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError as exc:
+                if attempt == 0:
+                    time.sleep(0.2)  # `locked_by` may be probing the lock for an instant
+                    continue
+                fh.close()
+                holder = locked_by(self.path)
+                raise ProjectError(
+                    "Another gqteashmd controller is running for this project "
+                    f"(pid {holder if holder is not None else 'unknown'}, "
+                    f"lock file {self.path}). "
+                    "Use `gqteashmd status` or `gqteashmd stop`."
+                ) from exc
         fh.seek(0)
         fh.truncate()
         fh.write(f"{os.getpid()}\n")

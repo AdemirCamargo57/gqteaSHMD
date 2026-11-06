@@ -1,4 +1,6 @@
 import os
+import threading
+import time
 
 import pytest
 
@@ -56,3 +58,20 @@ def test_lock_is_exclusive_and_released(tmp_path):
     assert locked_by(lock_path) is None
     with ProjectLock(lock_path):
         pass
+
+
+def test_lock_waits_briefly_for_a_short_holder(tmp_path):
+    lock_path = tmp_path / "controller.lock"
+    held = threading.Event()
+
+    def hold_briefly():
+        with ProjectLock(lock_path):
+            held.set()
+            time.sleep(0.05)
+
+    worker = threading.Thread(target=hold_briefly)
+    worker.start()
+    held.wait(5)
+    with ProjectLock(lock_path):
+        pass
+    worker.join()

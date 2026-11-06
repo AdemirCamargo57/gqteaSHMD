@@ -283,3 +283,26 @@ def test_unknown_pause_stage_is_config_error(tmp_path, write_input, behaviour):
     path = write_input(tmp_path, execution=FAST, extra='[workflow]\npause_after = ["nosuch"]')
     with pytest.raises(ConfigError, match="pause_after.*nosuch"):
         Orchestrator(load_config(path), pipeline_ref=FAKE)
+
+
+def test_stale_hint_quotes_paths_with_spaces(tmp_path, write_input, behaviour):
+    base = tmp_path / "with space"
+    base.mkdir()
+    path = write_input(base, execution=FAST)
+    _run(path)
+    path = write_input(base, execution=FAST, molecule="charge = 2")
+    with pytest.raises(StaleStageError, match="'.*with space/input.toml' --rerun-from prepare"):
+        _run(path)
+
+
+def test_non_json_fingerprint_names_the_stage(project, behaviour):
+    behaviour(bad_fingerprint=["sampling"])
+    with pytest.raises(ProjectError, match="sampling.*not JSON-serializable"):
+        _run(project)
+
+
+def test_rerun_from_is_applied_once_per_orchestrator(project, behaviour):
+    _run(project)
+    orchestrator = Orchestrator(load_config(project), pipeline_ref=FAKE, rerun_from="sampling")
+    assert "sampling" in orchestrator.run().completed
+    assert "sampling" in orchestrator.run().up_to_date

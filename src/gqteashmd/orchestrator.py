@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import shlex
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -106,6 +107,7 @@ class Orchestrator:
             append_provenance(self.layout.provenance_file, collect_provenance())
             if self.rerun_from is not None:
                 self._reset_from(state, self.rerun_from)
+                self.rerun_from = None
             return self._run_pipeline(state, should_stop)
 
     # ------------------------------------------------------------------ pipeline
@@ -130,23 +132,29 @@ class Orchestrator:
                 summary.skipped.append(stage.name)
                 log.info("Stage %s: skipped (disabled in the input file)", stage.name)
                 continue
-            fp = _fingerprint(
-                {
-                    "stage": stage.name,
-                    "version": stage.version,
-                    "inputs": stage.fingerprint_inputs(ctx),
-                    "upstream": {d: fingerprints[d] for d in stage.depends_on},
-                }
-            )
+            try:
+                fp = _fingerprint(
+                    {
+                        "stage": stage.name,
+                        "version": stage.version,
+                        "inputs": stage.fingerprint_inputs(ctx),
+                        "upstream": {d: fingerprints[d] for d in stage.depends_on},
+                    }
+                )
+            except TypeError as exc:
+                raise ProjectError(
+                    f"Stage {stage.name!r}: fingerprint inputs are not JSON-serializable: {exc}"
+                ) from exc
             fingerprints[stage.name] = fp
             record = state.get_stage(stage.name)
             if record is not None and record.fingerprint != fp:
                 has_finished_tasks = state.task_counts(stage.name)[TaskStatus.DONE] > 0
                 if has_finished_tasks or record.status in (StageStatus.DONE, StageStatus.RUNNING):
+                    source = shlex.quote(str(self.loaded.source))
                     raise StaleStageError(
                         f"Stage '{stage.name}' has results produced from different inputs "
                         "(the input file or an earlier stage changed). Run "
-                        f"`gqteashmd run {self.loaded.source} --rerun-from {stage.name}` "
+                        f"`gqteashmd run {source} --rerun-from {stage.name}` "
                         "to move the old results aside and recompute from this stage onward."
                     )
                 log.info("Stage %s: inputs changed since last attempt; starting over", stage.name)

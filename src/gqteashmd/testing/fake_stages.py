@@ -6,6 +6,7 @@ worker subprocesses inherit from the controller:
   fail / unexpected / crash_once / retryable_once: lists of "stage:task_id"
   skip_optimize: bool
   plan_raises: list of stage names whose plan() raises RuntimeError
+  bad_fingerprint: list of stage names whose fingerprint_inputs returns non-JSON data
   requires: {"stage": ["module", ...]} required_modules per stage (checked by preflight)
 """
 
@@ -56,6 +57,11 @@ class FakeStage(Stage):
         if self.name in _behaviour().get("plan_raises", []):
             raise RuntimeError(f"plan exploded in {self.name}")
         return [TaskSpec(f"t{i:03d}", {"index": i}) for i in range(self.n_tasks)]
+
+    def fingerprint_inputs(self, ctx: StageContext) -> dict[str, Any]:
+        if self.name in _behaviour().get("bad_fingerprint", []):
+            return {"not_json": {1, 2}}
+        return super().fingerprint_inputs(ctx)
 
     def run_task(self, ctx: StageContext, task: TaskSpec, task_dir: Path) -> dict[str, Any]:
         key = f"{self.name}:{task.task_id}"
