@@ -74,3 +74,15 @@ def test_fingerprint_with_missing_geometry_is_config_error(tmp_path, write_input
 def test_default_pipeline_contains_prepare(tmp_path, write_input):
     cfg = load_config(write_input(tmp_path)).config
     assert [s.name for s in default_pipeline(cfg)] == ["prepare"]
+
+
+def test_geometry_that_is_a_directory_is_a_config_error(tmp_path, write_input):
+    path = write_input(tmp_path)
+    (tmp_path / "water.xyz").unlink()
+    (tmp_path / "water.xyz").mkdir()
+    ctx = _ctx(path)
+    with pytest.raises(ConfigError, match="Cannot read geometry file"):
+        PrepareStage().fingerprint_inputs(ctx)
+    with pytest.raises(TaskError, match="Cannot read geometry file") as info:
+        PrepareStage().run_task(ctx, TaskSpec("molecule"), tmp_path / "task")
+    assert info.value.retryable is False

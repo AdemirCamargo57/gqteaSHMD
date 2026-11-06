@@ -67,3 +67,21 @@ def test_section_fingerprint_selects_sections(tmp_path, write_input):
     assert set(fp) == {"molecule", "resources"}
     assert fp["molecule"]["charge"] == 0
     assert isinstance(fp["molecule"]["geometry"], str)
+
+
+def test_non_utf8_input_is_a_config_error(tmp_path, write_input):
+    path = write_input(tmp_path)
+    path.write_bytes(path.read_bytes() + "# coment\xe1rio\n".encode("latin-1"))
+    with pytest.raises(ConfigError, match="not valid UTF-8"):
+        load_config(path)
+
+
+def test_input_with_bom_loads(tmp_path, write_input):
+    path = write_input(tmp_path)
+    path.write_bytes(b"\xef\xbb\xbf" + path.read_bytes())
+    assert load_config(path).config.project.name == "test"
+
+
+def test_input_path_that_is_a_directory_is_a_config_error(tmp_path):
+    with pytest.raises(ConfigError, match="Cannot read input file"):
+        load_config(tmp_path)

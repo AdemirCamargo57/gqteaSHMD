@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+import signal
 import subprocess
 import sys
 import time
@@ -108,6 +109,76 @@ def test_killed_controller_resumes(project, monkeypatch):
     finally:
         proc.kill()
         proc.wait()
+    assert main(["run", str(project), "--pipeline", FAKE]) == 0
+    with StateStore(db) as state:
+        assert state.get_stage("dynamics").status == StageStatus.DONE
+
+
+def test_init_into_missing_directory_is_a_config_error(tmp_path, capsys):
+    assert main(["init", str(tmp_path / "nodir" / "x.toml")]) == 2
+    assert "Cannot write" in capsys.readouterr().err
+
+
+def test_status_with_corrupt_state_exits_3(project, capsys):
+    db = project.parent / "run" / ".gqteashmd" / "state.db"
+    db.parent.mkdir(parents=True)
+    db.write_bytes(b"garbage" * 100)
+    assert main(["status", str(project), "--pipeline", FAKE]) == 3
+    assert "unreadable or corrupt" in capsys.readouterr().err
+
+
+def test_unexpected_exception_becomes_internal_error(project, monkeypatch, capsys):
+    def boom(_args):
+        raise RuntimeError("kaboom")
+
+    monkeypatch.setattr("gqteashmd.cli._cmd_validate", boom)
+    assert main(["validate", str(project)]) == 1
+    err = capsys.readouterr().err
+    assert "internal error: RuntimeError: kaboom" in err
+    assert "please report this" in err
+
+
+def test_stop_os_error_is_a_project_error(project, monkeypatch, capsys):
+    monkeypatch.setattr("gqteashmd.cli.locked_by", lambda _path: 12345)
+
+    def deny(_pid, _sig):
+        raise PermissionError(1, "Operation not permitted")
+
+    monkeypatch.setattr("gqteashmd.cli.os.kill", deny)
+    assert main(["stop", str(project)]) == 3
+    assert "Cannot signal controller pid 12345" in capsys.readouterr().err
+
+
+@pytest.mark.slow
+def test_sigterm_stops_gracefully_and_resume_completes(project, monkeypatch):
+    monkeypatch.setenv(BEHAVIOUR_ENV, json.dumps({"sleep": 1.0}))
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "gqteashmd", "run", str(project), "--pipeline", FAKE],
+        env=dict(os.environ),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        text=True,
+    )
+    db = project.parent / "run" / ".gqteashmd" / "state.db"
+    deadline = time.monotonic() + 60
+    try:
+        while time.monotonic() < deadline:
+            if db.exists():
+                with StateStore(db) as state:
+                    if any(t.status == TaskStatus.DONE for t in state.get_tasks("sampling")):
+                        break
+            time.sleep(0.1)
+        else:
+            pytest.fail("controller made no progress within 60 s")
+        proc.send_signal(signal.SIGTERM)
+        out, _ = proc.communicate(timeout=60)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait()
+    assert proc.returncode == EXIT_STOPPED
+    assert "Stopped." in out
+    monkeypatch.setenv(BEHAVIOUR_ENV, "{}")
     assert main(["run", str(project), "--pipeline", FAKE]) == 0
     with StateStore(db) as state:
         assert state.get_stage("dynamics").status == StageStatus.DONE

@@ -12,7 +12,7 @@ from pathlib import Path
 
 from gqteashmd import __version__
 from gqteashmd.config.loader import load_config
-from gqteashmd.errors import ConfigError, ShmdError
+from gqteashmd.errors import ConfigError, ProjectError, ShmdError
 from gqteashmd.logging_setup import configure_logging
 from gqteashmd.orchestrator import Orchestrator
 from gqteashmd.project.layout import ProjectLayout
@@ -51,7 +51,10 @@ def _cmd_init(args: argparse.Namespace) -> int:
     path: Path = args.path
     if path.exists() and not args.force:
         raise ConfigError(f"{path} already exists; use --force to overwrite it.")
-    path.write_text(TEMPLATE, encoding="utf-8")
+    try:
+        path.write_text(TEMPLATE, encoding="utf-8")
+    except OSError as exc:
+        raise ConfigError(f"Cannot write {path}: {exc.strerror or exc}") from exc
     print(f"Wrote template input file {path}")
     return 0
 
@@ -128,7 +131,13 @@ def _cmd_stop(args: argparse.Namespace) -> int:
     if pid is None:
         print("No running controller for this project.")
         return 0
-    os.kill(pid, signal.SIGTERM)
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except OSError as exc:
+        raise ProjectError(
+            f"Cannot signal controller pid {pid}: {exc.strerror or exc}. "
+            "It may have just exited, or belong to another user."
+        ) from exc
     print(f"Stop requested for controller pid {pid}; running tasks are being stopped.")
     return 0
 
@@ -169,5 +178,14 @@ def main(argv: list[str] | None = None) -> int:
     try:
         return args.func(args)
     except ShmdError as exc:
+        logging.getLogger("gqteashmd.cli").error("%s", exc)
         print(f"gqteashmd: error: {exc}", file=sys.stderr)
         return exc.exit_code
+    except Exception as exc:
+        logging.getLogger("gqteashmd.cli").exception("Unexpected error")
+        print(
+            f"gqteashmd: error: internal error: {type(exc).__name__}: {exc} "
+            "(please report this; details in the project log if one was configured)",
+            file=sys.stderr,
+        )
+        return 1

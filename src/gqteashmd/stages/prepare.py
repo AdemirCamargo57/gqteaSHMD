@@ -25,6 +25,10 @@ class PrepareStage(Stage):
             digest = hashlib.sha256(molecule.geometry.read_bytes()).hexdigest()
         except FileNotFoundError as exc:
             raise ConfigError(f"Geometry file not found: {molecule.geometry}") from exc
+        except OSError as exc:
+            raise ConfigError(
+                f"Cannot read geometry file {molecule.geometry}: {exc.strerror or exc}"
+            ) from exc
         return {
             "charge": molecule.charge,
             "multiplicity": molecule.multiplicity,
@@ -41,6 +45,11 @@ class PrepareStage(Stage):
         except FileNotFoundError as exc:
             raise TaskError(
                 f"Geometry file not found: {molecule.geometry}", retryable=False
+            ) from exc
+        except OSError as exc:
+            raise TaskError(
+                f"Cannot read geometry file {molecule.geometry}: {exc.strerror or exc}",
+                retryable=False,
             ) from exc
         except ValueError as exc:
             raise TaskError(

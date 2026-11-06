@@ -48,9 +48,16 @@ def _resolve_paths(cfg: ShmdConfig, base: Path) -> ShmdConfig:
 def load_config(path: Path) -> LoadedConfig:
     path = Path(path).resolve()
     try:
-        raw = tomllib.loads(path.read_text(encoding="utf-8"))
+        raw = tomllib.loads(path.read_text(encoding="utf-8-sig"))
     except FileNotFoundError as exc:
         raise ConfigError(f"Input file not found: {path}") from exc
+    except UnicodeDecodeError as exc:
+        raise ConfigError(
+            f"Input file {path} is not valid UTF-8 text ({exc.reason} at byte {exc.start}). "
+            "Re-save it as UTF-8."
+        ) from exc
+    except OSError as exc:
+        raise ConfigError(f"Cannot read input file {path}: {exc.strerror or exc}") from exc
     except tomllib.TOMLDecodeError as exc:
         raise ConfigError(f"Input file {path} is not valid TOML: {exc}") from exc
     try:
