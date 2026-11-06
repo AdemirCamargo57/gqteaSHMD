@@ -9,11 +9,12 @@ import signal
 import sys
 import threading
 from pathlib import Path
+from typing import Any
 
 from gqteashmd import __version__
 from gqteashmd.config.loader import load_config
 from gqteashmd.errors import ConfigError, ProjectError, ShmdError
-from gqteashmd.logging_setup import configure_logging
+from gqteashmd.logging_setup import FILE_ONLY, close_logging, configure_logging
 from gqteashmd.orchestrator import Orchestrator
 from gqteashmd.project.layout import ProjectLayout
 from gqteashmd.project.lock import locked_by
@@ -83,8 +84,10 @@ def _cmd_run(args: argparse.Namespace) -> int:
             logger.warning("Stop requested (signal %d): stopping running tasks...", signum)
         stop_requested.set()
 
-    previous = {sig: signal.signal(sig, _on_signal) for sig in (signal.SIGINT, signal.SIGTERM)}
+    previous: dict[int, Any] = {}
     try:
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            previous[sig] = signal.signal(sig, _on_signal)
         summary = orchestrator.run(should_stop=stop_requested.is_set)
     finally:
         for sig, handler in previous.items():
@@ -175,17 +178,20 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    log = logging.getLogger("gqteashmd.cli")
     try:
         return args.func(args)
     except ShmdError as exc:
-        logging.getLogger("gqteashmd.cli").error("%s", exc)
+        log.error("%s", exc, extra=FILE_ONLY)
         print(f"gqteashmd: error: {exc}", file=sys.stderr)
         return exc.exit_code
     except Exception as exc:
-        logging.getLogger("gqteashmd.cli").exception("Unexpected error")
+        log.error("Unexpected error", exc_info=True, extra=FILE_ONLY)
         print(
             f"gqteashmd: error: internal error: {type(exc).__name__}: {exc} "
             "(please report this; details in the project log if one was configured)",
             file=sys.stderr,
         )
         return 1
+    finally:
+        close_logging()
