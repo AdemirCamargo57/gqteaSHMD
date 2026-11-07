@@ -258,3 +258,105 @@ def test_casscf_ladder_exhausted(ethylene_symbols, ethylene_bohr, make_settings,
     monkeypatch.setattr(pyscf_casscf, "_converged", lambda mc: False)
     with pytest.raises(ElectronicStructureError, match="SA-CASSCF failed on every rung"):
         _backend(ethylene_symbols, make_settings(basis="sto-3g")).compute(Request(ethylene_bohr))
+
+
+@pytest.mark.parametrize(("ncore", "nelecas"), [(1, (2, 2)), (0, (3, 1))])
+def test_casscf_expansion_matches_pyscf_orbital_rotation(ncore, nelecas):
+    """<I(old)|J(rotated)> from determinants equals PySCF's CI transformation.
+
+    Convention (measured): with s_mo[p, q] = <old_p|new_q> = u[p, q], the matching PySCF call is
+    transform_ci_for_orbital_rotation(ci, norb, nelec, u.T); PySCF's argument is <new|old>.
+    Signs agree exactly; the call with u instead of u.T disagrees (differences ~0.1).
+    """
+    import types
+
+    import scipy.linalg
+    from pyscf.fci import addons, cistring
+
+    ncas = 4
+    n_a, n_b = nelecas
+    shape = (cistring.num_strings(ncas, n_a), cistring.num_strings(ncas, n_b))
+    rng = np.random.default_rng(11)
+    ci = []
+    for _ in range(2):
+        v = rng.normal(size=shape)
+        ci.append(v / np.linalg.norm(v))
+    mc = types.SimpleNamespace(ncore=ncore, ncas=ncas, nelecas=nelecas, ci=ci)
+    u, _ = np.linalg.qr(rng.normal(size=(ncas, ncas)))
+    s_mo = scipy.linalg.block_diag(np.eye(ncore), u)
+    expansion = pyscf_casscf.casscf_expansion(mc)
+    got = state_overlaps(expansion, expansion, s_mo)
+    for i in range(2):
+        for j in range(2):
+            rotated = addons.transform_ci_for_orbital_rotation(ci[j], ncas, nelecas, u.T)
+            assert abs(got[i, j] - np.vdot(ci[i], rotated)) < 1e-10
+
+
+def test_casscf_ladder_spin_failure_advances_to_the_next_rung(
+    ethylene_symbols, ethylene_bohr, make_settings, monkeypatch
+):
+    from pyscf.fci import spin_op
+
+    original = spin_op.spin_square0
+    state = {"armed": False, "failed": 0}
+
+    def converged(mc):  # PySCF itself calls spin_square0, so arm the fake after convergence
+        state["armed"] = True
+        return bool(mc.converged)
+
+    def fake(ci, norb, nelec):
+        value = original(ci, norb, nelec)
+        if state["armed"] and state["failed"] == 0:
+            state["failed"] = 1
+            return (2.0, value[1])
+        return value
+
+    monkeypatch.setattr(pyscf_casscf, "_converged", converged)
+    monkeypatch.setattr(spin_op, "spin_square0", fake)
+    result = _backend(ethylene_symbols, make_settings(basis="sto-3g")).compute(
+        Request(ethylene_bohr)
+    )
+    assert result.meta["casscf"] == "SCF orbitals + spin penalty"
+    assert all(abs(s) < 1e-3 for s in result.spin_squares.values())
+
+
+def test_casscf_exception_aborts_the_ladder(
+    ethylene_symbols, ethylene_bohr, make_settings, monkeypatch
+):
+    from pyscf import mcscf
+
+    made = []
+    original = mcscf.CASSCF
+
+    def factory(*args, **kwargs):
+        mc = original(*args, **kwargs)
+        made.append(mc)
+
+        def boom(*a, **k):
+            raise ValueError("boom")
+
+        mc.kernel = boom
+        return mc
+
+    monkeypatch.setattr(mcscf, "CASSCF", factory)
+    with pytest.raises(ElectronicStructureError, match=r"CASSCF \(SCF orbitals\) failed"):
+        _backend(ethylene_symbols, make_settings(basis="sto-3g")).compute(Request(ethylene_bohr))
+    assert len(made) == 1
+
+
+def test_casscf_previous_orbitals_rung_falls_through_to_scf_orbitals(
+    ethylene_symbols, ethylene_bohr, make_settings, monkeypatch
+):
+    backend = _backend(ethylene_symbols, make_settings(basis="sto-3g"))
+    first = backend.compute(Request(ethylene_bohr))
+    assert first.meta["casscf"] == "SCF orbitals"
+    calls = []
+
+    def fail_first(mc):
+        calls.append(1)
+        return len(calls) > 1 and bool(mc.converged)
+
+    monkeypatch.setattr(pyscf_casscf, "_converged", fail_first)
+    second = backend.compute(Request(ethylene_bohr))
+    assert second.meta["casscf"] == "SCF orbitals" and len(calls) == 2
+    assert abs(second.energies[S1] - first.energies[S1]) < 1e-6
