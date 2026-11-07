@@ -80,3 +80,18 @@ def test_singlets_cannot_exceed_the_cas_singlet_space(tmp_path, write_input):
         r"\(nelecas = 2, ncas = 2\)",
     ):
         _load(tmp_path, write_input, CAS.replace("singlets = 2", "singlets = 4"))
+
+
+def test_overlap_norm_kept(tmp_path, write_input):
+    assert _load(tmp_path, write_input, CAS).electronic.overlap_norm_kept == 0.9999
+    el = _load(
+        tmp_path, write_input, CAS.replace("singlets = 2", "singlets = 2\noverlap_norm_kept = 1.0")
+    )
+    assert el.electronic.overlap_norm_kept == 1.0
+    for bad in ("0.9", "1.5"):
+        with pytest.raises(ConfigError, match="overlap_norm_kept"):
+            _load(
+                tmp_path,
+                write_input,
+                CAS.replace("singlets = 2", f"singlets = 2\noverlap_norm_kept = {bad}"),
+            )

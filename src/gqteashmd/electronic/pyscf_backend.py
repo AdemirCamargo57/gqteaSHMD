@@ -20,7 +20,13 @@ from gqteashmd.chem.electrons import count_electrons
 from gqteashmd.chem.elements import atomic_number
 from gqteashmd.config.schema import ElectronicSection
 from gqteashmd.core.states import StateLabel, states_from_counts
-from gqteashmd.electronic.base import ElectronicBackend, ElectronicResult, MoleculeSpec, Request
+from gqteashmd.electronic.base import (
+    Capabilities,
+    ElectronicBackend,
+    ElectronicResult,
+    MoleculeSpec,
+    Request,
+)
 from gqteashmd.errors import ConfigError, ElectronicStructureError
 
 MIN_PYSCF_VERSION = (2, 6, 0)
@@ -95,6 +101,8 @@ class PySCFBackend(ElectronicBackend):
 
     # ------------------------------------------------------------------ public API
     def compute(self, request: Request) -> ElectronicResult:
+        if request.nacs or request.overlaps:
+            raise ValueError("NACs and overlaps are not implemented yet (P3b Tasks 5 and 7).")
         unknown = sorted(str(s) for s in set(request.gradients) - set(self._states))
         if unknown:
             raise ValueError(f"Gradients requested for unknown state(s): {', '.join(unknown)}")
@@ -133,6 +141,28 @@ class PySCFBackend(ElectronicBackend):
             spin_squares=spins,
             meta=meta,
         )
+
+    @property
+    def capabilities(self) -> Capabilities:
+        return Capabilities(
+            gradients=True,
+            nacs=self._settings.method == "casscf",
+            overlaps=True,
+            transition_dipoles=True,
+        )
+
+    def compute_more(
+        self,
+        gradients: frozenset[StateLabel] = frozenset(),
+        nacs: frozenset[tuple[StateLabel, StateLabel]] = frozenset(),
+    ) -> ElectronicResult:
+        raise NotImplementedError("compute_more arrives in P3b Task 7")
+
+    def save_state(self, path: Path) -> None:
+        raise NotImplementedError("save_state arrives in P3b Task 8")
+
+    def load_state(self, path: Path) -> None:
+        raise NotImplementedError("load_state arrives in P3b Task 8")
 
     # ------------------------------------------------------------------ setup
     @contextmanager

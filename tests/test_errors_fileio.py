@@ -53,3 +53,12 @@ def test_read_json_propagates_decode_errors(tmp_path):
     bad.write_text("{not json")
     with pytest.raises(json.JSONDecodeError):
         read_json(bad)
+
+
+def test_write_bytes_atomic(tmp_path):
+    from gqteashmd.util.fileio import write_bytes_atomic
+
+    target = tmp_path / "sub" / "state.npz"
+    write_bytes_atomic(target, b"\x00\x01")
+    assert target.read_bytes() == b"\x00\x01"
+    assert [p.name for p in target.parent.iterdir()] == ["state.npz"]

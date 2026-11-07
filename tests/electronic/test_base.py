@@ -5,7 +5,7 @@ import numpy as np
 import pytest
 
 from gqteashmd.core.states import StateLabel
-from gqteashmd.electronic.base import ElectronicResult, Request
+from gqteashmd.electronic.base import Capabilities, ElectronicResult, Request
 from gqteashmd.electronic.properties import oscillator_strength
 from gqteashmd.errors import ElectronicStructureError, TaskError
 
@@ -64,3 +64,35 @@ def test_result_json_is_serialisable_and_orders_gradients():
     for row in data["states"]:
         for key in ("excitation_ev", "oscillator_strength", "spin_square"):
             assert row[key] is None or type(row[key]) is float
+
+
+def test_request_carries_nac_pairs_and_overlaps():
+    req = Request([[0, 0, 0]], nacs=frozenset({(S0, S1)}), overlaps=True)
+    assert req.nacs == frozenset({(S0, S1)}) and req.overlaps is True
+    with pytest.raises(ValueError, match="I < J"):
+        Request([[0, 0, 0]], nacs=frozenset({(S1, S0)}))
+    with pytest.raises(ValueError, match="I < J"):
+        Request([[0, 0, 0]], nacs=frozenset({(S1, S1)}))
+
+
+def test_capabilities_are_frozen():
+    caps = Capabilities(gradients=True, nacs=False, overlaps=True, transition_dipoles=True)
+    with pytest.raises(AttributeError):
+        caps.nacs = True  # type: ignore[misc]
+
+
+def test_result_json_with_couplings_and_overlaps():
+    result = ElectronicResult(
+        states=(S0, S1),
+        energies={S0: -1.0, S1: -0.5},
+        nacs={(S0, S1): np.full((2, 3), 0.25)},
+        overlaps=np.array([[0.99, 0.01], [-0.01, 0.98]]),
+        phases=np.array([1.0, -1.0]),
+    )
+    data = result.to_json()
+    assert data["nacs_per_bohr"] == {"S0-S1": [[0.25] * 3, [0.25] * 3]}
+    assert data["overlaps"] == [[0.99, 0.01], [-0.01, 0.98]]
+    assert data["phases"] == [1.0, -1.0]
+    json.dumps(data)
+    empty = ElectronicResult(states=(S0,), energies={S0: -1.0}).to_json()
+    assert empty["nacs_per_bohr"] == {} and empty["overlaps"] is None and empty["phases"] is None

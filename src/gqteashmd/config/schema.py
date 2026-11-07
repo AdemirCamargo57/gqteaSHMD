@@ -148,6 +148,7 @@ class ElectronicSection(_Section):
     scf_conv_tol: float = Field(default=1e-10, gt=0)
     scf_max_cycle: int = Field(default=100, ge=1)
     td_conv_tol: float = Field(default=1e-8, gt=0)
+    overlap_norm_kept: float = Field(default=0.9999, gt=0.9, le=1.0)
     casscf: CasscfSection | None = None
 
     @model_validator(mode="after")

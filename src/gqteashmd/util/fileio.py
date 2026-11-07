@@ -8,16 +8,21 @@ from pathlib import Path
 from typing import Any
 
 
-def write_text_atomic(path: Path, text: str) -> None:
-    """Write `text` to `path` so that readers never see a partially written file."""
+def write_bytes_atomic(path: Path, data: bytes) -> None:
+    """Write `data` to `path` so that readers never see a partially written file."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    with open(tmp, "w", encoding="utf-8") as fh:
-        fh.write(text)
+    with open(tmp, "wb") as fh:
+        fh.write(data)
         fh.flush()
         os.fsync(fh.fileno())
     os.replace(tmp, path)
+
+
+def write_text_atomic(path: Path, text: str) -> None:
+    """Write `text` to `path` so that readers never see a partially written file."""
+    write_bytes_atomic(path, text.encode("utf-8"))
 
 
 def write_json_atomic(path: Path, data: Any) -> None:
