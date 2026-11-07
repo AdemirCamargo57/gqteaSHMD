@@ -87,6 +87,8 @@ def test_compute_more_reuses_the_last_geometry(
     assert np.abs(more.gradients[S1] - fresh.gradients[S1]).max() < 1e-7
     d_more, d_fresh = more.nacs[(S0, S1)], fresh.nacs[(S0, S1)]
     assert min(np.abs(d_more - d_fresh).max(), np.abs(d_more + d_fresh).max()) < 1e-7
+    for label in fresh.energies:
+        assert abs(more.energies[label] - fresh.energies[label]) < 1e-8
     assert more.energies == backend.compute_more().energies
 
 
@@ -250,3 +252,49 @@ def test_overlap_failures_are_electronic_structure_errors(
     monkeypatch.setattr(pyscf_backend, "truncate", failing(ValueError("zero coefficients")))
     with pytest.raises(ElectronicStructureError, match="wavefunction overlap failed"):
         backend.compute(request)
+
+
+def test_phase_tracking_continues_across_a_step_without_returned_overlaps(
+    ethylene_symbols, ethylene_bohr, make_settings, monkeypatch
+):
+    # R0 (NAC) -> R1 (overlaps=False, nothing returned) -> R2 (overlaps=True, NAC). The raw CI sign
+    # of state 1 at R1 is pinned once as it comes and once flipped. If the R1 step did not apply
+    # its phases to the stored expansion, R2 would be aligned to the raw R1 frame and its NAC
+    # would change sign with the pinned R1 sign. It must instead stay in the frame of R0.
+    from gqteashmd.electronic import pyscf_casscf
+
+    backend = PySCFBackend(MoleculeSpec(tuple(ethylene_symbols)), _cas(make_settings))
+    pair = frozenset({(S0, S1)})
+    d0 = backend.compute(Request(ethylene_bohr, nacs=pair, overlaps=True)).nacs[(S0, S1)]
+    snapshot = backend._snapshot
+    r1 = _step(ethylene_bohr, seed=21, scale=0.005)
+    r2 = _step(r1, seed=22, scale=0.005)
+
+    original = pyscf_casscf.run_casscf
+    refs: dict[int, list[np.ndarray]] = {}
+    state = {"call": 0, "flip_r1": 1.0}
+
+    def pinning(*args, **kwargs):
+        outcome = original(*args, **kwargs)
+        ci = outcome.mc.ci
+        call = state["call"]
+        state["call"] += 1
+        if call not in refs:
+            refs[call] = [np.array(v, copy=True) for v in ci]
+        want = (1.0, state["flip_r1"] if call == 0 else 1.0)
+        for k in (0, 1):
+            if np.vdot(ci[k], refs[call][k]) * want[k] < 0:
+                ci[k] = -ci[k]
+        return outcome
+
+    monkeypatch.setattr(pyscf_casscf, "run_casscf", pinning)
+    nacs_at_r2 = []
+    for flip in (1.0, -1.0):
+        backend._snapshot = snapshot
+        state.update(call=0, flip_r1=flip)
+        silent = backend.compute(Request(r1, overlaps=False))
+        assert silent.overlaps is None and silent.meta["overlaps"] == "tracked, not returned"
+        nacs_at_r2.append(backend.compute(Request(r2, nacs=pair, overlaps=True)).nacs[(S0, S1)])
+    reference, flipped = nacs_at_r2
+    np.testing.assert_allclose(flipped, reference, atol=1e-6)
+    assert np.vdot(reference, d0) > 0  # still in the frame of R0

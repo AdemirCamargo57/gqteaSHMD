@@ -162,6 +162,8 @@ def test_importing_the_cli_and_worker_does_not_import_pyscf():
 
     code = (
         "import gqteashmd.cli, gqteashmd.worker, sys; "
+        "import gqteashmd.overlaps.determinants, gqteashmd.overlaps.tracking; "
+        "import gqteashmd.electronic.base, gqteashmd.electronic.factory; "
         "assert not any(m == 'pyscf' or m.startswith('pyscf.') for m in sys.modules)"
     )
     subprocess.run([sys.executable, "-c", code], check=True)
@@ -178,7 +180,7 @@ def test_sa2_casscf_nacs_match_the_sharc_reference(
     d_ref = np.array(ref["nacs_per_bohr"]["S0-S1"])
     assert d.shape == (6, 3)
     assert min(np.abs(d - d_ref).max(), np.abs(d + d_ref).max()) < 1e-6  # global sign arbitrary
-    assert result.meta["casscf"] in ("SCF orbitals", "previous orbitals")
+    assert result.meta["casscf"] == "SCF orbitals"  # a first compute has no previous
 
 
 def test_nacs_need_known_states_and_a_capable_method(
