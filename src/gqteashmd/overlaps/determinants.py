@@ -63,29 +63,38 @@ class DeterminantExpansion:
 
 
 def truncate(expansion: DeterminantExpansion, norm_kept: float) -> DeterminantExpansion:
-    """Keep, per state, the largest coefficients until their squared sum reaches `norm_kept` of
-    the state's squared norm; drop determinants no state keeps; renormalise every state.
+    """Restrict every state to the union of the determinants that are important for some state.
 
-    The target carries a relative margin of 1e-12, so norm_kept = 1.0 still drops weights below
-    1e-12 of the state's squared norm. Ties between equal weights are broken by determinant
-    order (stable sort). Renormalising the kept coefficients to unit norm assumes distinct
-    determinants over orthonormal MOs.
+    For each state, the important determinants are the largest-|c| ones (stable order for ties)
+    whose squared coefficients reach `norm_kept` of the state's squared norm; for norm_kept = 1.0
+    that is every determinant with a nonzero coefficient, with no margin. For norm_kept < 1.0 a
+    relative margin of 1e-12 guards only against floating-point cumulative-sum shortfall. The
+    union U of these sets over all states is kept, and every state keeps ALL its coefficients on
+    U (nothing inside U is zeroed). Determinants outside U are dropped and each state is
+    renormalised (this assumes distinct determinants over orthonormal MOs).
+
+    Cross-state coefficients must be kept: a determinant that is negligible for state I but
+    important for state J still carries the off-diagonal overlap S_IJ, and those tiny
+    first-order terms become the derivative couplings.
     """
     if not 0.0 < norm_kept <= 1.0:
         raise ValueError(f"norm_kept must be in (0, 1], got {norm_kept}")
     if not np.all(np.isfinite(expansion.coeffs)):
         raise ValueError("coefficients must be finite")
     coeffs = expansion.coeffs.copy()
+    used = np.zeros(coeffs.shape[1], dtype=bool)
     for s in range(coeffs.shape[0]):
         weights = coeffs[s] ** 2
         total = float(weights.sum())
         if total == 0.0:
             raise ValueError(f"state {s} has only zero coefficients")
+        if norm_kept == 1.0:
+            used |= weights > 0.0
+            continue
         order = np.argsort(-weights, kind="stable")
         cumulative = np.cumsum(weights[order])
         n_keep = int(np.searchsorted(cumulative, norm_kept * total * (1.0 - 1e-12))) + 1
-        coeffs[s, order[n_keep:]] = 0.0
-    used = np.any(coeffs != 0.0, axis=0)
+        used[order[:n_keep]] = True
     coeffs = coeffs[:, used]
     coeffs /= np.linalg.norm(coeffs, axis=1)[:, None]
     return DeterminantExpansion(expansion.alpha[used], expansion.beta[used], coeffs)

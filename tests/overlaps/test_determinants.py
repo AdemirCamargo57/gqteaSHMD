@@ -110,11 +110,10 @@ def test_truncate_keeps_the_dominant_determinants_and_renormalises():
     kept = truncate(wf, 0.95)
     assert kept.n_dets == 3  # determinant 3 is used by no state
     np.testing.assert_allclose(np.linalg.norm(kept.coeffs, axis=1), 1.0)
-    # state 0: 0.95 of its 0.98 total is 0.931; 0.81 + 0.16 = 0.97 reaches it, so the 0.01
-    # determinant is dropped and the rest is renormalised
-    norm0 = math.hypot(0.9, 0.4)
-    np.testing.assert_allclose(kept.coeffs[0], [0.9 / norm0, 0.4 / norm0, 0.0])
-    assert kept.coeffs[0, 2] == 0.0
+    # state 0's own cut (0.95 of 0.98) keeps determinants 0 and 1; determinant 2 is important for
+    # state 1, so state 0 keeps its 0.1 coefficient there too (cross-state coefficients are kept)
+    norm0 = math.sqrt(0.9**2 + 0.4**2 + 0.1**2)
+    np.testing.assert_allclose(kept.coeffs[0], [0.9 / norm0, 0.4 / norm0, 0.1 / norm0])
     full = truncate(wf, 1.0)
     assert full.n_dets == 3
     with pytest.raises(ValueError, match="norm_kept"):
@@ -130,3 +129,12 @@ def test_truncate_rejects_zero_and_non_finite_states():
     bad = DeterminantExpansion([[0], [1]], [[0], [0]], [[1.0, np.nan]])
     with pytest.raises(ValueError, match="finite"):
         truncate(bad, 0.9)
+
+
+def test_truncate_keeps_tiny_cross_state_coefficients():
+    eps = 1e-6
+    coeffs = np.array([[1.0, eps, 0.0], [0.0, 1.0, eps]])
+    wf = DeterminantExpansion([[0], [1], [2]], [[0]] * 3, coeffs)
+    kept = truncate(wf, 0.9999)  # determinant 2 is dropped; state 0 keeps its eps on determinant 1
+    s = state_overlaps(kept, kept, np.eye(3))
+    assert s[0, 1] == pytest.approx(eps / math.sqrt(1 + eps**2), rel=1e-12)
