@@ -6,6 +6,8 @@ Coordinates are passed to PySCF in bohr; all results are in atomic units.
 
 from __future__ import annotations
 
+import io
+import json
 import logging
 import re
 import sys
@@ -35,10 +37,12 @@ from gqteashmd.electronic.pyscf_errors import wrap_failure
 from gqteashmd.errors import ConfigError, ElectronicStructureError
 from gqteashmd.overlaps.determinants import DeterminantExpansion, state_overlaps, truncate
 from gqteashmd.overlaps.tracking import track
+from gqteashmd.util.fileio import write_bytes_atomic
 
 _LOG = logging.getLogger(__name__)
 
 MIN_PYSCF_VERSION = (2, 6, 0)
+_STATE_FORMAT = 1
 
 # (name, level shift / Eh, damping factor, second-order solver)
 _SCF_LADDER: tuple[tuple[str, float, float, bool], ...] = (
@@ -237,11 +241,60 @@ class PySCFBackend(ElectronicBackend):
             meta={"backend": "pyscf", "method": self._settings.method, "compute_more": True},
         )
 
+    def _fingerprint(self) -> str:
+        s = self._settings
+        return json.dumps(
+            {
+                "method": s.method,
+                "basis": s.basis,
+                "functional": s.functional,
+                "symbols": list(self._molecule.symbols),
+                "charge": self._molecule.charge,
+                "multiplicity": self._molecule.multiplicity,
+                "singlets": s.singlets,
+                "triplets": s.triplets,
+                "casscf": None if s.casscf is None else s.casscf.model_dump(),
+                "overlap_norm_kept": s.overlap_norm_kept,
+            },
+            sort_keys=True,
+        )
+
     def save_state(self, path: Path) -> None:
-        raise NotImplementedError("save_state arrives in P3b Task 8")
+        snap = self._snapshot
+        if snap is None:
+            raise ValueError("There is no electronic state to save: call compute() first.")
+        buffer = io.BytesIO()
+        np.savez(
+            buffer,
+            format=np.array(_STATE_FORMAT),
+            fingerprint=np.array(self._fingerprint()),
+            coords=snap.coords,
+            mo_coeff=snap.mo_coeff,
+            density=snap.density,
+            alpha=snap.expansion.alpha,
+            beta=snap.expansion.beta,
+            coeffs=snap.expansion.coeffs,
+        )
+        write_bytes_atomic(Path(path), buffer.getvalue())
 
     def load_state(self, path: Path) -> None:
-        raise NotImplementedError("load_state arrives in P3b Task 8")
+        with np.load(Path(path), allow_pickle=False) as data:
+            if int(data["format"]) != _STATE_FORMAT:
+                raise ValueError(
+                    f"{path}: unsupported electronic state format {int(data['format'])}."
+                )
+            if str(data["fingerprint"]) != self._fingerprint():
+                raise ValueError(
+                    f"The electronic state in {path} was saved with different settings or a "
+                    "different molecule; it cannot be reused."
+                )
+            self._snapshot = _Snapshot(
+                coords=np.array(data["coords"]),
+                mo_coeff=np.array(data["mo_coeff"]),
+                density=np.array(data["density"]),
+                expansion=DeterminantExpansion(data["alpha"], data["beta"], data["coeffs"]),
+            )
+        self._live = None
 
     # ------------------------------------------------------------------ setup
     @contextmanager
