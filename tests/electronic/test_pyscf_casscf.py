@@ -93,12 +93,73 @@ def test_inconsistent_charge_is_a_config_error(ethylene_symbols, make_settings):
         PySCFBackend(MoleculeSpec(tuple(ethylene_symbols), 1, 1), make_settings())
 
 
-def test_previous_orbitals_are_projected(ethylene_symbols, ethylene_bohr, make_settings):
+def test_previous_orbitals_are_projected(
+    ethylene_symbols, ethylene_bohr, make_settings, monkeypatch
+):
+    from pyscf import mcscf
+
+    calls = []
+    original = mcscf.project_init_guess
+
+    def spy(*args, **kwargs):
+        calls.append(1)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(mcscf, "project_init_guess", spy)
     settings = make_settings(basis="6-31g")
     moved = ethylene_bohr + np.random.default_rng(7).normal(scale=0.05, size=ethylene_bohr.shape)
     reused = _backend(ethylene_symbols, settings)
     reused.compute(Request(ethylene_bohr))
+    assert calls == []  # nothing to project on the first call
     second = reused.compute(Request(moved))
+    assert calls == [1]  # the second call projects the first call orbitals
     fresh = _backend(ethylene_symbols, settings).compute(Request(moved))
+    assert calls == [1]  # a new backend has no previous orbitals
     for label in (S0, S1):
         assert abs(second.energies[label] - fresh.energies[label]) < 1e-7
+
+
+def test_a_later_scf_rung_rescues_a_failed_first_rung(
+    ethylene_symbols, ethylene_bohr, make_settings, monkeypatch
+):
+    original = PySCFBackend._make_scf
+    made = []
+
+    def make_scf(self, mol):
+        mf = original(self, mol)
+        if not made:
+            mf.max_cycle = 1  # the first rung cannot converge in one cycle
+        made.append(mf)
+        return mf
+
+    monkeypatch.setattr(PySCFBackend, "_make_scf", make_scf)
+    result = _backend(ethylene_symbols, make_settings(basis="sto-3g")).compute(
+        Request(ethylene_bohr)
+    )
+    assert result.meta["scf"] == "level shift + damping"
+    assert len(made) == 2
+    # damping only acts before DIIS starts, so the damping rung must delay DIIS
+    assert made[1].diis_start_cycle > 1 and made[1].damp == 0.5
+
+
+def test_failure_wrapper_marks_only_transient_errors_retryable():
+    from gqteashmd.electronic.pyscf_backend import _wrap_failure
+
+    oom = _wrap_failure("CASSCF", MemoryError("no memory"))
+    assert isinstance(oom, ElectronicStructureError) and oom.retryable is True
+    assert oom.exit_code == 4
+    assert _wrap_failure("scratch", OSError("disk full")).retryable is True
+    err = _wrap_failure("CASSCF", ValueError("bad"))
+    assert err.retryable is False
+    assert str(err) == "CASSCF failed: ValueError: bad"
+
+
+def test_importing_the_cli_and_worker_does_not_import_pyscf():
+    import subprocess
+    import sys
+
+    code = (
+        "import gqteashmd.cli, gqteashmd.worker, sys; "
+        "assert not any(m == 'pyscf' or m.startswith('pyscf.') for m in sys.modules)"
+    )
+    subprocess.run([sys.executable, "-c", code], check=True)

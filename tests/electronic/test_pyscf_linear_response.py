@@ -109,7 +109,7 @@ def test_unknown_functional_is_an_electronic_structure_error(
     ethylene_symbols, ethylene_bohr, make_settings
 ):
     settings = _tda_settings(make_settings, functional="no-such-functional")
-    with pytest.raises(ElectronicStructureError, match="SCF failed"):
+    with pytest.raises(ElectronicStructureError, match=r"SCF (.*) failed"):
         PySCFBackend(MoleculeSpec(tuple(ethylene_symbols)), settings).compute(
             Request(ethylene_bohr)
         )

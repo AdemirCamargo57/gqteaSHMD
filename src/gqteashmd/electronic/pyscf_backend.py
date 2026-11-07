@@ -34,6 +34,14 @@ _SCF_LADDER: tuple[tuple[str, float, float, bool], ...] = (
 )
 
 
+def _wrap_failure(what: str, exc: Exception) -> ElectronicStructureError:
+    """Wrap an exception raised inside PySCF; only out-of-memory and I/O errors are retryable."""
+    return ElectronicStructureError(
+        f"{what} failed: {type(exc).__name__}: {exc}",
+        retryable=isinstance(exc, (MemoryError, OSError)),
+    )
+
+
 def require_pyscf() -> str:
     """Return the installed PySCF version; ConfigError if missing or too old."""
     try:
@@ -117,7 +125,14 @@ class PySCFBackend(ElectronicBackend):
             "scf_energy_hartree": float(mf.e_tot),
             "wall_time_s": time.perf_counter() - started,
         }
-        return ElectronicResult(self._states, energies, gradients, dipoles, spins, meta)
+        return ElectronicResult(
+            states=self._states,
+            energies=energies,
+            gradients=gradients,
+            transition_dipoles=dipoles,
+            spin_squares=spins,
+            meta=meta,
+        )
 
     # ------------------------------------------------------------------ setup
     @contextmanager
@@ -155,6 +170,8 @@ class PySCFBackend(ElectronicBackend):
                     basis=self._settings.basis,
                     charge=self._molecule.charge,
                     spin=self._molecule.multiplicity - 1,
+                    dump_input=False,  # do not copy the running script into the PySCF log
+                    parse_arg=False,  # do not let PySCF read our command line
                 )
         except RuntimeError as exc:  # pyscf BasisNotFoundError is a RuntimeError
             raise ElectronicStructureError(
@@ -187,6 +204,10 @@ class PySCFBackend(ElectronicBackend):
             mf = self._make_scf(mol)
             mf.level_shift = shift
             mf.damp = damp
+            if damp:
+                # PySCF damps only while cycle < diis_start_cycle - 1 (default 1, i.e. never):
+                # damp the first cycles, then let DIIS finish the convergence
+                mf.diis_start_cycle = 8
             if second_order:
                 mf = mf.newton()
             try:
@@ -194,9 +215,7 @@ class PySCFBackend(ElectronicBackend):
             # An exception (unlike non-convergence) signals a broken setup that another rung
             # would not fix, so it aborts the ladder.
             except Exception as exc:  # PySCF raises many types; report them as SCF failures
-                raise ElectronicStructureError(
-                    f"PySCF SCF failed ({name}): {type(exc).__name__}: {exc}"
-                ) from exc
+                raise _wrap_failure(f"PySCF SCF ({name})", exc) from exc
             if mf.converged:
                 self._previous_dm = mf.make_rdm1()
                 return mf, name
@@ -242,13 +261,11 @@ class PySCFBackend(ElectronicBackend):
             try:
                 mo0 = mcscf.project_init_guess(mc, self._previous_mo, self._previous_mol)
             except Exception as exc:
-                raise ElectronicStructureError(
-                    f"Projecting the previous orbitals failed: {type(exc).__name__}: {exc}"
-                ) from exc
+                raise _wrap_failure("Projecting the previous orbitals", exc) from exc
         try:
             mc.kernel(mo_coeff=mo0)
         except Exception as exc:
-            raise ElectronicStructureError(f"CASSCF failed: {type(exc).__name__}: {exc}") from exc
+            raise _wrap_failure("CASSCF", exc) from exc
         if not mc.converged:
             raise ElectronicStructureError(
                 f"SA-CASSCF did not converge (conv_tol = {cas.conv_tol}, "
@@ -269,9 +286,7 @@ class PySCFBackend(ElectronicBackend):
                 try:
                     g = solver.kernel(state=label.index)
                 except Exception as exc:
-                    raise ElectronicStructureError(
-                        f"The SA-CASSCF gradient of {label} failed: {type(exc).__name__}: {exc}"
-                    ) from exc
+                    raise _wrap_failure(f"The SA-CASSCF gradient of {label}", exc) from exc
                 if not getattr(solver, "converged", True):
                     raise ElectronicStructureError(
                         f"The SA-CASSCF gradient of {label} did not converge."
@@ -289,9 +304,7 @@ class PySCFBackend(ElectronicBackend):
                     t_ao = mo_cas @ t_mo @ mo_cas.T
                     dipoles[label] = -np.einsum("xij,ji->x", r_ints, t_ao)  # mu = -sum r gamma
             except Exception as exc:
-                raise ElectronicStructureError(
-                    f"The transition dipole calculation failed: {type(exc).__name__}: {exc}"
-                ) from exc
+                raise _wrap_failure("The transition dipole calculation", exc) from exc
         self._previous_mo, self._previous_mol = mc.mo_coeff, mol
         return energies, gradients, dipoles, spins
 
@@ -319,9 +332,7 @@ class PySCFBackend(ElectronicBackend):
             try:
                 td.kernel()
             except Exception as exc:
-                raise ElectronicStructureError(
-                    f"{method} failed: {type(exc).__name__}: {exc}"
-                ) from exc
+                raise _wrap_failure(method, exc) from exc
             converged = np.atleast_1d(np.asarray(td.converged, dtype=bool))
             if len(td.e) < len(excited) or not bool(converged.all()):
                 raise ElectronicStructureError(
@@ -334,9 +345,7 @@ class PySCFBackend(ElectronicBackend):
                 try:
                     mus = td.transition_dipole()
                 except Exception as exc:
-                    raise ElectronicStructureError(
-                        f"{method} transition dipole failed: {type(exc).__name__}: {exc}"
-                    ) from exc
+                    raise _wrap_failure(f"{method} transition dipole", exc) from exc
                 for label, mu in zip(excited, mus, strict=True):
                     dipoles[label] = np.asarray(mu, dtype=float)
         for label in sorted(request.gradients):
@@ -347,8 +356,6 @@ class PySCFBackend(ElectronicBackend):
                     g = td.nuc_grad_method().kernel(state=label.index)
             except Exception as exc:
                 what = "SCF" if label.index == 0 else method
-                raise ElectronicStructureError(
-                    f"{what} gradient of {label} failed: {type(exc).__name__}: {exc}"
-                ) from exc
+                raise _wrap_failure(f"{what} gradient of {label}", exc) from exc
             gradients[label] = np.asarray(g, dtype=float)
         return energies, gradients, dipoles, {}

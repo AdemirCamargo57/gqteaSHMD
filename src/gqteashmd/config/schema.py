@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from math import comb
 from pathlib import Path
 from typing import Literal
 
@@ -113,6 +114,12 @@ class WorkflowSection(_Section):
     pause_after: list[str] = Field(default_factory=list)
 
 
+def n_singlet_csfs(ncas: int, nelecas: int) -> int:
+    """Number of singlet CSFs of a CAS(nelecas, ncas) space (Weyl formula, nelecas even)."""
+    n, half = ncas, nelecas // 2
+    return comb(n + 1, half) * comb(n + 1, half + 1) // (n + 1)
+
+
 class CasscfSection(_Section):
     ncas: int = Field(ge=1)
     nelecas: int = Field(ge=1)
@@ -157,6 +164,13 @@ class ElectronicSection(_Section):
                 )
             if self.functional is not None:
                 raise ValueError("electronic.functional is not used by method = 'casscf'")
+            available = n_singlet_csfs(self.casscf.ncas, self.casscf.nelecas)
+            if self.singlets > available:
+                raise ValueError(
+                    f"electronic.singlets = {self.singlets} exceeds the {available} singlet "
+                    f"states of CAS({self.casscf.nelecas},{self.casscf.ncas}) "
+                    f"(nelecas = {self.casscf.nelecas}, ncas = {self.casscf.ncas})"
+                )
         else:
             if self.functional is None:
                 raise ValueError(

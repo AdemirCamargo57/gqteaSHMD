@@ -1,6 +1,7 @@
 import pytest
 
 from gqteashmd.config.loader import load_config
+from gqteashmd.config.schema import n_singlet_csfs
 from gqteashmd.errors import ConfigError
 
 CAS = (
@@ -62,3 +63,20 @@ def test_invalid_sections(tmp_path, write_input, extra, message):
 def test_open_shell_molecule_is_refused(tmp_path, write_input):
     with pytest.raises(ConfigError, match="closed-shell singlet"):
         _load(tmp_path, write_input, CAS, molecule="multiplicity = 3")
+
+
+@pytest.mark.parametrize(
+    "ncas, nelecas, expected", [(2, 2, 3), (4, 4, 20), (6, 6, 175), (3, 2, 6), (1, 2, 1)]
+)
+def test_n_singlet_csfs(ncas, nelecas, expected):
+    assert n_singlet_csfs(ncas, nelecas) == expected
+
+
+def test_singlets_cannot_exceed_the_cas_singlet_space(tmp_path, write_input):
+    assert _load(tmp_path, write_input, CAS.replace("singlets = 2", "singlets = 3")).electronic
+    with pytest.raises(
+        ConfigError,
+        match=r"electronic\.singlets = 4 exceeds the 3 singlet states of CAS\(2,2\) "
+        r"\(nelecas = 2, ncas = 2\)",
+    ):
+        _load(tmp_path, write_input, CAS.replace("singlets = 2", "singlets = 4"))
