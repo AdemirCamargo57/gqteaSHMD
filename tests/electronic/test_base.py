@@ -1,3 +1,4 @@
+import json
 import math
 
 import numpy as np
@@ -8,7 +9,7 @@ from gqteashmd.electronic.base import ElectronicResult, Request
 from gqteashmd.electronic.properties import oscillator_strength
 from gqteashmd.errors import ElectronicStructureError, TaskError
 
-S0, S1 = StateLabel(1, 0), StateLabel(1, 1)
+S0, S1, T1 = StateLabel(1, 0), StateLabel(1, 1), StateLabel(3, 1)
 
 
 def test_error_type():
@@ -47,3 +48,19 @@ def test_result_json():
     assert s1["oscillator_strength"] == pytest.approx(1.0 / 3.0)
     assert data["gradients_hartree_per_bohr"]["S1"] == [[1.0, 1.0, 1.0], [1.0, 1.0, 1.0]]
     assert data["meta"] == {"method": "casscf"}
+
+
+def test_result_json_is_serialisable_and_orders_gradients():
+    result = ElectronicResult(
+        states=(S0, S1, T1),
+        energies={S0: -1.0, S1: -0.5, T1: np.float64(-0.6)},
+        gradients={T1: np.ones((1, 3)), S1: np.zeros((1, 3))},
+        transition_dipoles={S1: np.array([1.0, 0.0, 0.0], dtype=np.float32)},
+        spin_squares={S0: np.float32(0.0), S1: np.float64(0.0), T1: np.float32(2.0)},
+    )
+    data = result.to_json()
+    json.dumps(data)  # numpy scalars would raise here
+    assert list(data["gradients_hartree_per_bohr"]) == ["S1", "T1"]
+    for row in data["states"]:
+        for key in ("excitation_ev", "oscillator_strength", "spin_square"):
+            assert row[key] is None or type(row[key]) is float

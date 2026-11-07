@@ -7,7 +7,7 @@ from dataclasses import dataclass
 
 _PREFIX = {1: "S", 3: "T"}
 _MULTIPLICITY = {prefix: mult for mult, prefix in _PREFIX.items()}
-_PATTERN = re.compile(r"([ST])(\d+)")
+_PATTERN = re.compile(r"([ST])([0-9]+)")
 
 
 @dataclass(frozen=True, order=True)
@@ -37,6 +37,8 @@ def states_from_counts(singlets: int, triplets: int = 0) -> tuple[StateLabel, ..
     """States S0..S(singlets-1) followed by T1..T(triplets); `singlets` includes S0."""
     if singlets < 1:
         raise ValueError("At least one singlet state (S0) is required.")
+    if triplets < 0:
+        raise ValueError(f"The number of triplets cannot be negative, got {triplets}.")
     return tuple(StateLabel(1, i) for i in range(singlets)) + tuple(
         StateLabel(3, i) for i in range(1, triplets + 1)
     )

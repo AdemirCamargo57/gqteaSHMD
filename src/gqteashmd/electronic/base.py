@@ -63,16 +63,17 @@ class ElectronicResult:
         for label in self.states:
             delta = self.excitation_energy(label)
             tdip = self.transition_dipoles.get(label)
+            spin = self.spin_squares.get(label)
             rows.append(
                 {
                     "label": str(label),
                     "energy_hartree": float(self.energies[label]),
-                    "excitation_ev": delta * HARTREE_IN_EV,
+                    "excitation_ev": float(delta * HARTREE_IN_EV),
                     "transition_dipole_au": None if tdip is None else [float(x) for x in tdip],
                     "oscillator_strength": None
                     if tdip is None
-                    else oscillator_strength(delta, tdip),
-                    "spin_square": self.spin_squares.get(label),
+                    else float(oscillator_strength(delta, tdip)),
+                    "spin_square": None if spin is None else float(spin),
                 }
             )
         return {

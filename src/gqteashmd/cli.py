@@ -185,8 +185,33 @@ def _cmd_stop(args: argparse.Namespace) -> int:
     return 0
 
 
+def _check_json_output(path: Path) -> None:
+    """The parent of the --json file must be an existing writable directory (nothing is created)."""
+    parent = path.parent
+    if path.is_dir():
+        raise ConfigError(f"--json {path}: this is a directory, not a file.")
+    if not parent.is_dir():
+        raise ConfigError(f"--json {path}: the directory {parent} does not exist.")
+    if not os.access(parent, os.W_OK | os.X_OK):
+        raise ConfigError(f"--json {path}: the directory {parent} is not writable.")
+
+
+def _check_log_output(path: Path) -> None:
+    """Create the parent of the --log file (as the backend would) and check that it opens."""
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "a", encoding="utf-8"):
+            pass
+    except OSError as exc:
+        raise ConfigError(f"--log {path}: cannot be used: {exc.strerror or exc}") from exc
+
+
 def _cmd_single_point(args: argparse.Namespace) -> int:
     cfg = load_config(args.input).config
+    if args.json is not None:
+        _check_json_output(args.json)
+    if args.log is not None:
+        _check_log_output(args.log)
     path = cfg.molecule.geometry
     if not path.is_file():
         raise ConfigError(f"Geometry file not found or not a regular file: {path}")

@@ -47,3 +47,32 @@ def test_unknown_basis_is_exit_4(tmp_path, capsys):
     path = _input(tmp_path, extra=CAS.replace("6-31g", "no-such-basis"))
     assert main(["single-point", str(path)]) == 4
     assert "basis 'no-such-basis'" in capsys.readouterr().err
+
+
+def test_inconsistent_charge_is_exit_2(tmp_path, capsys):
+    path = _input(tmp_path)
+    path.write_text(
+        path.read_text().replace(
+            'geometry = "ethylene.xyz"', 'geometry = "ethylene.xyz"\ncharge = 1'
+        )
+    )
+    assert main(["single-point", str(path)]) == 2
+    assert "Check [molecule]" in capsys.readouterr().err
+
+
+def test_json_into_a_missing_directory_is_exit_2_before_computing(tmp_path, capsys):
+    out = tmp_path / "missing" / "sp.json"
+    assert main(["single-point", str(_input(tmp_path)), "--json", str(out)]) == 2
+    err = capsys.readouterr()
+    assert "--json" in err.err and "missing" in err.err
+    assert "Single point" not in err.out  # no calculation was started
+
+
+def test_unusable_log_path_is_exit_2_before_computing(tmp_path, capsys):
+    blocker = tmp_path / "blocker"
+    blocker.write_text("a file, not a directory")
+    log = blocker / "pyscf.log"
+    assert main(["single-point", str(_input(tmp_path)), "--log", str(log)]) == 2
+    err = capsys.readouterr()
+    assert "--log" in err.err
+    assert "Single point" not in err.out

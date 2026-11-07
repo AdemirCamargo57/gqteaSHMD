@@ -13,7 +13,7 @@ def test_parse_and_format():
     assert str(S1) == "S1"
 
 
-@pytest.mark.parametrize("bad", ["", "X1", "S", "S-1", "T0", "Q1", "S1.5", "S01x"])
+@pytest.mark.parametrize("bad", ["", "X1", "S", "S-1", "T0", "Q1", "S1.5", "S01x", "S٣"])
 def test_invalid_labels(bad):
     with pytest.raises(ValueError):
         StateLabel.parse(bad)
@@ -37,3 +37,8 @@ def test_states_from_counts_include_s0():
 
 def test_labels_sort_singlets_first():
     assert sorted([T1, S1, S0]) == [S0, S1, T1]
+
+
+def test_negative_triplets_are_rejected():
+    with pytest.raises(ValueError, match="triplets"):
+        states_from_counts(2, -1)
