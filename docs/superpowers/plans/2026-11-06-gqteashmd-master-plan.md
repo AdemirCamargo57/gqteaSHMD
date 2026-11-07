@@ -110,6 +110,10 @@ src/gqteashmd/
 ├── chem/        elements.py  xyz.py  electrons.py (P3a)  masses.py (P4)  molden.py (P4)
 ├── vib/         harmonic.py (P4)  wigner.py (P5)
 ├── electronic/  base.py  properties.py  pyscf_backend.py  factory.py (P3a)
+│                pyscf_errors.py  pyscf_casscf.py  pyscf_response.py (P3b: failure wrapping;
+│                CASSCF ladder, NACs, expansion; TDA/TDDFT ladder, expansion)
+├── overlaps/    determinants.py  tracking.py (P3b; backend-independent, never imports PySCF:
+│                DeterminantExpansion, truncate, state_overlaps; track, lowdin_orthonormalize)
 ├── dynamics/    (P7a/P7b; see strategy §2.2 for the inner layout)
 ├── artifacts/   (one module per artifact type, from P4 on)
 ├── testing/     fake_stages.py (P1; test-only helpers shipped for subprocess tests)
@@ -300,7 +304,7 @@ total_memory_mb = 128000             # REQUIRED (P2)
 max_parallel_tasks = 8
 threads_per_task = 4
 memory_mb_per_task = 4000
-scratch = "/scratch/ajc"             # P3b (not in the schema yet)
+scratch = "/scratch/ajc"             # planned (not in the schema yet; the P3b backend already takes a scratch_dir)
 [resources.stages.frequencies]
 max_parallel_tasks = 1
 threads_per_task = 32
@@ -362,7 +366,9 @@ pause_after = ["selection"]          # review spectrum before dynamics
   2. level shift + damping;
   3. fresh atomic guess + second-order solver.
 
-  TDDFT/CASSCF have their own ladders (more roots, a different initial guess), planned for P3b. In P3a only the SCF has a ladder, and only the converged rung is recorded in the result meta (`meta.scf`).
+  CASSCF and TDA/TDDFT have their own ladders (**implemented in P3b**), and the converged rung is recorded in the result meta (`meta.scf`, `meta.casscf`, `meta.td`):
+  - CASSCF: (1) the previous geometry's orbitals, projected (skipped without a snapshot); (2) SCF orbitals; (3) SCF orbitals plus a spin penalty (`fix_spin_`, shift 0.5) and 3× macro iterations. A rung fails on non-convergence or a root with |<S²>| > 1e-3; a PySCF exception aborts the ladder.
+  - TDA/TDDFT: (1) defaults; (2) `nstates + 3` roots and 3× `max_cycle`, lowest kept. Roots are capped at the number of single excitations.
 - **Fail early.** All config and environment checks run before the first expensive calculation.
 - **Never delete results automatically.** Superseded results are moved; cleaning up is an explicit user action.
 - **Logs.** The controller writes `logs/gqteashmd.log` (INFO to console, DEBUG to file). Each task has `worker.log` (stdout/stderr) plus a backend log (e.g. `pyscf.log`) in its task directory.
@@ -423,7 +429,8 @@ Each sub-project produces working, tested software and gets its own detailed pla
 | **P1** | **Foundation & orchestrator** (detailed plan exists) | Repo, environment, CI, errors, config core, project layout, state store, stage contract, worker, local executor, orchestrator (resume/retry/stop/stale), CLI, `prepare` stage | — | 0 | 3–4 wk |
 | P2 | Input schema & preflight — **DONE** (branch `feat/p2-input-preflight`, not yet merged) | Delivered: required `total_cores` / `total_memory_mb` with the fit rules (`n_p·n_t ≤ total_cores`, `n_p·m ≤ total_memory_mb`, globally and per stage) and a detection **warning** (D17); `[resources.stages.<name>]` overrides with one executor per stage; `execution.min_free_disk_mb`; preflight before the project directory is touched (Windows drive / OneDrive refusal, free disk, required modules); `.gqteashmd/provenance.json`; `[workflow] pause_after` (exit 5); once-only error output with `FILE_ONLY` logging; state-db failures as `ProjectError` and read-only `status`; non-finite coordinates, `~` expansion, `.`/`..` name checks; lock retry; mypy in CI; the `gqteashmd init` template for the implemented sections. **Scope ruling:** the later input sections (`[electronic]`, `[optimize]`, `[frequencies]`, `[sampling]`, `[excitations]`, `[selection]`, `[dynamics]`, `[analysis]`) and state labels are added by the sub-project that consumes them (P3–P8), because their keys depend on open items O3, O4, O8 and O19. The remaining deferred P1 findings stay in the ledgers with an owner (see the P2 plan, "Scope rulings") | P1 | 0 | 2 wk |
 | **P3a** | PySCF electronic-structure layer — **DONE** (merged into local `main` on 2026-11-07) | Delivered: the `[electronic]` / `[electronic.casscf]` input; `core/` (units, state labels); the backend contract and `PySCFBackend` (RHF/RKS, SA-CASSCF with a singlet-only CI solver and an ⟨S²⟩ guard, TDA, TDDFT, CIS, TDHF); energies, analytic gradients and S0→state transition dipoles; the SCF retry ladder; orbital reuse by projection; threads/memory; `gqteashmd single-point`; ethylene validation against SHARC 4.1 (`tools/sharc_compare/`, `pytest -m sharc`) and against finite differences. **Not delivered, moved:** NACs, wavefunction overlaps, phase tracking, scratch/chkfile policy and TDDFT/CASSCF retry ladders to P3b; the Hessian to P4 | P1 (P2 for config) | 3 | 5–6 wk |
-| P3b | Couplings for dynamics | Nonadiabatic couplings (CASSCF) and wavefunction overlaps with phase tracking for TDA/TDDFT; the rest of the strategy §2.3 backend contract: `capabilities`, `compute_more` (an extra gradient at the same geometry after a hop) and explicit, serialisable reference-wavefunction state (`save_state`/`load_state`, or a state object in/out of `compute`) so that restarts are reproducible and `run_task` stays idempotent; scratch directory and chkfile policy; CASSCF/TDDFT retry ladders. Needed by P7b, not by P4–P6 | P3a | 3 | 3–4 wk |
+| **P3b** | Couplings for dynamics — **DONE** (branch `feat/p3b-couplings`, not yet merged) | **Delivered:** SA-CASSCF NACs (agree with SHARC 4.1 to 9e-8 up to sign); `gqteashmd.overlaps` (Löwdin determinant overlaps, union truncation `electronic.overlap_norm_kept`, Hungarian state matching, phase tracking); `capabilities`, `compute_more`, `save_state`/`load_state` (restart reproduces to 2e-11); scratch policy (no chkfile, TMPDIR); CASSCF and TD retry ladders. TDDFT overlaps use X only; TDA/TDDFT have no analytic NACs in PySCF 2.14. Library only: no CLI command or stage uses these yet. **Moved to P3c by ruling:** the hardening sweep. Original scope: Nonadiabatic couplings (CASSCF) and wavefunction overlaps with phase tracking for TDA/TDDFT; the rest of the strategy §2.3 backend contract: `capabilities`, `compute_more` (an extra gradient at the same geometry after a hop) and explicit, serialisable reference-wavefunction state (`save_state`/`load_state`, or a state object in/out of `compute`) so that restarts are reproducible and `run_task` stays idempotent; scratch directory and chkfile policy; CASSCF/TDDFT retry ladders. Needed by P7b, not by P4–P6 | P3a | 3 | 3–4 wk |
+| P3c | Hardening sweep | The deferred robustness items collected in the P1, P2, P3a and P3b ledgers (`.tmp` cleanup, a DONE stage directory deleted by hand, `ensure()`/logging before the lock, unreadable `task.json`, SIGKILL to the group after the leader exits, sqlite errors at query time, PySCF/geomeTRIC version and writable-scratch preflight checks, and the other recorded items) | P3b | 3 | 1–2 wk |
 | P4 | `optimize` + `frequencies` stages | geomeTRIC driver; **PySCF Hessian (analytic + finite-difference gradient tasks; moved here from P3)**; own harmonic analysis (mass weighting, Eckart projection, frequencies, normal modes); imaginary-mode policy; Molden writer; `frequencies.h5` | P3 | 5 | 3 wk |
 | P5 | `sampling` stage | Own Wigner sampler (T = 0, thermal option), velocities, momentum removal, `samples.h5`; SHARC `wigner.py` distribution comparison | P4 | 5 | 2–3 wk |
 | P6 | `excitations` + `selection` stages | Parallel single points, spectrum, selection modes, `trajectories.json`, review report for `pause_after`; SHARC excite comparison | P3, P5 | 5 | 3–4 wk |

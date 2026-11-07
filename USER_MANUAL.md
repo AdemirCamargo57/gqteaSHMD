@@ -4,7 +4,7 @@
 **Program:** `gqteashmd`, automated surface-hopping molecular dynamics with PySCF
 **Licence:** MIT
 
-> **Read this first: what works today.** This is an early development version. The **workflow engine is complete**: input file (with hardware and per-stage resource settings), checks before a run (preflight), project management, parallel tasks, crash-safe resume, graceful stop, review pauses, change detection, and a record of the software used (provenance). Its first stage is **`prepare`**, which validates and stores the molecule. The **electronic-structure layer** (PySCF: SCF, SA-CASSCF, TDA, TDDFT, CIS, TDHF; energies, analytic gradients, transition dipoles) is also **implemented** and validated against SHARC 4.1; you can use it today with **`gqteashmd single-point`** (§5.3). **No quantum-chemistry *stage* exists yet.** Optimization, frequencies, Wigner sampling, initial conditions, dynamics and analysis are *planned*; so are nonadiabatic couplings, wavefunction overlaps and the Hessian. They are described in §8.7–§8.13 so that you can see in advance how results will be computed. Every section is marked:
+> **Read this first: what works today.** This is an early development version. The **workflow engine is complete**: input file (with hardware and per-stage resource settings), checks before a run (preflight), project management, parallel tasks, crash-safe resume, graceful stop, review pauses, change detection, and a record of the software used (provenance). Its first stage is **`prepare`**, which validates and stores the molecule. The **electronic-structure layer** (PySCF: SCF, SA-CASSCF, TDA, TDDFT, CIS, TDHF; energies, analytic gradients, transition dipoles) is also **implemented** and validated against SHARC 4.1; you can use it today with **`gqteashmd single-point`** (§5.3). **No quantum-chemistry *stage* exists yet.** Optimization, frequencies, Wigner sampling, initial conditions, dynamics and analysis are *planned*; so are the use of nonadiabatic couplings and wavefunction overlaps in dynamics, and the Hessian (SA-CASSCF couplings and the overlap engine exist as a library, §8.6.8, but no command reaches them). They are described in §8.7–§8.13 so that you can see in advance how results will be computed. Every section is marked:
 >
 > - **[IMPLEMENTED]**: available in this version.
 > - **[PLANNED]**: designed but not yet available; details may still change.
@@ -44,7 +44,7 @@
 
 In SHARC 4.1 these steps are separate manual tools: `wigner.py`, `setup_init.py`, `excite.py`, `setup_traj.py` and `populations.py`. `gqteashmd` runs them automatically, one after another. You only intervene when the program asks you to fix something.
 
-The electronic-structure program is **PySCF** **[IMPLEMENTED, P3a]** as a library layer: the `[electronic]` input section (§4.2) and the command `gqteashmd single-point` (§5.3) use it today. The workflow **stages** that will call it (`optimize`, `frequencies`, `excitations`, `dynamics`) are still planned, as is the computation of nonadiabatic couplings and wavefunction overlaps (P3b). ORCA, Gaussian and others may be added later.
+The electronic-structure program is **PySCF** **[IMPLEMENTED, P3a]** as a library layer: the `[electronic]` input section (§4.2) and the command `gqteashmd single-point` (§5.3) use it today. The workflow **stages** that will call it (`optimize`, `frequencies`, `excitations`, `dynamics`) are still planned, as is their use in dynamics; SA-CASSCF nonadiabatic couplings, wavefunction overlaps and phase tracking (P3b) exist as a library only (§8.6.8). ORCA, Gaussian and others may be added later.
 
 ---
 
@@ -289,7 +289,8 @@ The rules, all checked when the input is loaded (`validate`, `run`, `single-poin
 - `triplets > 0` is rejected: *triplets are not supported yet*.
 - When `[electronic]` is present, `molecule.multiplicity` must be 1: *the PySCF backend supports closed-shell singlet molecules only*. A charge that is inconsistent with the electron count (§8.2) is also an input error (exit code 2), but it is **not** found by `validate`, which does not read the geometry: `single-point` finds it when it builds the backend, and `run` finds it in the `prepare` stage.
 - **State labels** are `S0` (ground state), `S1`, `S2`, … (0-based, singlets); triplets will be `T1`, `T2`, … when they arrive. `singlets` counts S0, so `singlets = N` gives S0 … S(N−1).
-- Not implemented yet: density fitting, spin-flip or unrestricted references, ECP-specific options, a `scratch` directory key, MC-PDFT.
+- `overlap_norm_kept` (float, default `0.9999`, allowed range $0.9 < x \le 1$): the fraction of each state's squared wavefunction norm that the determinant expansion must keep when wavefunction overlaps between geometries are computed (§8.6.8). Smaller values are faster and less accurate; `1.0` keeps every determinant. Values $\le 0.9$ or $> 1$ are an input error. It only matters for the overlap/phase machinery, which the CLI does not reach yet (§8.6.8).
+- Not implemented yet: density fitting, spin-flip or unrestricted references, ECP-specific options, a `scratch` directory key in the input file (the backend itself already supports a scratch directory, §8.6.8), MC-PDFT.
 
 ### 4.3 The XYZ geometry file
 **[IMPLEMENTED]**
@@ -309,7 +310,7 @@ The rules, all checked when the input is loaded (`validate`, `run`, `single-poin
 **[PLANNED]** Their key names and meanings are in the master plan §4.3. Each sub-project adds the sections it needs, and this manual is updated each time. The sections for the later stages are not part of the input yet, because their keys depend on decisions that are still open:
 - `[optimize]`, `[frequencies]` (P4); `[sampling]` (P5); `[excitations]`, `[selection]` (P6); `[dynamics]` (P7); `[analysis]` (P8).
 - Additional `[electronic]` keys: density fitting, MC-PDFT, triplet states (with intersystem crossing).
-- A `scratch` directory key in `[resources]` (P3b, together with the checkpoint-file policy).
+- A `scratch` directory key in the input file (the backend takes a scratch directory and has no checkpoint file since P3b, §8.6.8; the input key arrives with the stage that uses it).
 
 Until then, an input file that contains one of these sections or keys is rejected as unknown (§4.1).
 
@@ -760,7 +761,7 @@ where $f_{\max}$ is the stage's tolerated fraction. For `prepare`, $f_{\max} = 0
 > **§8.6 is [IMPLEMENTED].** **Everything below it (§8.7–§8.13) is [PLANNED].** The stages, keys and outputs there do not exist in the current version.
 
 ### 8.6 Electronic structure (PySCF)
-**[IMPLEMENTED, P3a]** Energies, analytic gradients and transition dipoles. **[PLANNED]** nonadiabatic couplings and wavefunction overlaps (P3b) and the Hessian (P4).
+**[IMPLEMENTED, P3a]** Energies, analytic gradients and transition dipoles. **[IMPLEMENTED, P3b, library only]** SA-CASSCF nonadiabatic couplings, wavefunction overlaps with phase tracking, `compute_more`, restarts (§8.6.8). **[PLANNED]** use of couplings and overlaps in dynamics (P7), TDDFT couplings, triplets and spin–orbit coupling, the Hessian (P4).
 
 **What is computed.** For a geometry $\mathbf R$ (nuclear coordinates, bohr) and the states $I = S_0, S_1, \dots$ requested by `electronic.singlets`:
 
@@ -771,14 +772,14 @@ where $f_{\max}$ is the stage's tolerated fraction. For `prepare`, $f_{\max} = 0
 | Gradient | $\nabla_{\mathbf R} E_I$, a $3N_{\text{at}}$-vector | $E_h/a_0$ | **[IMPLEMENTED]** (backend; `single-point` does not request it) |
 | Transition dipole | $\boldsymbol\mu_{0I}$ | $e\,a_0$ | **[IMPLEMENTED]** |
 | Oscillator strength | $f_{0I}$ | — | **[IMPLEMENTED]** |
-| Nonadiabatic couplings $\mathbf d_{IJ} = \langle \Psi_I \vert \nabla_{\mathbf R} \Psi_J \rangle$ (CASSCF); wavefunction overlaps $S_{IJ}(t) = \langle \Psi_I(t-\Delta t) \vert \Psi_J(t) \rangle$ (TDA/TDDFT) | $\mathbf d_{IJ}$, $S_{IJ}$ | $a_0^{-1}$, — | [PLANNED, P3b] |
+| Nonadiabatic couplings $\mathbf d_{IJ} = \langle \Psi_I \vert \nabla_{\mathbf R} \Psi_J \rangle$ (CASSCF); wavefunction overlaps $S_{IJ}(t) = \langle \Psi_I(t-\Delta t) \vert \Psi_J(t) \rangle$ (TDA/TDDFT) | $\mathbf d_{IJ}$, $S_{IJ}$ | $a_0^{-1}$, — | **[IMPLEMENTED, P3b]** $\mathbf d_{IJ}$ for CASSCF only; $S_{IJ}$ for all methods; library only, not reachable from the CLI (§8.6.8) |
 | Hessian $\partial^2 E_0/\partial x_i\partial x_j$ | $H_{ij}$ | $E_h/a_0^2$ | [PLANNED, P4] |
 
 **Assumptions that apply to everything in §8.6:**
 - **Closed-shell singlet molecules only.** The reference is a restricted determinant (RHF or RKS), so `molecule.multiplicity` must be 1. Open-shell references and radicals are refused (§9).
 - **Singlet excited states only.** `electronic.triplets` must be 0. S→T transitions and intersystem crossing are not available yet.
 - **Born–Oppenheimer, nonrelativistic, all-electron**, in the Gaussian basis `electronic.basis`; no solvent, no external field.
-- **State ordering** is by energy within the computed roots. The labels $S_I$ refer to that order at each geometry; following a state through a crossing needs the overlaps of P3b.
+- **State ordering** is by energy within the computed roots. The labels $S_I$ refer to that order at each geometry; following a state through a crossing uses the overlaps and phase tracking of §8.6.8 (library only for now).
 
 #### 8.6.1 The SCF reference and its convergence ladder
 Every method starts from a self-consistent-field (SCF) calculation on a single closed-shell determinant $\Phi_0$ of doubly occupied orbitals:
@@ -932,7 +933,105 @@ The numbers in the `gqteashmd` column were obtained with the program itself at t
 | TDA-B3LYP/STO-3G, `grid_level = 5`, `td_conv_tol = 1e-9` | S1, two components | $5.7\times10^{-8}\,E_h/a_0$ | $5\times10^{-6}$ |
 | TDA-B3LYP/STO-3G, `grid_level = 3` (default) | S1, two components | $7.6\times10^{-6}\,E_h/a_0$ | — (grid response, §8.6.4) |
 
+**Couplings and overlaps (P3b).** Ethylene, SA2-CASSCF(2,2). The finite-difference rows were measured with step `h` = $10^{-4}$ bohr, `conv_tol` = $10^{-11}$, `conv_tol_grad` = $10^{-7}$ (6-31G, one backend snapshot).
+
+| Check | Result | Tolerance / comment |
+|---|---|---|
+| $\mathbf d_{01}$ against SHARC 4.1 (6-31G\*, executed as a black box), up to one global sign | largest difference $9.1\times10^{-8}\,a_0^{-1}$ | SHARC also uses the full convention: `use_etfs=True` (no CSF term) differs by 0.27 |
+| $\mathbf d_{01}$ against central finite differences of the program's own overlaps: atom C1, x | $0.2566853$ (analytic) vs $0.2567711$ (FD), difference $8.6\times10^{-5}$ | constant offset from the AO-derivative convention (§8.6.8) |
+| same: atom H3, y | $-6.27706\times10^{-3}$ vs $-6.31245\times10^{-3}$, difference $3.5\times10^{-5}$ | |
+| same: atom H5, x | $-9.53438\times10^{-3}$ vs $-9.58974\times10^{-3}$, difference $5.5\times10^{-5}$ | |
+| Overlaps, random 0.01 bohr step on all atoms, CASSCF | diagonal $0.9952$, $0.9950$; smallest singular value $0.9950$; antisymmetry residual of the off-diagonal $6.4\times10^{-5}$ | |
+| Overlaps, same step, TDA-B3LYP/STO-3G, 3 excited states | diagonal $0.9953$, $0.9927$, $0.9926$; smallest singular value $0.9952$; antisymmetry residual $4.8\times10^{-4}$ | |
+| Overlaps at identical geometries | identity to $10^{-6}$ | |
+| Orientation: step of $10^{-3}$ bohr along $\mathbf d_{01}$ | $S_{01} \approx \mathbf d_{01}\cdot\Delta\mathbf R$ within 10 %, $S_{10}$ of opposite sign | confirms the index order and the sign convention |
+| Restart from `save_state`/`load_state` (same and new process) | phased energies, gradients, NACs, dipoles and overlaps agree with the continued run to $\le 2\times10^{-11}$ | |
+
+The finite-difference NAC test is a slow test (15 s); the NAC-against-SHARC test is part of the live SHARC test (`pytest -m sharc`, about 8 s).
+
 **Linear response against direct PySCF calls:** energies, excitation energies and gradients agree to $10^{-13}$ or better. Bright-state transition dipoles and oscillator strengths were checked on small test molecules (TDA-B3LYP/STO-3G S3: $\lvert\boldsymbol\mu\rvert = 1.54$, $f = 0.68$; CIS S1: $f = 0.72$; TDHF S1: $f = 0.50$).
+
+#### 8.6.8 Nonadiabatic couplings, wavefunction overlaps, restarts (P3b)
+**[IMPLEMENTED, P3b]** as a Python library (`gqteashmd.electronic.PySCFBackend`, `gqteashmd.overlaps`). **Not reachable from the command line yet:** `single-point` does not request couplings or overlaps, and no workflow stage uses them. They exist for the future dynamics stage (P7). **[PLANNED]** their use in dynamics (local diabatization, norm-preserving interpolation, hopping, P7), triplet states and spin–orbit coupling, and TDA/TDDFT couplings.
+
+**Capabilities.** The backend reports what it can do: gradients, overlaps and transition dipoles for all methods; analytic NACs for `casscf` only. A request for NACs with `tda` or `tddft` is refused with *Nonadiabatic coupling vectors are not available for method = '…'; request overlaps instead* (PySCF 2.14 has no analytic TDA/TDDFT couplings).
+
+**Nonadiabatic coupling vectors (SA-CASSCF).**
+
+$$
+\mathbf d_{IJ} = \langle \Psi_I \vert \nabla_{\mathbf R} \Psi_J \rangle ,
+\qquad \mathbf d_{JI} = -\mathbf d_{IJ} .
+$$
+
+| Symbol | Meaning | Unit |
+|---|---|---|
+| $\mathbf d_{IJ}$ | Coupling vector between states $I$ and $J$, a $3N_{\text{at}}$-vector | $a_0^{-1}$ |
+| $\Psi_I$ | State-averaged CASSCF wavefunction of state $I$ | — |
+| $\mathbf R$ | Nuclear coordinates | $a_0$ |
+
+The derivative acts on both the CI vector and the orbitals, so $\mathbf d_{IJ}$ includes the configuration-state-function (CSF) term (PySCF's default `nac_method()`; the variant without it, `use_etfs=True`, differs by 0.27 $a_0^{-1}$ on ethylene and is not used). Pairs are requested with $I < J$; the result for $I > J$ is the negative. The overall sign of each state is arbitrary (§8.6.5); the program fixes it by phase tracking (below).
+
+*AO-derivative convention.* The analytic CSF term uses the antisymmetrized basis-function derivative $\tfrac12(\langle\chi\vert\partial\chi\rangle - \langle\partial\chi\vert\chi\rangle)$, whereas a finite difference of overlaps differentiates only the ket basis functions. The two differ by $\tfrac12\sum_{\mu\nu}\gamma^{IJ}_{\mu\nu}\,\partial S_{\mu\nu}/\partial\mathbf R$ ($\gamma^{IJ}$: transition density matrix in the AO basis, $S_{\mu\nu}$: AO overlap). This is a roughly constant offset of $4$–$9\times10^{-5}\,a_0^{-1}$ in the validation of §8.6.7, not a numerical error.
+
+**Wavefunction overlaps.** Between the previous geometry $\mathbf R_{\text{prev}}$ and the current one $\mathbf R_{\text{cur}}$,
+
+$$
+S_{IJ} = \langle \Psi_I(\mathbf R_{\text{prev}}) \vert \Psi_J(\mathbf R_{\text{cur}}) \rangle
+= \sum_{k,l} c^{\text{prev}}_{Ik}\, c^{\text{cur}}_{Jl}\,
+\det\!\big(\mathbf s^{\alpha}_{kl}\big)\,\det\!\big(\mathbf s^{\beta}_{kl}\big),
+\qquad
+\mathbf s = \mathbf C_{\text{prev}}^{T}\,\mathbf S_{\text{AO}}(\mathbf R_{\text{prev}},\mathbf R_{\text{cur}})\,\mathbf C_{\text{cur}} .
+$$
+
+| Symbol | Meaning | Unit |
+|---|---|---|
+| $k, l$ | Slater determinants of the previous and current expansions | — |
+| $c^{\text{prev}}_{Ik}$, $c^{\text{cur}}_{Jl}$ | Coefficient of determinant $k$ ($l$) in state $I$ ($J$) | — |
+| $\mathbf s^{\alpha}_{kl}$, $\mathbf s^{\beta}_{kl}$ | Sub-matrix of $\mathbf s$ with the rows of the occupied $\alpha$ ($\beta$) orbitals of $k$ and the columns of those of $l$ (Löwdin's rule) | — |
+| $\mathbf C_{\text{prev}}$, $\mathbf C_{\text{cur}}$ | Molecular-orbital coefficients at the two geometries (AO × MO) | — |
+| $\mathbf S_{\text{AO}}(\mathbf R_{\text{prev}},\mathbf R_{\text{cur}})$ | AO overlap between the basis at the previous geometry (rows) and the current one (columns) | — |
+
+The first index of $S_{IJ}$ is the previous geometry. Determinants are evaluated once per distinct $\alpha$ string and per distinct $\beta$ string and combined in batches.
+
+*Truncation.* For each state the smallest set of determinants whose squared coefficients sum to at least `overlap_norm_kept` is found. The **union** of these sets over all states is kept, and every state keeps all its own coefficients on that union (small coefficients shared between states carry the off-diagonal overlaps, i.e. the couplings; cutting each state separately was found to destroy them). Each state is then renormalized. `overlap_norm_kept = 1.0` keeps every determinant that is nonzero in any state. The cost of the overlap grows with the number of determinants kept.
+
+*Expansions.*
+- **CASSCF:** the doubly occupied core orbitals, followed by the active orbitals of each full-CI $\alpha$ string and $\beta$ string (the CI vector is the coefficient matrix over the string pairs). Checked against PySCF's CI-vector transformation to $10^{-16}$.
+- **TDA (and CIS):** the SCF determinant $\Phi_0$ for S0, and for an excited state $k$
+  $\Psi_k = \sum_{ia} X_{k,ia}\,(\lvert i\to a\,\alpha\rangle + \lvert i\to a\,\beta\rangle)$ with $\sum_{ia}X_{k,ia}^2 = \tfrac12$, so that $\langle\Psi_k\vert\Psi_k\rangle = 1$ (checked against an explicit orbital-rotation formula to $10^{-12}$).
+- **TDDFT, TDHF:** the same expression with the excitation amplitudes $\mathbf X$ only; the de-excitation amplitudes $\mathbf Y$ are dropped and the state renormalized. **This is an approximation.** For ethylene/STO-3G TDHF S1, $\sum Y^2 \approx 1.1\times10^{-2}$, so the $X$-only norm is $\approx 1 + 2\sum Y^2 \approx 1.023$ before renormalization, and different TDDFT states are no longer exactly orthogonal. TDA and CIS do not have this problem.
+
+**Phase alignment and root-flip matching.** The wavefunction signs are arbitrary, so the overlap matrix is processed: states of the current geometry are matched to those of the previous one by the assignment $a$ that maximizes $\sum_j \lvert S_{a(j)j}\rvert$ (Hungarian algorithm), and the phase of current state $j$ is $p_j = \operatorname{sign} S_{a(j)j}$ ($+1$ if the overlap is 0). A matched pair with $a(j)\neq j$ is reported as a **root flip** (two states exchanged energy order); the pairs are listed in `meta.root_flips`. The reported overlap matrix has its columns multiplied by $p_j$. The **smallest singular value** of $\mathbf S$ is stored as `meta.overlap_min_singular_value`; for a small step it is close to 1, and below 0.5 a warning is logged (an intruder state, or too few computed states). Löwdin orthonormalization $\mathbf U\mathbf V^T$ (from $\mathbf S=\mathbf U\boldsymbol\Sigma\mathbf V^T$) is available as a library function for the dynamics (P7); the backend does not apply it.
+
+*Effect of the phases on the outputs.* The phases are applied to the stored wavefunction (so the sign frame is carried from step to step) and to the outputs:
+
+$$
+\mathbf d_{IJ} \to p_I\,p_J\,\mathbf d_{IJ},
+\qquad
+\boldsymbol\mu_{0I} \to p_0\,p_I\,\boldsymbol\mu_{0I}.
+$$
+
+Whenever a previous geometry exists, the phases are **always** tracked and applied, whether or not the caller asks for overlaps; the request flag only decides whether `overlaps` and `phases` are returned (`meta.overlaps` is `computed`, `tracked, not returned` or `no previous geometry`). The first geometry of a run fixes an arbitrary sign frame: PySCF's raw CI signs are **not reproducible** between processes, but phased results are reproducible relative to a saved snapshot. Energies and gradients do not depend on the phases.
+
+**Noise of overlap-based couplings.** A time-derivative coupling from overlaps, $\sigma_{IJ}\approx (S_{IJ}-S_{JI})/(2\Delta t)$, carries the noise of $S$ divided by $\Delta t$. At the default CASSCF convergence (`conv_tol_grad = 1e-6`) the overlap noise is of order $10^{-7}$, so the noise in $\sigma$ is of order $10^{-7}/\Delta t$. In the finite-difference test the error of the overlap-based derivative grew when the step $h$ shrank (atom 0: $1.2\times10^{-3}$ at $h=10^{-4}$ bohr). Tighter `casscf.conv_tol_grad` reduces it.
+
+**Retry ladders.** Each rung is tried in order; the rung that converged is stored in the result `meta`.
+
+| Method | Rung | Settings | `meta` |
+|---|---|---|---|
+| `casscf` | 1 | Orbitals of the previous geometry, projected (skipped if there is none) | `casscf = "previous orbitals"` |
+| | 2 | SCF orbitals | `"SCF orbitals"` |
+| | 3 | SCF orbitals plus a spin penalty (`fix_spin_`, $\langle S^2\rangle=0$, shift 0.5) and 3× the macro iterations | `"SCF orbitals + spin penalty"` |
+| `tda`, `tddft` | 1 | PySCF defaults | `td = "default"` |
+| | 2 | $N_{\text{states}}+3$ roots solved (the lowest kept) and 3× `max_cycle` | `"extra roots"` |
+
+A CASSCF rung fails if it does not converge or if a root has $\lvert\langle S^2\rangle\rvert > 10^{-3}$; a PySCF exception stops the ladder. On ethylene the spin-penalty rung reproduces the plain rung (energies within $10^{-6}\,E_h$, S1 gradient within $10^{-5}\,E_h/a_0$). The number of linear-response roots is limited to the number of single excitations; asking for more is an error. If all rungs fail the run stops (exit code 4, §9).
+
+**`compute_more(gradients, nacs)`.** After a `compute()` at a geometry, further gradients and NACs of that same geometry can be requested without repeating the SCF, CASSCF or TD calculation: the PySCF objects of the last successful `compute()` are reused and the same phases applied. It raises an error before any `compute()` and after `load_state()` (the live objects are not stored).
+
+**Restarts.** `save_state(path)` writes the minimal cross-geometry state (geometry, orbitals, density, truncated and phase-aligned determinant expansion, and a fingerprint of the method, basis, functional, atoms, charge, multiplicity, states, CASSCF settings and `overlap_norm_kept`) to an `.npz` file, atomically; `load_state(path)` reads it into a new backend object, also in a new process. A file written with different settings is refused (the error names the file). A restarted run reproduces the energies, gradients, NACs, dipoles and overlaps of the uninterrupted run to $2\times10^{-11}$ or better. **Save the state after every step:** restarting from an older state re-draws the sign frame, so the signs of the continued trajectory are consistent only with that older state.
+
+**Scratch policy.** No SCF checkpoint file is written. PySCF's temporary directory is pointed at the backend's `scratch_dir` (default: the system temporary directory) during `compute` and `compute_more` and restored afterwards, also after a failure. Put the scratch directory on a local disk, not on OneDrive or `/mnt/<letter>` in WSL. An input-file key for it is [PLANNED].
 
 ### 8.7 Harmonic analysis (frequencies)
 **[PLANNED, P4]** From the Cartesian Hessian $H_{ij} = \partial^2 E_0 / \partial x_i \partial x_j$ at the optimized geometry:
@@ -1108,10 +1207,13 @@ $$
 | `PySCF is not installed in this environment …` / `PySCF … is too old; gqteashmd needs PySCF >= 2.6.0.` | Missing or old PySCF (exit 2) | Install or update PySCF in the conda environment |
 | `PySCF could not build the molecule with basis '…'` | Unknown basis set name or a basis that has no entry for an element (exit 4) | Check `electronic.basis` |
 | `SCF did not converge (tried: default, level shift + damping, second-order; …)` / `PySCF SCF (…) failed: …` | The SCF ladder (§8.6.1) is exhausted, or PySCF raised an error (exit 4; retried only for `MemoryError`/`OSError`) | Check the geometry, charge and basis; raise `scf_max_cycle`; read the `--log` file |
-| `SA-CASSCF did not converge (conv_tol = …, conv_tol_grad = …)` / `CASSCF failed: …` | The active space or the starting orbitals are unsuitable (exit 4) | Choose another active space; loosen `casscf.conv_tol_grad` slightly |
+| `SA-CASSCF failed on every rung (conv_tol = …, conv_tol_grad = …): previous orbitals: not converged; SCF orbitals: …` / `CASSCF (…) failed: …` | All rungs of the CASSCF ladder (§8.6.8) failed, by non-convergence or a non-singlet root (exit 4) | Choose another active space or geometry; loosen `casscf.conv_tol_grad` slightly |
 | `CASSCF root S1 has <S^2> = …; it is not a singlet.` | A root of the active space is not a singlet (exit 4) | Check the active space and the number of states |
 | `The CASSCF active space (… electrons) does not fit the molecule's … electrons.` / `The CASSCF active space needs … orbitals, but the basis '…' has only …` | `ncas`/`nelecas` do not fit the molecule or the basis (exit 4) | Reduce the active space or use a larger basis |
-| `TDA did not converge for all … excited states (td_conv_tol = …)` (also `TDDFT`) | The linear-response solver did not converge (exit 4) | Ask for fewer states or loosen `td_conv_tol` |
+| `TDA did not converge for all … excited states (tried: default, extra roots; …)` (also `TDDFT`) | Both rungs of the linear-response ladder failed (exit 4) | Ask for fewer states or loosen `td_conv_tol` |
+| `TDA cannot give … excited states: the molecule has only … single excitations in this basis.` | More excited states than single excitations (exit 4) | Lower `singlets` or use a larger basis |
+| `Nonadiabatic coupling vectors are not available for method = '…'; request overlaps instead.` | NACs requested from a `tda`/`tddft` backend (library call; exit 4 path not reachable from the CLI) | Use SA-CASSCF, or use overlaps |
+| `The electronic state in … was saved with different settings or a different molecule; it cannot be reused.` | `load_state` with a file from other settings (library call) | Use the state file of the same run |
 | `The SA-CASSCF gradient of … failed` / `… gradient of … failed` / `The transition dipole calculation failed` | PySCF failed in a derivative or dipole step (exit 4) | Read the `--log` file; report if the SCF itself converged |
 | `internal error: …` | A program bug | Report it with `logs/gqteashmd.log` and the task's `result.json` |
 
@@ -1120,14 +1222,14 @@ $$
 ## 10. Known limitations
 
 - **Feature scope:** only the `prepare` stage exists. The electronic-structure layer works through `gqteashmd single-point` only; no workflow stage uses it yet, so the hardware and per-stage resource settings and `pause_after` have little visible effect until the later stages arrive.
-- **Electronic structure:** closed-shell singlet molecules with a restricted reference only; no triplet states; no nonadiabatic couplings, wavefunction overlaps or Hessian yet (P3b, P4); no density fitting; no scratch-directory or checkpoint-file handling (P3b); TDDFT/TDA describe the S₁/S₀ crossing seam incorrectly (§8.6.4); DFT gradients omit the grid response, so use `grid_level` ≥ 5 for dynamics (§8.6.4); only the SCF has a convergence ladder (CASSCF and TD calculations that fail to converge stop, §9).
+- **Electronic structure:** closed-shell singlet molecules with a restricted reference only; no triplet states; nonadiabatic couplings (SA-CASSCF only) and wavefunction overlaps exist only as a library and are not used by any command or stage yet (P7), and the Hessian is missing (P4); TDA/TDDFT have no analytic couplings, and their overlaps use the excitation amplitudes X only (§8.6.8); the cost of the overlap engine grows with the number of determinants kept (`overlap_norm_kept`); overlap-based couplings carry noise of order $10^{-7}/\Delta t$ at default CASSCF convergence; no density fitting; no scratch-directory input key yet (the backend supports one, and writes no checkpoint file); TDDFT/TDA describe the S₁/S₀ crossing seam incorrectly (§8.6.4); DFT gradients omit the grid response, so use `grid_level` ≥ 5 for dynamics (§8.6.4). The SCF, CASSCF and TD calculations each have a retry ladder (§8.6.1, §8.6.8); a calculation that fails every rung stops. The hardening sweep of deferred robustness items is [PLANNED] (P3c).
 - **Platform:** Linux only, with no batch-scheduler support. Runs are designed for a single workstation.
 - **Project-folder check:** the check for Windows drives and OneDrive (§7.9) looks at the text of the path. An absolute path that is a symbolic link into a Windows drive or a OneDrive folder is not detected.
 - **SHARC comparison is not automated:** the tests against SHARC 4.1 need a SHARC installation and run only on the development machine (`pytest -m sharc`); the continuous-integration workflow (first run 2026-11-07, passing) runs everything else.
 
 ## 11. Roadmap
 
-P1 foundation (done) → P2 input schema and pre-run checks (done) → P3a PySCF backend (done: energies, gradients, transition dipoles, `single-point`) → **P3b couplings and overlaps and P4 optimization, frequencies and Hessian (next; P3b is needed only by the dynamics, P7b)** → P5 Wigner sampling → P6 excitations and initial states → P7 dynamics → P8 analysis → P9 systematic validation against SHARC 4.1. This manual is updated with each step. Sections marked [PLANNED] become [IMPLEMENTED] when their sub-project is finished and validated.
+P1 foundation (done) → P2 input schema and pre-run checks (done) → P3a PySCF backend (done: energies, gradients, transition dipoles, `single-point`) → P3b couplings, overlaps, phase tracking and restarts (done, library only) → **P3c hardening sweep, then P4 optimization, frequencies and Hessian (next)** → P5 Wigner sampling → P6 excitations and initial states → P7 dynamics → P8 analysis → P9 systematic validation against SHARC 4.1. This manual is updated with each step. Sections marked [PLANNED] become [IMPLEMENTED] when their sub-project is finished and validated.
 
 ## 12. References
 1. J. C. Tully, *J. Chem. Phys.* **93**, 1061 (1990): fewest-switches surface hopping.
