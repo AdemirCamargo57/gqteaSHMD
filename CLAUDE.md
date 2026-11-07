@@ -27,7 +27,7 @@ The user writes one TOML input file and runs `gqteashmd run input.toml`. The pro
   Edit files with the normal file tools, using LF line endings.
 - **Git from WSL only.** Pre-commit hooks (ruff 0.17.4) are installed in WSL and do not run from Windows Git. Pushing from Windows is fine (`git -C C:\Users\ajc\OneDrive\gqteaSHMD push ...`), because Windows has the GitHub credentials and pushing runs no hooks. Never use `--no-verify`.
 - **Keep project runs, conda environments and large outputs out of OneDrive and out of `/mnt/c`.** Use `~/...` or `/tmp` in WSL. pytest's `tmp_path` already does this.
-- **Workflow.** Feature branch per sub-project (`feat/<topic>`), one commit per task, conventional commit subjects (`feat:`, `fix:`, `test:`, `docs:`, `ci:`, `build:`). The owner decides merges. P1, P2 and P3a are merged into `main`. `main` up to P2 (`e73609f`) is on GitHub (`AdemirCamargo57/gqteaSHMD`); the P3a merge is local until the owner pushes.
+- **Workflow.** Feature branch per sub-project (`feat/<topic>`), one commit per task, conventional commit subjects (`feat:`, `fix:`, `test:`, `docs:`, `ci:`, `build:`). The owner decides merges. P1, P2, P3a and P3b are merged into `main`. `main` up to P2 (`e73609f`) is on GitHub (`AdemirCamargo57/gqteaSHMD`); the P3a and P3b merges are local until the owner pushes.
 - **Commit trailer.** End each commit message with the `Co-Authored-By:` trailer for the model that wrote the commit.
 - **Keep the two documents current.** Update **CLAUDE.md and USER_MANUAL.md in the same branch as any change to behaviour, inputs, outputs, formulas or status.** USER_MANUAL.md must always mark what is implemented and what is planned.
 
@@ -128,7 +128,7 @@ tools/sharc_compare/   executes SHARC 4.1 as a black box (never imported by gqte
 ## Current status (2026-11-07)
 - **P1 — foundation & orchestrator: DONE**, merged into `main`.
 - **P2 — input schema & preflight: DONE**, merged into `main`. `main` is on GitHub and CI passed on 2026-11-07.
-- **P3b — couplings, overlaps, restarts: DONE on `feat/p3b-couplings` (final-review fixes included), NOT merged.** `pytest -m "not slow" -W error`: 335 passed, 1 skipped (live SHARC), 5 deselected (2 FD gradient, 1 NAC FD, 2 kill/resume), 6.5-11 min on /mnt/c; the slow NAC FD test takes 15 s and the live SHARC test (with NACs) 8 s. NACs match SHARC 4.1 to 9.1e-8 1/bohr up to sign. Library only: no CLI command or stage uses NACs/overlaps yet (P7). The hardening sweep moved to P3c.
+- **P3b — couplings, overlaps, restarts: DONE, merged locally into `main` on 2026-11-07 (not pushed).** `pytest -m "not slow" -W error`: 335 passed, 1 skipped (live SHARC), 5 deselected (2 FD gradient, 1 NAC FD, 2 kill/resume), 6.5-11 min on /mnt/c; the slow NAC FD test takes 15 s and the live SHARC test (with NACs) 8 s. With `SHARC_HOME`/`SHARC_PYTHON` set, `pytest -W error`: 341 passed in about 13 min. NACs match SHARC 4.1 to 9.1e-8 1/bohr up to sign. Library only: no CLI command or stage uses NACs/overlaps yet (P7). The hardening sweep moved to P3c.
 - **P3a — PySCF electronic-structure layer: DONE**, merged locally into `main` on 2026-11-07 (not pushed yet). `pytest -m "not slow" -W error`: 260 passed, 1 skipped, 4 deselected (5-6 min). With `SHARC_HOME`/`SHARC_PYTHON` set, `pytest -W error` runs everything (the 4 slow tests: 2 FD gradient checks + 2 kill/resume tests; and the live SHARC test): 265 passed in 8.5 min. ruff and mypy are clean.
 - **Implemented features:**
   - the CLI commands `init`, `validate`, `run [--rerun-from]`, `status`, `stop` and `single-point`;
@@ -149,7 +149,7 @@ tools/sharc_compare/   executes SHARC 4.1 as a black box (never imported by gqte
 | ID | Sub-project | Notes |
 |---|---|---|
 | P3a | PySCF electronic-structure layer | **DONE**, merged into local `main`; see Status |
-| P3b | Couplings for dynamics | **DONE** on `feat/p3b-couplings` (not merged); see Status |
+| P3b | Couplings for dynamics | **DONE**, merged into local `main`; see Status |
 | P3c | Hardening sweep | **Next.** The deferred items of the P1-P3b ledgers (limitation 4), plus the PySCF/geomeTRIC version and writable-scratch preflight checks |
 | P4 | `optimize` + `frequencies` stages | geomeTRIC; **PySCF Hessian (moved here from P3)**; own harmonic analysis; Molden output; stages declare `required_modules=("pyscf",)`. P4 and P6 must call `reset()` or use a fresh backend for independent geometries (a backend keeps the previous geometry) |
 | P5 | `sampling` stage | Own Wigner sampler; compare with SHARC `wigner.py` |
