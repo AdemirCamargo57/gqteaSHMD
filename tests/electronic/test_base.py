@@ -1,0 +1,49 @@
+import math
+
+import numpy as np
+import pytest
+
+from gqteashmd.core.states import StateLabel
+from gqteashmd.electronic.base import ElectronicResult, Request
+from gqteashmd.electronic.properties import oscillator_strength
+from gqteashmd.errors import ElectronicStructureError, TaskError
+
+S0, S1 = StateLabel(1, 0), StateLabel(1, 1)
+
+
+def test_error_type():
+    err = ElectronicStructureError("SCF did not converge")
+    assert isinstance(err, TaskError)
+    assert err.retryable is False and err.exit_code == 4
+
+
+def test_request_coerces_and_checks_shape():
+    req = Request([[0, 0, 0], [0, 0, 1.4]])
+    assert req.coords_bohr.dtype == float and req.coords_bohr.shape == (2, 3)
+    with pytest.raises(ValueError, match="natom, 3"):
+        Request([0.0, 0.0, 1.0])
+
+
+def test_oscillator_strength_formula():
+    assert math.isclose(oscillator_strength(0.5, np.array([1.0, 0.0, 0.0])), 1.0 / 3.0)
+    assert oscillator_strength(0.3, np.zeros(3)) == 0.0
+
+
+def test_result_json():
+    result = ElectronicResult(
+        states=(S0, S1),
+        energies={S0: -1.0, S1: -0.5},
+        gradients={S1: np.ones((2, 3))},
+        transition_dipoles={S1: np.array([1.0, 0.0, 0.0])},
+        spin_squares={S0: 0.0, S1: 0.0},
+        meta={"method": "casscf"},
+    )
+    assert result.excitation_energy(S1) == 0.5
+    data = result.to_json()
+    assert data["schema_version"] == 1
+    s0, s1 = data["states"]
+    assert s0["label"] == "S0" and s0["oscillator_strength"] is None
+    assert s1["excitation_ev"] == pytest.approx(0.5 * 27.211386245988)
+    assert s1["oscillator_strength"] == pytest.approx(1.0 / 3.0)
+    assert data["gradients_hartree_per_bohr"]["S1"] == [[1.0, 1.0, 1.0], [1.0, 1.0, 1.0]]
+    assert data["meta"] == {"method": "casscf"}

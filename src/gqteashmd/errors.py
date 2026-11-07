@@ -41,3 +41,12 @@ class TaskError(ShmdError):
     def __init__(self, message: str, *, retryable: bool) -> None:
         super().__init__(message)
         self.retryable = retryable
+
+
+class ElectronicStructureError(TaskError):
+    """An electronic-structure calculation failed (no convergence, wrong spin, bad basis, ...)."""
+
+    exit_code = 4
+
+    def __init__(self, message: str, *, retryable: bool = False) -> None:
+        super().__init__(message, retryable=retryable)
