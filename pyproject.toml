@@ -9,7 +9,7 @@ description = "Automated surface-hopping molecular dynamics workflow (PySCF back
 readme = "README.md"
 license = { file = "LICENSE" }
 requires-python = ">=3.12"
-dependencies = ["pydantic>=2.6", "numpy>=1.26", "pyscf>=2.6"]
+dependencies = ["pydantic>=2.6", "numpy>=1.26", "scipy>=1.11", "pyscf>=2.6"]
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "ruff>=0.6", "mypy>=1.10", "pre-commit>=3"]
