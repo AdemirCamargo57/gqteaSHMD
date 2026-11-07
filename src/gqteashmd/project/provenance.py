@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import os
 import platform
 import socket
@@ -59,8 +58,9 @@ def append_provenance(path: Path, entry: dict[str, Any]) -> None:
     if path.exists():
         try:
             data = read_json(path)
-            runs = list(data["runs"]) if isinstance(data, dict) else []
-        except (OSError, json.JSONDecodeError, KeyError, TypeError):
+            if isinstance(data, dict) and isinstance(data.get("runs"), list):
+                runs = list(data["runs"])
+        except (OSError, ValueError, KeyError, TypeError):
             runs = []
     runs.append(entry)
     write_json_atomic(path, {"schema_version": 1, "runs": runs})

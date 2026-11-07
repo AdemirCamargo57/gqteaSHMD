@@ -1,4 +1,7 @@
 import json
+import subprocess
+
+import pytest
 
 import gqteashmd
 from gqteashmd.config.loader import load_config
@@ -45,3 +48,22 @@ def test_each_run_appends_one_record(tmp_path, write_input, monkeypatch):
     Orchestrator(load_config(path), pipeline_ref=FAKE).run()
     runs = read_json(tmp_path / "run" / ".gqteashmd" / "provenance.json")["runs"]
     assert len(runs) == 2
+
+
+@pytest.mark.parametrize(
+    "content", [b"\xff\xfe\x00binary", b'{"runs": "abc"}', b"[1, 2]", b'{"runs": 5}']
+)
+def test_damaged_provenance_is_replaced(tmp_path, content):
+    path = tmp_path / "provenance.json"
+    path.write_bytes(content)
+    append_provenance(path, {"n": 1})
+    assert read_json(path) == {"schema_version": 1, "runs": [{"n": 1}]}
+
+
+def test_missing_git_gives_null_commit(monkeypatch):
+    def no_git(*_a, **_k):
+        raise FileNotFoundError("git")
+
+    monkeypatch.setattr(subprocess, "run", no_git)
+    entry = collect_provenance()
+    assert entry["git_commit"] is None and entry["git_dirty"] is None
