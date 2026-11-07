@@ -489,7 +489,7 @@ Errors are printed once as `gqteashmd: error: …` (§5.1). An electronic-struct
 
 Later stages will add `01_optimize/`, `02_frequencies/` and so on, each with the same `tasks/` structure.
 
-**`provenance.json`** [IMPLEMENTED]. Every `gqteashmd run` appends one record once the controller holds the project lock and has opened `state.db`, so the file shows the software behind every run of the project. A run that is later refused because a stage is stale (`StaleStageError`, §7.5) has a record; a run refused by the preflight checks, by the lock, or by a corrupt `state.db` has none. Open it with any text editor, or with `python -m json.tool .gqteashmd/provenance.json`.
+**`provenance.json`** [IMPLEMENTED]. Every `gqteashmd run` appends one record once the controller holds the project lock and has opened `state.db` (one run is one record), so the file shows the software behind every run of the project. A run that is later refused because a stage is stale (`StaleStageError`, §7.5) has a record; a run refused by the preflight checks, by the lock, or by a corrupt `state.db` has none. Open it with any text editor, or with `python -m json.tool .gqteashmd/provenance.json`.
 
 ```json
 {"schema_version": 1, "runs": [ { "started_at": "…", "gqteashmd": "…", "…": "…" } ]}
@@ -505,6 +505,7 @@ Later stages will add `01_optimize/`, `02_frequencies/` and so on, each with the
 | `platform` | Operating system and kernel |
 | `hostname` | Name of the machine |
 | `cpu_count` | CPU count reported by the operating system |
+| `cpu_model` | CPU model name from `/proc/cpuinfo`; `null` if it cannot be read |
 | `packages` | Versions of `pydantic`, `numpy`, `scipy`, `h5py`, `pyscf`, `geometric`; `null` for one that is not installed |
 
 **`molecule.json`** [IMPLEMENTED]:
@@ -537,6 +538,8 @@ Run `gqteashmd run input.toml`. It finishes with exit code 0 and prints `Workflo
 Simply **run the same command again**:
 - Stages that are already done are skipped ("up to date").
 - An interrupted stage continues where it stopped.
+- A stage that was done but whose results directory you deleted by hand is **computed again**, with a warning (`results directory … is missing; recomputing`).
+- Temporary files (`.…tmp`) left in `.gqteashmd/` by a crashed controller are removed when the next run starts.
 - Tasks that were running when the controller died are checked. Finished ones are kept. Left-over processes are terminated and the tasks are run again.
 
 ### 7.4 Stopping and resuming
@@ -544,6 +547,8 @@ Simply **run the same command again**:
 1. No new tasks start.
 2. Running tasks get SIGTERM, then SIGKILL after `stop_grace_period_s`.
 3. The run ends with exit code 5 and the message `Stopped. Run the same command again to resume.`
+
+Ctrl-C at any other moment (for example while the command is starting) prints `gqteashmd: interrupted` and also exits with code 5.
 
 Interrupted tasks are not counted as failed attempts.
 
@@ -573,6 +578,8 @@ Fix the cause, here `multiplicity`, and run again. Because the input changed and
 
 ### 7.7 Two controllers
 Only one controller can run per project. A second `gqteashmd run` on the same project exits with code 3. The error names the process id of the first controller, or says `pid unknown` when it cannot be read. The program tries the lock twice, 0.2 s apart, so a `status` command that is looking at the lock at that moment does not cause a false refusal. `status` can be used at any time.
+
+The lock is taken before anything else is created. A run that the lock refuses therefore creates nothing except the `.gqteashmd/` directory (for the lock file), and writes no log and no provenance record. A worker's whole process group is killed when it is stopped or when the worker ends, so no stray child process survives.
 
 ### 7.8 Review pauses
 **[IMPLEMENTED]** `[workflow] pause_after` lists stages after which the run stops so that you can inspect their results:
@@ -1200,6 +1207,10 @@ $$
 | `Stage '…' needs the Python module '…', which is not installed` | Preflight: a missing module | Install it in the conda environment |
 | `Preflight: resources.total_cores = … exceeds the … cores detected` (also for memory) | **Warning**, not an error (§7.9) | Check that the values describe your machine |
 | `Paused after stage '…' as requested (workflow.pause_after)` | Not an error: exit code 5 (§7.8) | Review, then run the same command again |
+| `File locking is not available for … (…); put the project directory on a local Linux filesystem.` | The filesystem of the project directory does not support file locks (exit 3) | Choose a local Linux disk (§2.3) |
+| `The state database … failed during <operation>: …` | An SQLite operation failed while the program ran (disk full, database opened by another program) (exit 3) | Check free disk space and that no other program has the database open, then run the same command again |
+| `gqteashmd: interrupted` | Ctrl-C while the command was starting or finishing (exit 5) | Run the same command again |
+| `Cannot read task file …` | A task description file was damaged or incomplete; the task fails without retry and the message is in its `result.json` and `worker.log` (exit 4 after the stage fails) | Run the same command again; if it repeats, report it |
 | `State database … is unreadable or corrupt: …` | `state.db` is damaged, is not a database, or is a directory. A message `… has schema version …` or `… unknown stage/task status …` means another program version wrote it | Move the whole `.gqteashmd/` directory aside (it holds `state.db` with its `-wal`/`-shm` files) to start the project over; stage results will be recomputed. Or use the matching version |
 | `Stage '…' has results produced from different inputs` | The input changed after results existed | Run the suggested `--rerun-from` command (§7.5) |
 | `Stage '…' failed: k of n tasks did not succeed` | Task failures | Read the listed `worker.log` files, fix, run again |
@@ -1229,14 +1240,15 @@ $$
 ## 10. Known limitations
 
 - **Feature scope:** only the `prepare` stage exists. The electronic-structure layer works through `gqteashmd single-point` only; no workflow stage uses it yet, so the hardware and per-stage resource settings and `pause_after` have little visible effect until the later stages arrive.
-- **Electronic structure:** closed-shell singlet molecules with a restricted reference only; no triplet states; nonadiabatic couplings (SA-CASSCF only) and wavefunction overlaps exist only as a library and are not used by any command or stage yet (P7), and the Hessian is missing (P4); TDA/TDDFT have no analytic couplings, and their overlaps use the excitation amplitudes X only (§8.6.8); the cost of the overlap engine grows with the number of determinants kept (`overlap_norm_kept`); overlap-based couplings carry noise of order $10^{-7}/\Delta t$ at default CASSCF convergence; no density fitting; no scratch-directory input key yet (the backend supports one, and writes no checkpoint file); TDDFT/TDA describe the S₁/S₀ crossing seam incorrectly (§8.6.4); DFT gradients omit the grid response, so use `grid_level` ≥ 5 for dynamics (§8.6.4). The SCF, CASSCF and TD calculations each have a retry ladder (§8.6.1, §8.6.8); a calculation that fails every rung stops. The hardening sweep of deferred robustness items is [PLANNED] (P3c).
+- **Electronic structure:** closed-shell singlet molecules with a restricted reference only; no triplet states; nonadiabatic couplings (SA-CASSCF only) and wavefunction overlaps exist only as a library and are not used by any command or stage yet (P7), and the Hessian is missing (P4); TDA/TDDFT have no analytic couplings, and their overlaps use the excitation amplitudes X only (§8.6.8); the cost of the overlap engine grows with the number of determinants kept (`overlap_norm_kept`); overlap-based couplings carry noise of order $10^{-7}/\Delta t$ at default CASSCF convergence; no density fitting; no scratch-directory input key yet (the backend supports one, and writes no checkpoint file); TDDFT/TDA describe the S₁/S₀ crossing seam incorrectly (§8.6.4); DFT gradients omit the grid response, so use `grid_level` ≥ 5 for dynamics (§8.6.4). The SCF, CASSCF and TD calculations each have a retry ladder (§8.6.1, §8.6.8); a calculation that fails every rung stops.
+- **Workflow checks still planned (P4):** the preflight does not yet check the PySCF and geomeTRIC versions or that a scratch directory is writable; `validate` reports only the first violation it finds in the input file; a run refused because a stage is stale still opens and writes `state.db`.
 - **Platform:** Linux only, with no batch-scheduler support. Runs are designed for a single workstation.
 - **Project-folder check:** the check for Windows drives and OneDrive (§7.9) looks at the text of the path. An absolute path that is a symbolic link into a Windows drive or a OneDrive folder is not detected.
 - **SHARC comparison is not automated:** the tests against SHARC 4.1 need a SHARC installation and run only on the development machine (`pytest -m sharc`); the continuous-integration workflow (first run 2026-11-07, passing) runs everything else.
 
 ## 11. Roadmap
 
-P1 foundation (done) → P2 input schema and pre-run checks (done) → P3a PySCF backend (done: energies, gradients, transition dipoles, `single-point`) → P3b couplings, overlaps, phase tracking and restarts (done, library only) → **P3c hardening sweep, then P4 optimization, frequencies and Hessian (next)** → P5 Wigner sampling → P6 excitations and initial states → P7 dynamics → P8 analysis → P9 systematic validation against SHARC 4.1. This manual is updated with each step. Sections marked [PLANNED] become [IMPLEMENTED] when their sub-project is finished and validated.
+P1 foundation (done) → P2 input schema and pre-run checks (done) → P3a PySCF backend (done: energies, gradients, transition dipoles, `single-point`) → P3b couplings, overlaps, phase tracking and restarts (done, library only) → P3c hardening sweep (done) → **P4 optimization, frequencies and Hessian (next)** → P5 Wigner sampling → P6 excitations and initial states → P7 dynamics → P8 analysis → P9 systematic validation against SHARC 4.1. This manual is updated with each step. Sections marked [PLANNED] become [IMPLEMENTED] when their sub-project is finished and validated.
 
 ## 12. References
 1. J. C. Tully, *J. Chem. Phys.* **93**, 1061 (1990): fewest-switches surface hopping.
