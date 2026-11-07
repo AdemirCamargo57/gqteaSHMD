@@ -37,9 +37,17 @@ def detect_machine() -> MachineInfo:
     return MachineInfo(cores=cores, memory_mb=memory_mb)
 
 
+def _exists(path: Path) -> bool:
+    """Path.exists() that treats a path inside an unsearchable directory as non-existent."""
+    try:
+        return path.exists()
+    except OSError:
+        return False
+
+
 def _nearest_existing(path: Path) -> Path:
     for candidate in (path, *path.parents):
-        if candidate.exists():
+        if _exists(candidate):
             return candidate
     return Path("/")
 
@@ -81,7 +89,7 @@ def run_preflight(
             f"disk, e.g. ~/gqteashmd-runs/{config.project.name}."
         )
 
-    if project_dir.exists() and not project_dir.is_dir():
+    if _exists(project_dir) and not project_dir.is_dir():
         raise ConfigError(f"project.directory {project_dir} exists but is not a directory.")
     parent = _nearest_existing(project_dir)
     if not parent.is_dir() or not os.access(parent, os.W_OK | os.X_OK):

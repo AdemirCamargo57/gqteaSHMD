@@ -118,3 +118,16 @@ def test_zero_minimum_disk_skips_the_disk_query(tmp_path, write_input, monkeypat
     monkeypatch.setattr(shutil, "disk_usage", boom)
     cfg = load_config(write_input(tmp_path, execution="min_free_disk_mb = 0")).config
     assert run_preflight(cfg, [PrepareStage()], machine=MachineInfo(None, None)) == []
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores directory permissions")
+def test_unsearchable_ancestor_is_a_config_error(tmp_path, write_input):
+    locked = tmp_path / "locked"
+    locked.mkdir()
+    cfg = _with_directory(load_config(write_input(tmp_path)).config, locked / "sub" / "run")
+    locked.chmod(0o000)
+    try:
+        with pytest.raises(ConfigError, match="Cannot create or write the project directory"):
+            run_preflight(cfg, [PrepareStage()], machine=MachineInfo(None, None))
+    finally:
+        locked.chmod(0o755)
