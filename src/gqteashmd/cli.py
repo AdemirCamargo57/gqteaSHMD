@@ -11,8 +11,14 @@ import threading
 from pathlib import Path
 from typing import Any
 
+import numpy as np
+
 from gqteashmd import __version__
+from gqteashmd.chem.xyz import parse_xyz
 from gqteashmd.config.loader import load_config
+from gqteashmd.core.units import ANGSTROM_TO_BOHR
+from gqteashmd.electronic.base import MoleculeSpec, Request
+from gqteashmd.electronic.factory import make_backend
 from gqteashmd.errors import ConfigError, ProjectError, ShmdError
 from gqteashmd.logging_setup import FILE_ONLY, close_logging, configure_logging
 from gqteashmd.orchestrator import Orchestrator
@@ -20,6 +26,7 @@ from gqteashmd.project.layout import ProjectLayout
 from gqteashmd.project.lock import locked_by
 from gqteashmd.project.state import StateStore, TaskStatus
 from gqteashmd.stages.pipeline import DEFAULT_PIPELINE, check_stage_names, import_pipeline
+from gqteashmd.util.fileio import write_json_atomic
 
 EXIT_STOPPED = 5
 
@@ -178,6 +185,47 @@ def _cmd_stop(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_single_point(args: argparse.Namespace) -> int:
+    cfg = load_config(args.input).config
+    path = cfg.molecule.geometry
+    if not path.is_file():
+        raise ConfigError(f"Geometry file not found or not a regular file: {path}")
+    try:
+        geometry = parse_xyz(path.read_text(encoding="utf-8"))
+    except UnicodeDecodeError as exc:
+        raise ConfigError(f"Geometry file {path} is not valid UTF-8 text.") from exc
+    except OSError as exc:
+        raise ConfigError(f"Cannot read geometry file {path}: {exc.strerror or exc}") from exc
+    except ValueError as exc:
+        raise ConfigError(f"Invalid geometry file {path}: {exc}") from exc
+    # The backend validates charge/multiplicity against the elements in its constructor.
+    molecule = MoleculeSpec(geometry.symbols, cfg.molecule.charge, cfg.molecule.multiplicity)
+    backend = make_backend(
+        cfg,
+        molecule,
+        log_file=args.log,
+        threads=cfg.resources.threads_per_task,
+        memory_mb=cfg.resources.memory_mb_per_task,
+    )
+    coords = np.array(geometry.coords_angstrom, dtype=float) * ANGSTROM_TO_BOHR
+    result = backend.compute(Request(coords, transition_dipoles=True))
+    data = result.to_json()
+    settings = cfg.electronic
+    assert settings is not None  # make_backend checked it
+    name = f"{settings.method} / {settings.basis}"
+    if settings.functional:
+        name += f" / {settings.functional}"
+    print(f"Single point: {name} (PySCF {result.meta['pyscf_version']})")
+    print(f"{'state':<6}{'energy (Eh)':>18}{'dE (eV)':>10}{'f':>9}")
+    for row in data["states"]:
+        f = "-" if row["oscillator_strength"] is None else f"{row['oscillator_strength']:.4f}"
+        print(f"{row['label']:<6}{row['energy_hartree']:>18.9f}{row['excitation_ev']:>10.4f}{f:>9}")
+    if args.json is not None:
+        write_json_atomic(args.json, data)
+        print(f"Results written to {args.json}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="gqteashmd", description="Surface-hopping MD workflow")
     parser.add_argument("--version", action="version", version=f"gqteashmd {__version__}")
@@ -207,6 +255,14 @@ def build_parser() -> argparse.ArgumentParser:
     p_stop = sub.add_parser("stop", help="ask the running controller to stop gracefully")
     p_stop.add_argument("input", type=Path)
     p_stop.set_defaults(func=_cmd_stop)
+
+    p_sp = sub.add_parser(
+        "single-point", help="compute energies and transition dipoles at the input geometry"
+    )
+    p_sp.add_argument("input", type=Path)
+    p_sp.add_argument("--json", type=Path, help="write the results to this JSON file")
+    p_sp.add_argument("--log", type=Path, help="write the PySCF output to this file")
+    p_sp.set_defaults(func=_cmd_single_point)
     return parser
 
 
