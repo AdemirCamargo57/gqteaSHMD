@@ -163,6 +163,8 @@ def test_unreadable_state_files_raise_a_clear_value_error(
     good = _saved_state(tmp_path, ethylene_symbols, ethylene_bohr, make_settings)
     garbage = tmp_path / "garbage.npz"
     garbage.write_bytes(b"this is not a zip archive")
+    empty = tmp_path / "empty.npz"
+    empty.write_bytes(b"")
     missing_field = tmp_path / "missing.npz"
     _rewrite(good, missing_field, density=None)
     bad_coords = tmp_path / "coords.npz"
@@ -171,7 +173,15 @@ def test_unreadable_state_files_raise_a_clear_value_error(
     _rewrite(good, bad_mo, mo_coeff=np.zeros(4))
     bad_density = tmp_path / "density.npz"
     _rewrite(good, bad_density, density=np.zeros((3, 4)))
-    for path in (tmp_path / "absent.npz", garbage, missing_field, bad_coords, bad_mo, bad_density):
+    for path in (
+        tmp_path / "absent.npz",
+        garbage,
+        empty,
+        missing_field,
+        bad_coords,
+        bad_mo,
+        bad_density,
+    ):
         backend = _tda_backend(ethylene_symbols, make_settings)
         with pytest.raises(ValueError, match="is not a readable gqteashmd electronic state"):
             backend.load_state(path)

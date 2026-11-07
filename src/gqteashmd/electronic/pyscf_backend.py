@@ -302,13 +302,14 @@ class PySCFBackend(ElectronicBackend):
             return ValueError(f"{path} is not a readable gqteashmd electronic state: {reason}")
 
         body: dict[str, np.ndarray] | None = None
+        fingerprint = ""
         try:
             with np.load(Path(path), allow_pickle=False) as data:
-                version = int(data["format"])
-                fingerprint = str(data["fingerprint"])
+                version = int(data["format"])  # read first: a newer format may lack other fields
                 if version == _STATE_FORMAT:
+                    fingerprint = str(data["fingerprint"])
                     body = {k: np.array(data[k]) for k in _STATE_ARRAYS}
-        except (OSError, zipfile.BadZipFile, KeyError, ValueError) as exc:
+        except (OSError, EOFError, zipfile.BadZipFile, KeyError, TypeError, ValueError) as exc:
             raise unreadable(f"{type(exc).__name__}: {exc}") from exc
         if body is None:
             raise ValueError(f"{path}: unsupported electronic state format {version}.")

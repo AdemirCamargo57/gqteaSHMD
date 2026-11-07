@@ -137,8 +137,10 @@ def _scatter(
 def _estimate_bytes(
     n_bra: int, n_ket: int, ua: int, va: int, ub: int, vb: int, n_a: int, n_b: int
 ) -> int:
-    """Bytes held at the peak of state_overlaps: the two determinant tables, the scattered
-    coefficient matrices, two work matrices and the largest batched-determinant block."""
+    """Estimated bytes held at the peak of state_overlaps: the two determinant tables, the
+    scattered coefficient matrices, two work matrices and the largest batched-determinant block.
+    An estimate, not a bound: the block term is capped at _MAX_BLOCK_ELEMENTS (a single bra row
+    may exceed it) and the LU copy made inside np.linalg.det is not counted."""
     tables = ua * va + ub * vb
     scattered = n_bra * ua * ub + n_ket * va * vb
     work = ua * vb + ua * ub
