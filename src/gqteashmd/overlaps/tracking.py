@@ -33,6 +33,8 @@ def _square(s: ArrayLike) -> np.ndarray:
     m = np.asarray(s, dtype=float)
     if m.ndim != 2 or m.shape[0] != m.shape[1]:
         raise ValueError(f"the overlap matrix must be square, got shape {m.shape}")
+    if m.size == 0:
+        raise ValueError("the overlap matrix is empty")
     return m
 
 

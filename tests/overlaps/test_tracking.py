@@ -16,6 +16,29 @@ def test_a_sign_flip_is_corrected():
     t = track(s)
     np.testing.assert_array_equal(t.phases, [1.0, -1.0, 1.0])
     assert np.all(np.diag(t.overlaps) > 0)
+    np.testing.assert_array_equal(t.overlaps, s * t.phases[None, :])
+
+
+def test_a_three_cycle_with_mixed_signs_pins_the_assignment_direction():
+    s = np.zeros((3, 3))
+    s[0, 1] = 0.9
+    s[1, 2] = -0.9
+    s[2, 0] = 0.9
+    t = track(s)
+    np.testing.assert_array_equal(t.assignment, [2, 0, 1])
+    np.testing.assert_array_equal(t.phases, [1.0, 1.0, -1.0])
+    assert t.root_flips == [(2, 0), (0, 1), (1, 2)]
+    assert np.all(t.overlaps[t.assignment, np.arange(3)] > 0)
+
+
+def test_a_zero_matched_overlap_gets_phase_plus_one():
+    t = track(np.array([[0.0, 0.0], [0.0, 1.0]]))
+    np.testing.assert_array_equal(t.phases, [1.0, 1.0])
+
+
+def test_empty_matrix_is_rejected():
+    with pytest.raises(ValueError, match="empty"):
+        track(np.zeros((0, 0)))
 
 
 def test_a_root_flip_is_detected_and_phased_by_the_matched_element():
