@@ -42,9 +42,16 @@ def run_response(
     energies: dict[StateLabel, float] = {states[0]: float(mf.e_tot)}
     if not excited:
         return ResponseOutcome(None, None, energies)
+    nocc = int(np.count_nonzero(mf.mo_occ > 0))
+    n_single = nocc * (int(mf.mo_coeff.shape[1]) - nocc)
+    if len(excited) > n_single:
+        raise ElectronicStructureError(
+            f"{method} cannot give {len(excited)} excited states: the molecule has only "
+            f"{n_single} single excitation{'s' if n_single != 1 else ''} in this basis."
+        )
     for name, extra, cycle_factor in _LADDER:
         td = tddft.TDA(mf) if settings.method == "tda" else tddft.TDDFT(mf)
-        td.nstates = len(excited) + extra
+        td.nstates = min(len(excited) + extra, n_single)
         td.conv_tol = settings.td_conv_tol
         td.max_cycle = td.max_cycle * cycle_factor
         try:

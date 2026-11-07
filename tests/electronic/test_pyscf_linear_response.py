@@ -1,6 +1,7 @@
 import numpy as np
 import pytest
 from pyscf import dft, gto, scf, tddft
+from scipy.linalg import block_diag
 
 from gqteashmd.core.states import StateLabel
 from gqteashmd.electronic import pyscf_response
@@ -146,19 +147,6 @@ def test_tda_expansion_is_orthonormal_at_equal_geometry(
     np.testing.assert_allclose(np.diag(state_overlaps(kept, kept, s_mo)), 1.0, atol=1e-10)
 
 
-def test_tdhf_x_only_expansion_is_nearly_orthonormal(
-    ethylene_symbols, ethylene_bohr, make_settings
-):
-    mol, mf = _scf(ethylene_symbols, ethylene_bohr, "hf")
-    settings = _tda_settings(make_settings, method="tddft", functional="hf", singlets=3)
-    outcome = pyscf_response.run_response(mf, settings, (S0, S1, S2))
-    expansion = truncate(pyscf_response.response_expansion(mf, outcome.td, 2), 1.0)
-    s_mo = mf.mo_coeff.T @ mol.intor("int1e_ovlp") @ mf.mo_coeff
-    s = state_overlaps(expansion, expansion, s_mo)
-    np.testing.assert_allclose(np.diag(s), 1.0, atol=1e-10)
-    assert np.abs(s - np.eye(3)).max() < 0.05  # X-only RPA states: report the measured value
-
-
 def test_response_ladder_retries_with_extra_roots(
     ethylene_symbols, ethylene_bohr, make_settings, monkeypatch
 ):
@@ -185,3 +173,61 @@ def test_response_ladder_exhausted(ethylene_symbols, ethylene_bohr, make_setting
         PySCFBackend(MoleculeSpec(tuple(ethylene_symbols)), _tda_settings(make_settings)).compute(
             Request(ethylene_bohr)
         )
+
+
+def _rotated_overlap_reference(xs, q):
+    """Explicit overlaps of the spin-adapted singles when the virtuals are rotated by q."""
+    n = len(xs)
+    ref = np.zeros((n + 1, n + 1))
+    ref[0, 0] = 1.0
+    for k in range(n):
+        for m in range(n):
+            ref[k + 1, m + 1] = 2.0 * np.einsum("ia,ib,ab->", xs[k], xs[m], q)
+    return ref
+
+
+@pytest.mark.parametrize("functional, method", [("b3lyp", "tda"), ("hf", "tddft")])
+def test_expansion_layout_with_rotated_virtuals(
+    ethylene_symbols, ethylene_bohr, make_settings, functional, method
+):
+    mol, mf = _scf(ethylene_symbols, ethylene_bohr, functional)
+    nocc = int(np.count_nonzero(mf.mo_occ > 0))
+    nvir = mf.mo_coeff.shape[1] - nocc
+    assert nocc != nvir
+    settings = _tda_settings(make_settings, method=method, functional=functional, singlets=3)
+    outcome = pyscf_response.run_response(mf, settings, (S0, S1, S2))
+    expansion = pyscf_response.response_expansion(mf, outcome.td, 2)
+    q, _ = np.linalg.qr(np.random.default_rng(7).normal(size=(nvir, nvir)))
+    s_mo = block_diag(np.eye(nocc), q)
+    xs = [np.asarray(outcome.td.xy[k][0]) for k in range(2)]
+    np.testing.assert_allclose(
+        state_overlaps(expansion, expansion, s_mo), _rotated_overlap_reference(xs, q), atol=1e-12
+    )
+
+
+def test_tdhf_x_only_norm_exceeds_one_by_twice_sum_y_squared(
+    ethylene_symbols, ethylene_bohr, make_settings
+):
+    """Dropping Y from an RPA state inflates its norm: 2 sum X^2 = 1 + 2 sum Y^2 > 1.
+
+    Measured for ethylene/STO-3G TDHF, S1 has sum Y^2 of about 1.1e-2, so the X-only state has
+    a norm^2 of about 1.023 before renormalisation (a 2.3% change).
+    """
+    mol, mf = _scf(ethylene_symbols, ethylene_bohr, "hf")
+    settings = _tda_settings(make_settings, method="tddft", functional="hf", singlets=3)
+    outcome = pyscf_response.run_response(mf, settings, (S0, S1, S2))
+    expansion = pyscf_response.response_expansion(mf, outcome.td, 2)
+    s_mo = mf.mo_coeff.T @ mol.intor("int1e_ovlp") @ mf.mo_coeff
+    diag = np.diag(state_overlaps(expansion, expansion, s_mo))
+    for k in range(2):
+        sum_y2 = float(np.sum(np.asarray(outcome.td.xy[k][1]) ** 2))
+        assert sum_y2 > 0
+        assert diag[k + 1] > 1.0
+        assert abs(diag[k + 1] - (1.0 + 2.0 * sum_y2)) < 1e-10
+
+
+def test_too_many_excited_states_for_the_single_excitation_space(make_settings):
+    mol, mf = _scf(["H", "H"], np.array([[0.0, 0.0, 0.0], [0.0, 0.0, 1.4]]), "hf")
+    settings = _tda_settings(make_settings, functional="hf", singlets=3)
+    with pytest.raises(ElectronicStructureError, match="only 1 single excitation"):
+        pyscf_response.run_response(mf, settings, (S0, S1, S2))
