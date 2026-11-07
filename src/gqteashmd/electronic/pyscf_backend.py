@@ -20,7 +20,7 @@ from gqteashmd.chem.electrons import count_electrons
 from gqteashmd.chem.elements import atomic_number
 from gqteashmd.config.schema import ElectronicSection
 from gqteashmd.core.states import StateLabel, states_from_counts
-from gqteashmd.electronic import pyscf_casscf
+from gqteashmd.electronic import pyscf_casscf, pyscf_response
 from gqteashmd.electronic.base import (
     Capabilities,
     ElectronicBackend,
@@ -141,7 +141,19 @@ class PySCFBackend(ElectronicBackend):
                 rung_meta = {"casscf": outcome.rung}
                 self._previous_mo, self._previous_mol = mc.mo_coeff, mol
             else:
-                energies, gradients, dipoles, spins = self._run_linear_response(mol, mf, request)
+                outcome_r = pyscf_response.run_response(mf, self._settings, self._states)
+                energies, spins = outcome_r.energies, {}
+                gradients = pyscf_response.response_gradients(
+                    mf, outcome_r.td, request.gradients, self._settings.method
+                )
+                dipoles = (
+                    pyscf_response.response_dipoles(
+                        outcome_r.td, self._states, self._settings.method
+                    )
+                    if request.transition_dipoles
+                    else {}
+                )
+                rung_meta = {"td": outcome_r.rung}
         meta: dict[str, Any] = {
             "backend": "pyscf",
             "pyscf_version": self._version,
@@ -275,55 +287,3 @@ class PySCFBackend(ElectronicBackend):
             f"SCF did not converge (tried: {tried}; scf_max_cycle = "
             f"{self._settings.scf_max_cycle}, scf_conv_tol = {self._settings.scf_conv_tol})."
         )
-
-    # ------------------------------------------------------------------ TDA / TDDFT (Task 7)
-    def _run_linear_response(
-        self, mol: Any, mf: Any, request: Request
-    ) -> tuple[
-        dict[StateLabel, float],
-        dict[StateLabel, np.ndarray],
-        dict[StateLabel, np.ndarray],
-        dict[StateLabel, float],
-    ]:
-        from pyscf import tddft
-
-        method = self._settings.method.upper()
-        excited = self._states[1:]
-        energies: dict[StateLabel, float] = {self._states[0]: float(mf.e_tot)}
-        gradients: dict[StateLabel, np.ndarray] = {}
-        dipoles: dict[StateLabel, np.ndarray] = {}
-        td: Any = None
-        if excited:
-            td = tddft.TDA(mf) if self._settings.method == "tda" else tddft.TDDFT(mf)
-            td.nstates = len(excited)
-            td.conv_tol = self._settings.td_conv_tol
-            try:
-                td.kernel()
-            except Exception as exc:
-                raise wrap_failure(method, exc) from exc
-            converged = np.atleast_1d(np.asarray(td.converged, dtype=bool))
-            if len(td.e) < len(excited) or not bool(converged.all()):
-                raise ElectronicStructureError(
-                    f"{method} did not converge for all {len(excited)} "
-                    f"excited states (td_conv_tol = {self._settings.td_conv_tol})."
-                )
-            for label, omega in zip(excited, td.e[: len(excited)], strict=True):
-                energies[label] = float(mf.e_tot + omega)
-            if request.transition_dipoles:
-                try:
-                    mus = td.transition_dipole()
-                except Exception as exc:
-                    raise wrap_failure(f"{method} transition dipole", exc) from exc
-                for label, mu in zip(excited, mus, strict=True):
-                    dipoles[label] = np.asarray(mu, dtype=float)
-        for label in sorted(request.gradients):
-            try:
-                if label.index == 0:
-                    g = mf.nuc_grad_method().kernel()
-                else:
-                    g = td.nuc_grad_method().kernel(state=label.index)
-            except Exception as exc:
-                what = "SCF" if label.index == 0 else method
-                raise wrap_failure(f"{what} gradient of {label}", exc) from exc
-            gradients[label] = np.asarray(g, dtype=float)
-        return energies, gradients, dipoles, {}
