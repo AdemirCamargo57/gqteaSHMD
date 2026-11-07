@@ -6,11 +6,14 @@ Coordinates are passed to PySCF in bohr; all results are in atomic units.
 
 from __future__ import annotations
 
+import logging
 import re
+import sys
 import time
 import warnings
 from collections.abc import Iterator
 from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
 from typing import IO, Any
 
@@ -30,6 +33,10 @@ from gqteashmd.electronic.base import (
 )
 from gqteashmd.electronic.pyscf_errors import wrap_failure
 from gqteashmd.errors import ConfigError, ElectronicStructureError
+from gqteashmd.overlaps.determinants import DeterminantExpansion, state_overlaps, truncate
+from gqteashmd.overlaps.tracking import track
+
+_LOG = logging.getLogger(__name__)
 
 MIN_PYSCF_VERSION = (2, 6, 0)
 
@@ -39,6 +46,27 @@ _SCF_LADDER: tuple[tuple[str, float, float, bool], ...] = (
     ("level shift + damping", 0.2, 0.5, False),
     ("second-order", 0.0, 0.0, True),
 )
+
+
+@dataclass(eq=False)
+class _Snapshot:
+    """What the next geometry needs from this one; save_state() writes exactly this."""
+
+    coords: np.ndarray  # bohr
+    mo_coeff: np.ndarray  # MOs the expansion refers to (CASSCF: mc.mo_coeff; else mf.mo_coeff)
+    density: np.ndarray  # SCF density matrix, the next SCF guess
+    expansion: DeterminantExpansion  # truncated and phase-aligned
+
+
+@dataclass(eq=False)
+class _Live:
+    """PySCF objects of the last compute(), reused by compute_more() (never serialised)."""
+
+    mol: Any
+    mf: Any
+    solver: Any  # CASSCF object, TD object or None
+    energies: dict[StateLabel, float]
+    phases: np.ndarray
 
 
 def require_pyscf() -> str:
@@ -65,6 +93,7 @@ class PySCFBackend(ElectronicBackend):
         log_file: Path | None = None,
         threads: int | None = None,
         memory_mb: int | None = None,
+        scratch_dir: Path | None = None,
     ) -> None:
         self._version = require_pyscf()
         if molecule.multiplicity != 1:
@@ -84,9 +113,9 @@ class PySCFBackend(ElectronicBackend):
         self._threads = threads
         self._memory_mb = memory_mb
         self._states = states_from_counts(settings.singlets, settings.triplets)
-        self._previous_mol: Any = None
-        self._previous_mo: Any = None
-        self._previous_dm: Any = None
+        self._scratch_dir = scratch_dir
+        self._snapshot: _Snapshot | None = None
+        self._live: _Live | None = None
 
     @property
     def states(self) -> tuple[StateLabel, ...]:
@@ -94,66 +123,58 @@ class PySCFBackend(ElectronicBackend):
 
     # ------------------------------------------------------------------ public API
     def compute(self, request: Request) -> ElectronicResult:
-        unknown_nac = sorted(
-            str(s) for s in {s for pair in request.nacs for s in pair} - set(self._states)
-        )
-        if unknown_nac:
-            raise ValueError(f"NACs requested for unknown state(s): {', '.join(unknown_nac)}")
-        if request.nacs and not self.capabilities.nacs:
-            raise ValueError(
-                f"Nonadiabatic coupling vectors are not available for method = "
-                f"'{self._settings.method}'; request overlaps instead."
-            )
-        if request.overlaps:
-            raise ValueError("Overlaps are not implemented yet (P3b Task 7).")
-        unknown = sorted(str(s) for s in set(request.gradients) - set(self._states))
-        if unknown:
-            raise ValueError(f"Gradients requested for unknown state(s): {', '.join(unknown)}")
-        if len(request.coords_bohr) != len(self._molecule.symbols):
-            raise ValueError(
-                f"Got coordinates for {len(request.coords_bohr)} atoms; the molecule has "
-                f"{len(self._molecule.symbols)} atoms."
-            )
-        if self._threads is not None:
-            from pyscf import lib
-
-            lib.num_threads(self._threads)
+        self._validate(request)
         started = time.perf_counter()
-        with self._log() as stdout:
+        previous = self._snapshot
+        with self._environment() as stdout:
             mol = self._build_mol(request.coords_bohr, stdout)
-            mf, scf_rung = self._run_scf(mol)
-            nacs: dict[tuple[StateLabel, StateLabel], np.ndarray] = {}
-            rung_meta: dict[str, Any] = {}
+            mf, scf_rung = self._run_scf(mol, None if previous is None else previous.density)
             if self._settings.method == "casscf":
-                previous = None
-                if self._previous_mo is not None and self._previous_mol is not None:
-                    previous = (self._previous_mo, self._previous_mol)
-                outcome = pyscf_casscf.run_casscf(mol, mf, self._settings, self._states, previous)
-                mc = outcome.mc
-                energies, spins = outcome.energies, outcome.spin_squares
-                gradients = pyscf_casscf.casscf_gradients(mc, request.gradients)
-                nacs = pyscf_casscf.casscf_nacs(mc, request.nacs)
-                dipoles = (
-                    pyscf_casscf.casscf_dipoles(mol, mc, self._states)
-                    if request.transition_dipoles
-                    else {}
+                prev_orbitals = None
+                if previous is not None:
+                    prev_orbitals = (previous.mo_coeff, self._build_mol(previous.coords, None))
+                outcome = pyscf_casscf.run_casscf(
+                    mol, mf, self._settings, self._states, prev_orbitals
                 )
-                rung_meta = {"casscf": outcome.rung}
-                self._previous_mo, self._previous_mol = mc.mo_coeff, mol
+                solver, energies, spins = outcome.mc, outcome.energies, outcome.spin_squares
+                mo_coeff = np.asarray(solver.mo_coeff)
+                expansion = pyscf_casscf.casscf_expansion(solver)
+                rung_meta: dict[str, Any] = {"casscf": outcome.rung}
             else:
                 outcome_r = pyscf_response.run_response(mf, self._settings, self._states)
-                energies, spins = outcome_r.energies, {}
-                gradients = pyscf_response.response_gradients(
-                    mf, outcome_r.td, request.gradients, self._settings.method
-                )
-                dipoles = (
-                    pyscf_response.response_dipoles(
-                        outcome_r.td, self._states, self._settings.method
-                    )
-                    if request.transition_dipoles
-                    else {}
-                )
+                solver, energies, spins = outcome_r.td, outcome_r.energies, {}
+                mo_coeff = np.asarray(mf.mo_coeff)
+                expansion = pyscf_response.response_expansion(mf, solver, len(self._states) - 1)
                 rung_meta = {"td": outcome_r.rung}
+            expansion = truncate(expansion, self._settings.overlap_norm_kept)
+            phases = np.ones(len(self._states))
+            overlaps = None
+            if not request.overlaps:
+                rung_meta["overlaps"] = "not requested"
+            elif previous is None:
+                rung_meta["overlaps"] = "no previous geometry"
+            else:
+                tracked = track(self._state_overlaps(previous, mol, mo_coeff, expansion))
+                phases, overlaps = tracked.phases, tracked.overlaps
+                expansion = expansion.with_signs(phases)
+                rung_meta.update(
+                    overlaps="computed",
+                    overlap_min_singular_value=tracked.min_singular_value,
+                    root_flips=[[i, j] for i, j in tracked.root_flips],
+                )
+                if tracked.min_singular_value < 0.5:
+                    _LOG.warning(
+                        "The state overlap matrix is far from unitary (smallest singular value "
+                        "%.3f): an intruder state or too few computed states.",
+                        tracked.min_singular_value,
+                    )
+            live = _Live(mol, mf, solver, energies, phases)
+            gradients, nacs = self._derivatives(live, request.gradients, request.nacs)
+            dipoles = self._dipoles(live, request.transition_dipoles)
+        self._snapshot = _Snapshot(
+            np.array(request.coords_bohr), mo_coeff, np.asarray(mf.make_rdm1()), expansion
+        )
+        self._live = live
         meta: dict[str, Any] = {
             "backend": "pyscf",
             "pyscf_version": self._version,
@@ -162,16 +183,18 @@ class PySCFBackend(ElectronicBackend):
             "functional": self._settings.functional,
             "scf": scf_rung,
             "scf_energy_hartree": float(mf.e_tot),
-            "wall_time_s": time.perf_counter() - started,
             **rung_meta,
+            "wall_time_s": time.perf_counter() - started,
         }
         return ElectronicResult(
             states=self._states,
             energies=energies,
             gradients=gradients,
-            nacs=nacs,
             transition_dipoles=dipoles,
             spin_squares=spins,
+            nacs=nacs,
+            overlaps=overlaps,
+            phases=None if overlaps is None else phases,
             meta=meta,
         )
 
@@ -189,7 +212,23 @@ class PySCFBackend(ElectronicBackend):
         gradients: frozenset[StateLabel] = frozenset(),
         nacs: frozenset[tuple[StateLabel, StateLabel]] = frozenset(),
     ) -> ElectronicResult:
-        raise NotImplementedError("compute_more arrives in P3b Task 7")
+        live = self._live
+        if live is None:
+            raise ValueError("compute_more() needs a preceding compute() in this process.")
+        self._check_labels(frozenset(gradients), frozenset(nacs))
+        with self._environment() as stdout:
+            out = stdout if stdout is not None else sys.stdout
+            for obj in (live.mol, live.mf, live.solver):
+                if obj is not None:
+                    obj.stdout = out  # the file of the previous compute() is closed
+            grads, phased = self._derivatives(live, frozenset(gradients), frozenset(nacs))
+        return ElectronicResult(
+            states=self._states,
+            energies=dict(live.energies),
+            gradients=grads,
+            nacs=phased,
+            meta={"backend": "pyscf", "method": self._settings.method, "compute_more": True},
+        )
 
     def save_state(self, path: Path) -> None:
         raise NotImplementedError("save_state arrives in P3b Task 8")
@@ -199,13 +238,99 @@ class PySCFBackend(ElectronicBackend):
 
     # ------------------------------------------------------------------ setup
     @contextmanager
-    def _log(self) -> Iterator[IO[str] | None]:
-        if self._log_file is None:
-            yield None
+    def _environment(self) -> Iterator[IO[str] | None]:
+        from pyscf import lib
+
+        if self._threads is not None:
+            lib.num_threads(self._threads)
+        old_tmpdir = lib.param.TMPDIR
+        try:
+            if self._scratch_dir is not None:
+                try:
+                    self._scratch_dir.mkdir(parents=True, exist_ok=True)
+                except OSError as exc:
+                    raise wrap_failure(
+                        f"Preparing the scratch directory {self._scratch_dir}", exc
+                    ) from exc
+                lib.param.TMPDIR = str(self._scratch_dir)
+            if self._log_file is None:
+                yield None
+            else:
+                self._log_file.parent.mkdir(parents=True, exist_ok=True)
+                with open(self._log_file, "a", encoding="utf-8") as fh:
+                    yield fh
+        finally:
+            lib.param.TMPDIR = old_tmpdir
+
+    def _validate(self, request: Request) -> None:
+        self._check_labels(request.gradients, request.nacs)
+        if len(request.coords_bohr) != len(self._molecule.symbols):
+            raise ValueError(
+                f"Got coordinates for {len(request.coords_bohr)} atoms; the molecule has "
+                f"{len(self._molecule.symbols)} atoms."
+            )
+
+    def _check_labels(
+        self,
+        gradients: frozenset[StateLabel],
+        nacs: frozenset[tuple[StateLabel, StateLabel]],
+    ) -> None:
+        unknown = sorted(str(s) for s in {s for pair in nacs for s in pair} - set(self._states))
+        if unknown:
+            raise ValueError(f"NACs requested for unknown state(s): {', '.join(unknown)}")
+        if nacs and not self.capabilities.nacs:
+            raise ValueError(
+                f"Nonadiabatic coupling vectors are not available for method = "
+                f"'{self._settings.method}'; request overlaps instead."
+            )
+        unknown = sorted(str(s) for s in set(gradients) - set(self._states))
+        if unknown:
+            raise ValueError(f"Gradients requested for unknown state(s): {', '.join(unknown)}")
+
+    def _state_overlaps(
+        self, previous: _Snapshot, mol: Any, mo_coeff: np.ndarray, expansion: DeterminantExpansion
+    ) -> np.ndarray:
+        from pyscf import gto
+
+        try:
+            previous_mol = self._build_mol(previous.coords, None)
+            s_ao = gto.intor_cross("int1e_ovlp", previous_mol, mol)
+        except Exception as exc:
+            raise wrap_failure("The AO overlap between geometries", exc) from exc
+        s_mo = previous.mo_coeff.T @ s_ao @ mo_coeff
+        return state_overlaps(previous.expansion, expansion, s_mo)
+
+    def _phase(self, live: _Live, label: StateLabel) -> float:
+        return float(live.phases[self._states.index(label)])
+
+    def _derivatives(
+        self,
+        live: _Live,
+        gradients: frozenset[StateLabel],
+        nacs: frozenset[tuple[StateLabel, StateLabel]],
+    ) -> tuple[dict[StateLabel, np.ndarray], dict[tuple[StateLabel, StateLabel], np.ndarray]]:
+        if self._settings.method == "casscf":
+            grads = pyscf_casscf.casscf_gradients(live.solver, gradients)
+            raw = pyscf_casscf.casscf_nacs(live.solver, nacs)
         else:
-            self._log_file.parent.mkdir(parents=True, exist_ok=True)
-            with open(self._log_file, "a", encoding="utf-8") as fh:
-                yield fh
+            grads = pyscf_response.response_gradients(
+                live.mf, live.solver, gradients, self._settings.method
+            )
+            raw = {}
+        phased = {
+            (a, b): d * self._phase(live, a) * self._phase(live, b) for (a, b), d in raw.items()
+        }
+        return grads, phased
+
+    def _dipoles(self, live: _Live, wanted: bool) -> dict[StateLabel, np.ndarray]:
+        if not wanted:
+            return {}
+        if self._settings.method == "casscf":
+            raw = pyscf_casscf.casscf_dipoles(live.mol, live.solver, self._states)
+        else:
+            raw = pyscf_response.response_dipoles(live.solver, self._states, self._settings.method)
+        p0 = self._phase(live, self._states[0])
+        return {label: mu * p0 * self._phase(live, label) for label, mu in raw.items()}
 
     def _build_mol(self, coords: np.ndarray, stdout: IO[str] | None) -> Any:
         from pyscf import gto
@@ -254,10 +379,11 @@ class PySCFBackend(ElectronicBackend):
             mf.grids.level = self._settings.grid_level
         mf.conv_tol = self._settings.scf_conv_tol
         mf.max_cycle = self._settings.scf_max_cycle
+        mf.chkfile = None  # the program keeps its own state; no SCF chkfile
+        mf._chkfile = None  # PySCF's empty temp file is created at construction: drop it
         return mf
 
-    def _run_scf(self, mol: Any) -> tuple[Any, str]:
-        previous_dm = self._previous_dm
+    def _run_scf(self, mol: Any, previous_dm: Any) -> tuple[Any, str]:
         if previous_dm is not None and getattr(previous_dm, "shape", None) != (mol.nao, mol.nao):
             previous_dm = None
         for rung, (name, shift, damp, second_order) in enumerate(_SCF_LADDER):
@@ -280,7 +406,6 @@ class PySCFBackend(ElectronicBackend):
             except Exception as exc:  # PySCF raises many types; report them as SCF failures
                 raise wrap_failure(f"PySCF SCF ({name})", exc) from exc
             if mf.converged:
-                self._previous_dm = mf.make_rdm1()
                 return mf, name
         tried = ", ".join(name for name, *_ in _SCF_LADDER)
         raise ElectronicStructureError(

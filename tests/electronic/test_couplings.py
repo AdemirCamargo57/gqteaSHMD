@@ -1,0 +1,116 @@
+import os
+
+import numpy as np
+import pytest
+
+from gqteashmd.core.states import StateLabel
+from gqteashmd.electronic.base import MoleculeSpec, Request
+from gqteashmd.electronic.pyscf_backend import PySCFBackend
+
+S0, S1, S2 = StateLabel(1, 0), StateLabel(1, 1), StateLabel(1, 2)
+
+
+def _cas(make_settings):
+    return make_settings(basis="6-31g")
+
+
+def _tda(make_settings):
+    return make_settings(method="tda", basis="sto-3g", functional="b3lyp", singlets=3, casscf=None)
+
+
+def _step(coords, seed=11, scale=0.01):
+    return coords + np.random.default_rng(seed).normal(scale=scale, size=coords.shape)
+
+
+@pytest.mark.parametrize("which", ["cas", "tda"])
+def test_overlaps_at_equal_geometry_are_the_identity(
+    which, ethylene_symbols, ethylene_bohr, make_settings
+):
+    settings = _cas(make_settings) if which == "cas" else _tda(make_settings)
+    backend = PySCFBackend(MoleculeSpec(tuple(ethylene_symbols)), settings)
+    first = backend.compute(Request(ethylene_bohr, overlaps=True))
+    assert first.overlaps is None and first.meta["overlaps"] == "no previous geometry"
+    second = backend.compute(Request(ethylene_bohr, overlaps=True))
+    np.testing.assert_allclose(second.overlaps, np.eye(len(backend.states)), atol=1e-6)
+    assert second.meta["overlaps"] == "computed" and second.meta["root_flips"] == []
+    assert backend.compute(Request(ethylene_bohr)).meta["overlaps"] == "not requested"
+
+
+@pytest.mark.parametrize("which", ["cas", "tda"])
+def test_small_step_overlaps_are_near_identity_with_positive_diagonal(
+    which, ethylene_symbols, ethylene_bohr, make_settings
+):
+    settings = _cas(make_settings) if which == "cas" else _tda(make_settings)
+    backend = PySCFBackend(MoleculeSpec(tuple(ethylene_symbols)), settings)
+    backend.compute(Request(ethylene_bohr, overlaps=True))
+    result = backend.compute(Request(_step(ethylene_bohr), overlaps=True))
+    assert np.all(np.diag(result.overlaps) > 0.9)
+    assert set(np.unique(result.phases)) <= {-1.0, 1.0}
+    assert result.meta["overlap_min_singular_value"] > 0.9
+    off = result.overlaps - np.diag(np.diag(result.overlaps))
+    assert np.abs(off + off.T).max() < 0.02  # off-diagonal ~antisymmetric for small steps
+
+
+def test_phases_keep_couplings_and_dipoles_continuous(
+    ethylene_symbols, ethylene_bohr, make_settings
+):
+    backend = PySCFBackend(MoleculeSpec(tuple(ethylene_symbols)), _cas(make_settings))
+    req = dict(nacs=frozenset({(S0, S1)}), transition_dipoles=True, overlaps=True)
+    a = backend.compute(Request(ethylene_bohr, **req))
+    b = backend.compute(Request(_step(ethylene_bohr, scale=0.005), **req))
+    da, db = a.nacs[(S0, S1)], b.nacs[(S0, S1)]
+    assert np.abs(da - db).max() < 0.2 * np.abs(da + db).max()  # no sign jump between steps
+    ma, mb = a.transition_dipoles[S1], b.transition_dipoles[S1]
+    assert np.dot(ma, mb) > 0
+
+
+def test_compute_more_reuses_the_last_geometry(
+    ethylene_symbols, ethylene_bohr, make_settings, monkeypatch
+):
+    settings = _cas(make_settings)
+    backend = PySCFBackend(MoleculeSpec(tuple(ethylene_symbols)), settings)
+    with pytest.raises(ValueError, match="compute_more"):
+        backend.compute_more(gradients=frozenset({S1}))
+    backend.compute(Request(ethylene_bohr, gradients=frozenset({S0})))
+    scf_calls = []
+    original = PySCFBackend._run_scf
+    monkeypatch.setattr(
+        PySCFBackend,
+        "_run_scf",
+        lambda self, *a, **k: scf_calls.append(1) or original(self, *a, **k),
+    )
+    more = backend.compute_more(gradients=frozenset({S1}), nacs=frozenset({(S0, S1)}))
+    assert scf_calls == [] and more.meta["compute_more"] is True
+    fresh = PySCFBackend(MoleculeSpec(tuple(ethylene_symbols)), settings).compute(
+        Request(ethylene_bohr, gradients=frozenset({S1}), nacs=frozenset({(S0, S1)}))
+    )
+    assert np.abs(more.gradients[S1] - fresh.gradients[S1]).max() < 1e-7
+    d_more, d_fresh = more.nacs[(S0, S1)], fresh.nacs[(S0, S1)]
+    assert min(np.abs(d_more - d_fresh).max(), np.abs(d_more + d_fresh).max()) < 1e-7
+    assert more.energies == backend.compute_more().energies
+
+
+def test_compute_more_writes_to_the_log(tmp_path, ethylene_symbols, ethylene_bohr, make_settings):
+    log = tmp_path / "pyscf.log"
+    backend = PySCFBackend(MoleculeSpec(tuple(ethylene_symbols)), _tda(make_settings), log_file=log)
+    backend.compute(Request(ethylene_bohr))
+    size = log.stat().st_size
+    backend.compute_more(gradients=frozenset({S1}))
+    assert log.stat().st_size > size
+
+
+def test_scratch_policy(tmp_path, ethylene_symbols, ethylene_bohr, make_settings, monkeypatch):
+    from pyscf import lib
+
+    work = tmp_path / "work"
+    work.mkdir()
+    monkeypatch.chdir(work)
+    before = lib.param.TMPDIR
+    scratch = tmp_path / "scratch"
+    backend = PySCFBackend(
+        MoleculeSpec(tuple(ethylene_symbols)), _cas(make_settings), scratch_dir=scratch
+    )
+    backend.compute(Request(ethylene_bohr, gradients=frozenset({S1})))
+    assert os.listdir(work) == []
+    assert scratch.is_dir() and before == lib.param.TMPDIR
+    assert not any(p.name.startswith("tmp") for p in scratch.iterdir())  # no SCF chkfile
