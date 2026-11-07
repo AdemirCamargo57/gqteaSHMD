@@ -1,3 +1,5 @@
+import errno
+import fcntl
 import os
 import threading
 import time
@@ -71,7 +73,54 @@ def test_lock_waits_briefly_for_a_short_holder(tmp_path):
 
     worker = threading.Thread(target=hold_briefly)
     worker.start()
-    held.wait(5)
+    assert held.wait(5)
     with ProjectLock(lock_path):
         pass
     worker.join()
+
+
+def _open_fds() -> int:
+    return len(os.listdir("/proc/self/fd"))
+
+
+def test_unsupported_locking_is_a_project_error_and_leaks_nothing(tmp_path, monkeypatch):
+    def no_locks(fh, flags):
+        raise OSError(errno.ENOLCK, "No locks available")
+
+    monkeypatch.setattr(fcntl, "flock", no_locks)
+    before = _open_fds()
+    with pytest.raises(ProjectError, match="locking"), ProjectLock(tmp_path / "controller.lock"):
+        pass
+    assert _open_fds() == before
+
+
+def test_failure_after_locking_releases_the_lock(tmp_path, monkeypatch):
+    lock_path = tmp_path / "controller.lock"
+    real_open = open
+    calls = []
+
+    class FailingWrite:
+        def __init__(self, fh):
+            self._fh = fh
+
+        def __getattr__(self, name):
+            return getattr(self._fh, name)
+
+        def write(self, text):
+            raise OSError(errno.ENOSPC, "No space left on device")
+
+    def fake_open(path, *args, **kwargs):
+        fh = real_open(path, *args, **kwargs)
+        if str(path) == str(lock_path) and not calls:
+            calls.append(1)
+            return FailingWrite(fh)
+        return fh
+
+    monkeypatch.setattr("builtins.open", fake_open)
+    before = _open_fds()
+    with pytest.raises(OSError, match="No space"), ProjectLock(lock_path):
+        pass
+    monkeypatch.undo()
+    assert _open_fds() == before
+    with ProjectLock(lock_path):  # the lock was released
+        pass

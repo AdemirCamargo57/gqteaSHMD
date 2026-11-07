@@ -18,27 +18,40 @@ class ProjectLock:
 
     def __enter__(self) -> ProjectLock:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        fh = open(self.path, "a+", encoding="utf-8")
-        for attempt in range(2):
+        fh = open(self.path, "a+", encoding="utf-8")  # noqa: SIM115 - kept open while locked
+        try:
+            for attempt in range(2):
+                try:
+                    fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError as exc:
+                    if attempt == 0:
+                        time.sleep(0.2)  # `locked_by` may be probing the lock for an instant
+                        continue
+                    holder = locked_by(self.path)
+                    raise ProjectError(
+                        "Another gqteashmd controller is running for this project "
+                        f"(pid {holder if holder is not None else 'unknown'}, "
+                        f"lock file {self.path}). "
+                        "Use `gqteashmd status` or `gqteashmd stop`."
+                    ) from exc
+                except OSError as exc:
+                    raise ProjectError(
+                        f"File locking is not available for {self.path} "
+                        f"({exc.strerror or exc}); put the project directory on a local Linux "
+                        "filesystem."
+                    ) from exc
             try:
-                fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                break
-            except BlockingIOError as exc:
-                if attempt == 0:
-                    time.sleep(0.2)  # `locked_by` may be probing the lock for an instant
-                    continue
-                fh.close()
-                holder = locked_by(self.path)
-                raise ProjectError(
-                    "Another gqteashmd controller is running for this project "
-                    f"(pid {holder if holder is not None else 'unknown'}, "
-                    f"lock file {self.path}). "
-                    "Use `gqteashmd status` or `gqteashmd stop`."
-                ) from exc
-        fh.seek(0)
-        fh.truncate()
-        fh.write(f"{os.getpid()}\n")
-        fh.flush()
+                fh.seek(0)
+                fh.truncate()
+                fh.write(f"{os.getpid()}\n")
+                fh.flush()
+            except BaseException:
+                fcntl.flock(fh, fcntl.LOCK_UN)
+                raise
+        except BaseException:
+            fh.close()
+            raise
         self._fh = fh
         return self
 
