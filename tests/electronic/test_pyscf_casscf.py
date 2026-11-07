@@ -4,9 +4,11 @@ import numpy as np
 import pytest
 
 from gqteashmd.core.states import StateLabel
+from gqteashmd.electronic import pyscf_casscf
 from gqteashmd.electronic.base import MoleculeSpec, Request
 from gqteashmd.electronic.pyscf_backend import PySCFBackend, require_pyscf
 from gqteashmd.errors import ConfigError, ElectronicStructureError
+from gqteashmd.overlaps.determinants import state_overlaps
 
 S0, S1 = StateLabel(1, 0), StateLabel(1, 1)
 
@@ -143,7 +145,7 @@ def test_a_later_scf_rung_rescues_a_failed_first_rung(
 
 
 def test_failure_wrapper_marks_only_transient_errors_retryable():
-    from gqteashmd.electronic.pyscf_backend import _wrap_failure
+    from gqteashmd.electronic.pyscf_errors import wrap_failure as _wrap_failure
 
     oom = _wrap_failure("CASSCF", MemoryError("no memory"))
     assert isinstance(oom, ElectronicStructureError) and oom.retryable is True
@@ -163,3 +165,96 @@ def test_importing_the_cli_and_worker_does_not_import_pyscf():
         "assert not any(m == 'pyscf' or m.startswith('pyscf.') for m in sys.modules)"
     )
     subprocess.run([sys.executable, "-c", code], check=True)
+
+
+def test_sa2_casscf_nacs_match_the_sharc_reference(
+    ethylene_symbols, ethylene_bohr, make_settings, reference_dir
+):
+    ref = json.loads((reference_dir / "sharc41_pyscf_ethylene_sa2cas22_631gs.json").read_text())
+    result = _backend(ethylene_symbols, make_settings()).compute(
+        Request(ethylene_bohr, nacs=frozenset({(S0, S1)}))
+    )
+    d = result.nacs[(S0, S1)]
+    d_ref = np.array(ref["nacs_per_bohr"]["S0-S1"])
+    assert d.shape == (6, 3)
+    assert min(np.abs(d - d_ref).max(), np.abs(d + d_ref).max()) < 1e-6  # global sign arbitrary
+    assert result.meta["casscf"] in ("SCF orbitals", "previous orbitals")
+
+
+def test_nacs_need_known_states_and_a_capable_method(
+    ethylene_symbols, ethylene_bohr, make_settings
+):
+    backend = _backend(ethylene_symbols, make_settings(basis="sto-3g"))
+    with pytest.raises(ValueError, match="S5"):
+        backend.compute(Request(ethylene_bohr, nacs=frozenset({(S0, StateLabel(1, 5))})))
+    tda = _backend(
+        ethylene_symbols, make_settings(method="tda", basis="sto-3g", functional="hf", casscf=None)
+    )
+    assert tda.capabilities.nacs is False
+    with pytest.raises(ValueError, match="overlaps"):
+        tda.compute(Request(ethylene_bohr, nacs=frozenset({(S0, S1)})))
+
+
+def test_casscf_expansion_is_orthonormal_at_equal_geometry(
+    ethylene_symbols, ethylene_bohr, make_settings
+):
+    from pyscf import gto, scf
+
+    settings = make_settings(basis="6-31g")
+    mol = gto.M(
+        atom=[(s, tuple(c)) for s, c in zip(ethylene_symbols, ethylene_bohr, strict=True)],
+        unit="Bohr",
+        basis="6-31g",
+        verbose=0,
+    )
+    mf = scf.RHF(mol).run(conv_tol=1e-10)
+    outcome = pyscf_casscf.run_casscf(mol, mf, settings, (S0, S1), None)
+    expansion = pyscf_casscf.casscf_expansion(outcome.mc)
+    assert expansion.n_dets == 4 and expansion.n_states == 2
+    s_mo = outcome.mc.mo_coeff.T @ mol.intor("int1e_ovlp") @ outcome.mc.mo_coeff
+    np.testing.assert_allclose(state_overlaps(expansion, expansion, s_mo), np.eye(2), atol=1e-8)
+
+
+def test_casscf_ladder_falls_back_to_later_rungs(
+    ethylene_symbols, ethylene_bohr, make_settings, monkeypatch
+):
+    calls = []
+
+    def flaky(mc):
+        calls.append(1)
+        return len(calls) > 1 and bool(mc.converged)  # the first rung "fails"
+
+    monkeypatch.setattr(pyscf_casscf, "_converged", flaky)
+    result = _backend(ethylene_symbols, make_settings(basis="sto-3g")).compute(
+        Request(ethylene_bohr)
+    )
+    assert result.meta["casscf"] == "SCF orbitals + spin penalty"  # no previous: rung 1 skipped
+    assert len(calls) == 2
+
+
+def test_casscf_ladder_spin_penalty_rung_gives_the_same_states(
+    ethylene_symbols, ethylene_bohr, make_settings, monkeypatch
+):
+    plain = _backend(ethylene_symbols, make_settings(basis="sto-3g")).compute(
+        Request(ethylene_bohr, gradients=frozenset({S1}))
+    )
+    calls = []
+
+    def fail_first(mc):
+        calls.append(1)
+        return len(calls) > 1 and bool(mc.converged)
+
+    monkeypatch.setattr(pyscf_casscf, "_converged", fail_first)
+    penalised = _backend(ethylene_symbols, make_settings(basis="sto-3g")).compute(
+        Request(ethylene_bohr, gradients=frozenset({S1}))
+    )
+    assert penalised.meta["casscf"] == "SCF orbitals + spin penalty"
+    for label in (S0, S1):
+        assert abs(penalised.energies[label] - plain.energies[label]) < 1e-6
+    assert np.abs(penalised.gradients[S1] - plain.gradients[S1]).max() < 1e-5
+
+
+def test_casscf_ladder_exhausted(ethylene_symbols, ethylene_bohr, make_settings, monkeypatch):
+    monkeypatch.setattr(pyscf_casscf, "_converged", lambda mc: False)
+    with pytest.raises(ElectronicStructureError, match="SA-CASSCF failed on every rung"):
+        _backend(ethylene_symbols, make_settings(basis="sto-3g")).compute(Request(ethylene_bohr))
