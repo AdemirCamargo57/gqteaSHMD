@@ -10,7 +10,7 @@ dependencies:
   - mypy=1.*
   - pre-commit>=3
   # needed from P3 on; installed now so the environment does not change shape later
-  - pyscf
+  - pyscf=2.14.*
   - numpy
   - scipy
   - h5py
