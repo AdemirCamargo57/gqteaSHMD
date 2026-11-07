@@ -138,3 +138,50 @@ def test_truncate_keeps_tiny_cross_state_coefficients():
     kept = truncate(wf, 0.9999)  # determinant 2 is dropped; state 0 keeps its eps on determinant 1
     s = state_overlaps(kept, kept, np.eye(3))
     assert s[0, 1] == pytest.approx(eps / math.sqrt(1 + eps**2), rel=1e-12)
+
+
+def test_beta_mo_overlap_defaults_to_the_alpha_one():
+    rng = np.random.default_rng(11)
+    s_mo = rng.normal(size=(5, 5))
+    bra = DeterminantExpansion([[0, 1], [0, 2]], [[0], [1]], rng.normal(size=(2, 2)))
+    ket = DeterminantExpansion([[1, 2], [0, 3]], [[2], [3]], rng.normal(size=(2, 2)))
+    np.testing.assert_array_equal(
+        state_overlaps(bra, ket, s_mo, s_mo_beta=s_mo), state_overlaps(bra, ket, s_mo)
+    )
+
+
+def test_beta_mo_overlap_changes_only_the_beta_determinants():
+    rng = np.random.default_rng(12)
+    s_alpha = rng.normal(size=(5, 5))
+    s_beta = rng.normal(size=(5, 5))
+    alpha_b, beta_b = [[0, 1], [0, 2], [1, 2]], [[0], [1], [3]]
+    alpha_k, beta_k = [[1, 2], [0, 3], [0, 1]], [[2], [3], [0]]
+    bra = DeterminantExpansion(alpha_b, beta_b, rng.normal(size=(2, 3)))
+    ket = DeterminantExpansion(alpha_k, beta_k, rng.normal(size=(3, 3)))
+    expected = np.zeros((2, 3))
+    for k in range(3):
+        for m in range(3):
+            d = np.linalg.det(s_alpha[np.ix_(alpha_b[k], alpha_k[m])]) * np.linalg.det(
+                s_beta[np.ix_(beta_b[k], beta_k[m])]
+            )
+            expected += np.outer(bra.coeffs[:, k], ket.coeffs[:, m]) * d
+    got = state_overlaps(bra, ket, s_alpha, s_mo_beta=s_beta)
+    np.testing.assert_allclose(got, expected, rtol=1e-12, atol=1e-12)
+    assert not np.allclose(got, state_overlaps(bra, ket, s_alpha))
+
+
+def test_truncate_at_full_norm_keeps_every_nonzero_coefficient():
+    # the squared 1e-200 underflows to 0.0; the coefficient itself is nonzero and must survive
+    coeffs = np.array([[1.0, 1e-200, 0.0, 0.0], [0.0, 0.0, 1.0, 1e-7]])
+    wf = DeterminantExpansion([[0], [1], [2], [3]], [[0]] * 4, coeffs)
+    kept = truncate(wf, 1.0)
+    assert kept.n_dets == 4
+    assert kept.coeffs[0, 1] == 1e-200
+    assert kept.coeffs[1, 3] == pytest.approx(1e-7, rel=1e-12)
+
+
+def test_overlap_memory_guard_raises_before_allocating(monkeypatch):
+    monkeypatch.setattr(determinants, "MAX_OVERLAP_BYTES", 10)
+    wf = DeterminantExpansion([[0], [1]], [[0], [1]], [[1.0, 0.0], [0.0, 1.0]])
+    with pytest.raises(MemoryError, match="estimated .* GiB; lower overlap_norm_kept"):
+        state_overlaps(wf, wf, np.eye(2))
