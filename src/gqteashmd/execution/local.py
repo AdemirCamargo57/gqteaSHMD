@@ -100,6 +100,7 @@ class LocalExecutor:
                     item = running[key]
                     code = item.process.poll()
                     if code is not None:
+                        _signal_group(item.process.pid, signal.SIGKILL)  # stray children
                         item.log.close()
                         del running[key]
                         on_finish(JobOutcome(item.job, code))
@@ -139,5 +140,6 @@ class LocalExecutor:
             except subprocess.TimeoutExpired:
                 _signal_group(item.process.pid, signal.SIGKILL)
                 item.process.wait()
+            _signal_group(item.process.pid, signal.SIGKILL)  # stray children
             item.log.close()
         running.clear()

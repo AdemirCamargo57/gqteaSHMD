@@ -117,3 +117,51 @@ def test_exception_in_callback_cleans_up_running_workers(tmp_path):
     for pid in pids:
         assert not os.path.exists(f"/proc/{pid}")
     assert time.monotonic() - t0 < 20
+
+
+def _pid_alive(pid):
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    with open(f"/proc/{pid}/stat") as fh:
+        stat = fh.read()
+    return stat.rsplit(")", 1)[1].split()[0] != "Z"
+
+
+def test_stray_children_are_killed_when_the_worker_exits(tmp_path):
+    script = tmp_path / "leaves_a_child.py"
+    pid_file = tmp_path / "child.pid"
+    script.write_text(
+        "import subprocess, sys\n"
+        'child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])\n'
+        f'open({str(pid_file)!r}, "w").write(str(child.pid))\n'
+    )
+    task = tmp_path / "task.json"
+    task.write_text("{}")
+    executor = LocalExecutor(
+        max_parallel=1,
+        threads_per_task=1,
+        memory_mb_per_task=100,
+        poll_interval=0.05,
+        command=[sys.executable, str(script)],
+    )
+    child = None
+    try:
+        finished = executor.run(
+            [Job("t", task, tmp_path / "w.log")],
+            on_start=lambda j, p: None,
+            on_finish=lambda o: None,
+            should_stop=lambda: False,
+        )
+        assert finished
+        child = int(pid_file.read_text())
+        deadline = time.monotonic() + 5
+        while _pid_alive(child) and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert not _pid_alive(child)
+    finally:
+        if child is None and pid_file.exists():
+            child = int(pid_file.read_text())
+        if child is not None and _pid_alive(child):
+            os.kill(child, 9)

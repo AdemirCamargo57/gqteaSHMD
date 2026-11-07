@@ -28,15 +28,14 @@ def _alive(pid: int) -> bool:
 
 
 def terminate_process_group(pid: int, grace: float) -> None:
-    """SIGTERM the process group led by `pid`; SIGKILL it after `grace` seconds."""
+    """SIGTERM the process group led by `pid`; SIGKILL whatever remains of it after the leader
+    exits or after `grace` seconds."""
     try:
         os.killpg(pid, signal.SIGTERM)
     except ProcessLookupError:
         return
     deadline = time.monotonic() + grace
-    while time.monotonic() < deadline:
-        if not _alive(pid):
-            return
+    while time.monotonic() < deadline and _alive(pid):
         time.sleep(0.05)
     with contextlib.suppress(ProcessLookupError):
         os.killpg(pid, signal.SIGKILL)
