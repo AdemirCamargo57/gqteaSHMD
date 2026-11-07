@@ -80,6 +80,24 @@ def parse_qm_out(text: str) -> dict[str, Any]:
                 j += 1 + natom
             out["gradients"] = grads
             i = j
+        elif line.startswith("! 5 Nonadiabatic couplings"):
+            match = re.search(r"\((\d+)x(\d+)x(\d+)x3", line)
+            if match is None:
+                raise ValueError(
+                    f"QM.out: malformed 'Nonadiabatic couplings' block near line {i + 1}: "
+                    f"cannot read the header {line!r}"
+                )
+            n_states, natom = int(match.group(1)), int(match.group(3))
+            nacs: list[list[Any]] = []
+            j = i + 1
+            for _ in range(n_states):
+                row = []
+                for _ in range(n_states):
+                    row.append(_rows(lines, j + 1, natom, "Nonadiabatic couplings"))
+                    j += 1 + natom
+                nacs.append(row)
+            out["nacs"] = nacs
+            i = j
         else:
             i += 1
     for name in REQUIRED_BLOCKS:

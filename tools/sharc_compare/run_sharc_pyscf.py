@@ -41,7 +41,7 @@ def run(args: argparse.Namespace) -> dict:
         work = Path(tmp)
         (work / "QM.in").write_text(
             f"{natom}\nreference\n{atoms}\ninit\nsavedir ./SAVE\nunit angstrom\n"
-            f"states {args.roots}\nh\ndm\ngrad all\n"
+            f"states {args.roots}\nh\ndm\ngrad all\nnacdr\n"
         )
         (work / "PYSCF.template").write_text(TEMPLATE.format(**vars(args)))
         (work / "PYSCF.resources").write_text("scratchdir ./SCRATCH\nmemory 4000\nncpu 1\n")
@@ -84,6 +84,9 @@ def run(args: argparse.Namespace) -> dict:
             f"S{k}": [data["dipole"][x][0][k] for x in range(3)] for k in range(1, n)
         },
         "gradients_hartree_per_bohr": {f"S{k}": data["gradients"][k] for k in range(n)},
+        "nacs_per_bohr": {
+            f"S{i}-S{j}": data["nacs"][i][j] for i in range(n) for j in range(i + 1, n)
+        },
     }
 
 

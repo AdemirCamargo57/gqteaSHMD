@@ -39,6 +39,20 @@ natom 2
  1.266703636E-001  4.471024236E-003  2.360564851E-008
 -1.266706699E-001 -4.470625729E-003 -1.876612445E-008
 
+! 5 Nonadiabatic couplings (ddr) (2x2x2x3)
+2 3 ! 1 1 0.0 1 1 0.0
+ 0.0E+000  0.0E+000  0.0E+000
+ 0.0E+000  0.0E+000  0.0E+000
+2 3 ! 1 1 0.0 1 2 0.0
+-2.927020103023E-001 -1.033059334102E-002 -1.072930978298E-007
+-2.927018076373E-001 -1.033064441499E-002 -7.552369004663E-008
+2 3 ! 1 2 0.0 1 1 0.0
+ 2.927020103023E-001  1.033059334102E-002  1.072930978298E-007
+ 2.927018076373E-001  1.033064441499E-002  7.552369004663E-008
+2 3 ! 1 2 0.0 1 2 0.0
+ 0.0E+000  0.0E+000  0.0E+000
+ 0.0E+000  0.0E+000  0.0E+000
+
 ! 8 Runtime
  3.0E+000
 """
@@ -69,3 +83,17 @@ def test_missing_block_is_named():
     end = SAMPLE.index("! 3 Gradient")
     with pytest.raises(ValueError, match="'dipole' block is missing"):
         qmout.parse_qm_out(SAMPLE[:start] + SAMPLE[end:])
+
+
+def test_parse_nac_block():
+    data = qmout.parse_qm_out(SAMPLE)
+    assert data["nacs"][0][1][0][0] == -0.2927020103023
+    assert data["nacs"][1][0][1][2] == 7.552369004663e-08
+    assert data["nacs"][0][0] == [[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]]
+
+
+def test_truncated_nac_block_names_the_block():
+    marker = "! 5 Nonadiabatic couplings (ddr) (2x2x2x3)\n"
+    cut = SAMPLE[: SAMPLE.index(marker) + len(marker)]
+    with pytest.raises(ValueError, match=r"malformed 'Nonadiabatic couplings' block near line \d+"):
+        qmout.parse_qm_out(cut)

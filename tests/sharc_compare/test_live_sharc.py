@@ -54,3 +54,7 @@ def test_fresh_sharc_run_reproduces_the_committed_reference(tmp_path):
     mu = np.array(fresh["transition_dipoles_au"]["S1"])
     mu_ref = np.array(ref["transition_dipoles_au"]["S1"])
     assert min(np.abs(mu - mu_ref).max(), np.abs(mu + mu_ref).max()) < 1e-7
+    for name, rows in ref["nacs_per_bohr"].items():
+        fresh_rows = np.array(fresh["nacs_per_bohr"][name])
+        rows = np.array(rows)
+        assert min(np.abs(fresh_rows - rows).max(), np.abs(fresh_rows + rows).max()) < 1e-7
