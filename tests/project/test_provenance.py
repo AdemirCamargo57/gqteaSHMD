@@ -25,6 +25,7 @@ def test_collect_provenance_has_the_documented_keys():
         "platform",
         "hostname",
         "cpu_count",
+        "cpu_model",
         "packages",
     }
     assert entry["gqteashmd"] == gqteashmd.__version__
@@ -67,3 +68,11 @@ def test_missing_git_gives_null_commit(monkeypatch):
     monkeypatch.setattr(subprocess, "run", no_git)
     entry = collect_provenance()
     assert entry["git_commit"] is None and entry["git_dirty"] is None
+
+
+def test_provenance_records_the_cpu_model():
+    from gqteashmd.project.provenance import collect_provenance
+
+    entry = collect_provenance()
+    assert "cpu_model" in entry
+    assert entry["cpu_model"] is None or isinstance(entry["cpu_model"], str)

@@ -37,6 +37,16 @@ def _git(*args: str) -> str | None:
     return out.stdout.strip()
 
 
+def _cpu_model() -> str | None:
+    try:
+        for line in Path("/proc/cpuinfo").read_text(encoding="utf-8").splitlines():
+            if line.startswith("model name"):
+                return line.split(":", 1)[1].strip() or None
+    except OSError:
+        return None
+    return None
+
+
 def collect_provenance() -> dict[str, Any]:
     commit = _git("rev-parse", "HEAD")
     status = _git("status", "--porcelain") if commit else None
@@ -49,6 +59,7 @@ def collect_provenance() -> dict[str, Any]:
         "platform": platform.platform(),
         "hostname": socket.gethostname(),
         "cpu_count": os.cpu_count(),
+        "cpu_model": _cpu_model(),
         "packages": {name: _package_version(name) for name in PACKAGES},
     }
 

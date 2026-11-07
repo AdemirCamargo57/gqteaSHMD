@@ -8,6 +8,7 @@ import os
 import signal
 import sys
 import threading
+from contextlib import ExitStack
 from pathlib import Path
 from typing import Any
 
@@ -101,31 +102,32 @@ def _cmd_run(args: argparse.Namespace) -> int:
     loaded = load_config(args.input)
     orchestrator = Orchestrator(loaded, pipeline_ref=args.pipeline, rerun_from=args.rerun_from)
     warnings = orchestrator.preflight()
-    try:
-        orchestrator.layout.ensure()
-        configure_logging(orchestrator.layout.logs_dir / "gqteashmd.log")
-    except OSError as exc:
-        raise ConfigError(
-            f"Cannot create project directory {orchestrator.layout.root}: {exc.strerror or exc}"
-        ) from exc
-    logger = logging.getLogger("gqteashmd.cli")
-    for message in warnings:
-        logger.warning("Preflight: %s", message)
     stop_requested = threading.Event()
+    with ExitStack() as stack:
+        try:
+            stack.enter_context(orchestrator.session())
+            configure_logging(orchestrator.layout.logs_dir / "gqteashmd.log")
+        except OSError as exc:
+            raise ConfigError(
+                f"Cannot create project directory {orchestrator.layout.root}: {exc.strerror or exc}"
+            ) from exc
+        logger = logging.getLogger("gqteashmd.cli")
+        for message in warnings:
+            logger.warning("Preflight: %s", message)
 
-    def _on_signal(signum: int, _frame: object) -> None:
-        if not stop_requested.is_set():
-            logger.warning("Stop requested (signal %d): stopping running tasks...", signum)
-        stop_requested.set()
+        def _on_signal(signum: int, _frame: object) -> None:
+            if not stop_requested.is_set():
+                logger.warning("Stop requested (signal %d): stopping running tasks...", signum)
+            stop_requested.set()
 
-    previous: dict[int, Any] = {}
-    try:
-        for sig in (signal.SIGINT, signal.SIGTERM):
-            previous[sig] = signal.signal(sig, _on_signal)
-        summary = orchestrator.run(should_stop=stop_requested.is_set)
-    finally:
-        for prev_sig, handler in previous.items():
-            signal.signal(prev_sig, handler)
+        previous: dict[int, Any] = {}
+        try:
+            for sig in (signal.SIGINT, signal.SIGTERM):
+                previous[sig] = signal.signal(sig, _on_signal)
+            summary = orchestrator.run(should_stop=stop_requested.is_set)
+        finally:
+            for prev_sig, handler in previous.items():
+                signal.signal(prev_sig, handler)
     if summary.stopped:
         print("Stopped. Run the same command again to resume.")
         return EXIT_STOPPED

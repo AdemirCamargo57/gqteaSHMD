@@ -13,11 +13,15 @@ def write_bytes_atomic(path: Path, data: bytes) -> None:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    with open(tmp, "wb") as fh:
-        fh.write(data)
-        fh.flush()
-        os.fsync(fh.fileno())
-    os.replace(tmp, path)
+    try:
+        with open(tmp, "wb") as fh:
+            fh.write(data)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
 
 
 def write_text_atomic(path: Path, text: str) -> None:

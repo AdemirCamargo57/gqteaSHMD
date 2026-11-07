@@ -6,7 +6,8 @@ import hashlib
 import json
 import logging
 import shlex
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -70,6 +71,8 @@ class Orchestrator:
         check_stage_names(self.config, names)
         self.layout = ProjectLayout(self.config.project.directory)
         self._preflight_warnings: list[str] | None = None
+        self._session_depth = 0
+        self._provenance: dict[str, Any] | None = None
 
     def _executor_for(self, stage: Stage) -> LocalExecutor:
         res = self.config.resources.for_stage(stage.name)
@@ -89,16 +92,39 @@ class Orchestrator:
             self._preflight_warnings = run_preflight(self.config, self.stages)
         return self._preflight_warnings
 
+    @contextmanager
+    def session(self) -> Iterator[None]:
+        """Hold the project lock; create the project skeleton only once the lock is ours."""
+        if self._session_depth:
+            self._session_depth += 1
+            try:
+                yield
+            finally:
+                self._session_depth -= 1
+            return
+        provenance = collect_provenance()  # before the lock: git may be slow
+        with ProjectLock(self.layout.lock_file):
+            self.layout.ensure()
+            for stale in self.layout.meta_dir.glob(".*.tmp"):
+                stale.unlink(missing_ok=True)  # left by a crashed controller; we hold the lock
+            self._provenance = provenance
+            self._session_depth = 1
+            try:
+                yield
+            finally:
+                self._session_depth = 0
+                self._provenance = None
+
     def run(self, should_stop: Callable[[], bool] = lambda: False) -> RunSummary:
         already_checked = self._preflight_warnings is not None
         warnings = self.preflight()
         if not already_checked:
             for message in warnings:
                 log.warning("Preflight: %s", message)
-        self.layout.ensure()
-        with ProjectLock(self.layout.lock_file), StateStore(self.layout.state_db) as state:
+        with self.session(), StateStore(self.layout.state_db) as state:
             write_snapshot(self.loaded, self.layout.config_snapshot)
-            append_provenance(self.layout.provenance_file, collect_provenance())
+            assert self._provenance is not None
+            append_provenance(self.layout.provenance_file, self._provenance)
             if self.rerun_from is not None:
                 self._reset_from(state, self.rerun_from)
                 self.rerun_from = None

@@ -62,3 +62,18 @@ def test_write_bytes_atomic(tmp_path):
     write_bytes_atomic(target, b"\x00\x01")
     assert target.read_bytes() == b"\x00\x01"
     assert [p.name for p in target.parent.iterdir()] == ["state.npz"]
+
+
+def test_failed_atomic_write_leaves_no_temp_file(tmp_path, monkeypatch):
+    import os
+
+    from gqteashmd.util.fileio import write_bytes_atomic
+
+    def broken_replace(src, dst):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(os, "replace", broken_replace)
+    target = tmp_path / "out.json"
+    with pytest.raises(OSError, match="No space"):
+        write_bytes_atomic(target, b"data")
+    assert list(tmp_path.iterdir()) == []

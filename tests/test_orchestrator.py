@@ -306,3 +306,28 @@ def test_rerun_from_is_applied_once_per_orchestrator(project, behaviour):
     orchestrator = Orchestrator(load_config(project), pipeline_ref=FAKE, rerun_from="sampling")
     assert "sampling" in orchestrator.run().completed
     assert "sampling" in orchestrator.run().up_to_date
+
+
+def test_session_takes_the_lock_before_creating_anything(tmp_path, write_input):
+    orch = Orchestrator(load_config(write_input(tmp_path)), pipeline_ref=FAKE)
+    # another controller holds the project
+    with (
+        ProjectLock(orch.layout.lock_file),
+        pytest.raises(ProjectError, match="Another gqteashmd controller"),
+        orch.session(),
+    ):
+        pass
+    assert not orch.layout.logs_dir.exists()
+
+
+def test_session_removes_stale_temp_files_and_nests(tmp_path, write_input, behaviour):
+    orch = Orchestrator(load_config(write_input(tmp_path, execution=FAST)), pipeline_ref=FAKE)
+    orch.layout.meta_dir.mkdir(parents=True)
+    stale = orch.layout.meta_dir / ".config.json.12345.tmp"
+    stale.write_text("partial")
+    with orch.session():
+        assert not stale.exists()
+        with orch.session():  # nested use does not try to lock twice
+            pass
+        summary = orch.run()
+    assert summary.completed

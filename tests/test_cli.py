@@ -237,3 +237,16 @@ def test_run_backstop_turns_os_error_into_config_error(tmp_path, write_input, mo
     path = write_input(tmp_path)
     assert main(["run", str(path), "--pipeline", FAKE]) == 2
     assert "Cannot create project directory" in capsys.readouterr().err
+
+
+def test_a_run_refused_by_the_lock_writes_no_log(tmp_path, write_input, capsys):
+    from gqteashmd.config.loader import load_config
+    from gqteashmd.project.layout import ProjectLayout
+    from gqteashmd.project.lock import ProjectLock
+
+    path = write_input(tmp_path)
+    layout = ProjectLayout(load_config(path).config.project.directory)
+    with ProjectLock(layout.lock_file):
+        code = main(["run", str(path), "--pipeline", FAKE])
+    assert code == 3
+    assert not (layout.logs_dir / "gqteashmd.log").exists()
