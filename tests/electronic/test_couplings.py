@@ -33,7 +33,7 @@ def test_overlaps_at_equal_geometry_are_the_identity(
     second = backend.compute(Request(ethylene_bohr, overlaps=True))
     np.testing.assert_allclose(second.overlaps, np.eye(len(backend.states)), atol=1e-6)
     assert second.meta["overlaps"] == "computed" and second.meta["root_flips"] == []
-    assert backend.compute(Request(ethylene_bohr)).meta["overlaps"] == "not requested"
+    assert backend.compute(Request(ethylene_bohr)).meta["overlaps"] == "tracked, not returned"
 
 
 @pytest.mark.parametrize("which", ["cas", "tda"])
@@ -114,3 +114,70 @@ def test_scratch_policy(tmp_path, ethylene_symbols, ethylene_bohr, make_settings
     assert os.listdir(work) == []
     assert scratch.is_dir() and before == lib.param.TMPDIR
     assert not any(p.name.startswith("tmp") for p in scratch.iterdir())  # no SCF chkfile
+
+
+def test_a_forced_sign_flip_is_undone_in_nacs_dipoles_and_diagonal(
+    ethylene_symbols, ethylene_bohr, make_settings, monkeypatch
+):
+    # PySCF's raw CI signs differ from process to process, so the raw vectors of the second
+    # geometry are pinned: root 0 and (for the reference) root 1 keep the reference sign, and the
+    # flipped run gets the opposite sign for root 1. Both runs start from the same snapshot.
+    from gqteashmd.electronic import pyscf_casscf
+
+    backend = PySCFBackend(MoleculeSpec(tuple(ethylene_symbols)), _cas(make_settings))
+    backend.compute(Request(ethylene_bohr, overlaps=True))
+    snapshot = backend._snapshot
+    req = Request(
+        _step(ethylene_bohr, scale=0.005),
+        nacs=frozenset({(S0, S1)}),
+        transition_dipoles=True,
+        overlaps=True,
+    )
+    original = pyscf_casscf.run_casscf
+    pinned: dict[str, object] = {}
+
+    def pinning(*args, **kwargs):
+        outcome = original(*args, **kwargs)
+        ci = outcome.mc.ci
+        if "ref" not in pinned:
+            pinned["ref"] = [np.array(v, copy=True) for v in ci]
+        for k, want in ((0, 1.0), (1, pinned["flip"])):
+            if np.vdot(ci[k], pinned["ref"][k]) * want < 0:
+                ci[k] = -ci[k]
+        return outcome
+
+    monkeypatch.setattr(pyscf_casscf, "run_casscf", pinning)
+    pinned["flip"] = 1.0
+    ref = backend.compute(req)
+    backend._snapshot = snapshot
+    pinned["flip"] = -1.0
+    got = backend.compute(req)
+    assert got.phases[0] == ref.phases[0] and got.phases[1] == -ref.phases[1]
+    assert np.all(np.diag(got.overlaps) > 0)
+    np.testing.assert_allclose(got.nacs[(S0, S1)], ref.nacs[(S0, S1)], atol=1e-6)
+    np.testing.assert_allclose(got.transition_dipoles[S1], ref.transition_dipoles[S1], atol=1e-6)
+
+
+def test_overlap_orientation_follows_the_nac(ethylene_symbols, ethylene_bohr, make_settings):
+    # <0(R)|1(R+dR)> = d_01 . dR to first order with d_01 = <0|d1/dR>; a transposed s_mo
+    # (or swapped rows/columns) would give the opposite sign here
+    backend = PySCFBackend(MoleculeSpec(tuple(ethylene_symbols)), _cas(make_settings))
+    first = backend.compute(Request(ethylene_bohr, nacs=frozenset({(S0, S1)}), overlaps=True))
+    d = first.nacs[(S0, S1)]
+    eps = 1e-3
+    step = eps * d / np.linalg.norm(d)
+    second = backend.compute(Request(ethylene_bohr + step, overlaps=True))
+    expected = eps * np.linalg.norm(d)
+    assert second.overlaps[0, 1] == pytest.approx(expected, rel=0.1)
+    assert second.overlaps[1, 0] * expected < 0
+
+
+def test_compute_more_writes_to_the_log_for_casscf(
+    tmp_path, ethylene_symbols, ethylene_bohr, make_settings
+):
+    log = tmp_path / "pyscf.log"
+    backend = PySCFBackend(MoleculeSpec(tuple(ethylene_symbols)), _cas(make_settings), log_file=log)
+    backend.compute(Request(ethylene_bohr))
+    size = log.stat().st_size
+    backend.compute_more(gradients=frozenset({S1}), nacs=frozenset({(S0, S1)}))
+    assert log.stat().st_size > size

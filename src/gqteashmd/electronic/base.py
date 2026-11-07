@@ -38,7 +38,8 @@ class Request:
     """One electronic-structure evaluation at a geometry (coordinates in bohr).
 
     nacs: pairs (I, J) with I < J; the result holds d_IJ = <Psi_I|dPsi_J/dR> (1/bohr).
-    overlaps: also compute the overlaps with the previous geometry and align the phases.
+    overlaps: return the overlaps with the previous geometry and the phases in the result. The
+    backend tracks and applies the phases whenever it holds a previous geometry, requested or not.
     """
 
     coords_bohr: np.ndarray

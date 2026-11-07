@@ -123,6 +123,12 @@ class PySCFBackend(ElectronicBackend):
 
     # ------------------------------------------------------------------ public API
     def compute(self, request: Request) -> ElectronicResult:
+        """Evaluate the request at the given geometry.
+
+        Whenever a previous geometry exists the states are tracked against it and the phases are
+        applied to the stored expansion, the NACs and the dipoles; `request.overlaps` only
+        decides whether `overlaps` and `phases` are returned.
+        """
         self._validate(request)
         started = time.perf_counter()
         previous = self._snapshot
@@ -149,16 +155,16 @@ class PySCFBackend(ElectronicBackend):
             expansion = truncate(expansion, self._settings.overlap_norm_kept)
             phases = np.ones(len(self._states))
             overlaps = None
-            if not request.overlaps:
-                rung_meta["overlaps"] = "not requested"
-            elif previous is None:
+            if previous is None:
                 rung_meta["overlaps"] = "no previous geometry"
             else:
                 tracked = track(self._state_overlaps(previous, mol, mo_coeff, expansion))
-                phases, overlaps = tracked.phases, tracked.overlaps
+                phases = tracked.phases
                 expansion = expansion.with_signs(phases)
+                if request.overlaps:
+                    overlaps = tracked.overlaps
                 rung_meta.update(
-                    overlaps="computed",
+                    overlaps="computed" if request.overlaps else "tracked, not returned",
                     overlap_min_singular_value=tracked.min_singular_value,
                     root_flips=[[i, j] for i, j in tracked.root_flips],
                 )
@@ -212,6 +218,7 @@ class PySCFBackend(ElectronicBackend):
         gradients: frozenset[StateLabel] = frozenset(),
         nacs: frozenset[tuple[StateLabel, StateLabel]] = frozenset(),
     ) -> ElectronicResult:
+        """Add gradients and NACs; uses the PySCF objects of the last successful compute()."""
         live = self._live
         if live is None:
             raise ValueError("compute_more() needs a preceding compute() in this process.")
@@ -380,7 +387,10 @@ class PySCFBackend(ElectronicBackend):
         mf.conv_tol = self._settings.scf_conv_tol
         mf.max_cycle = self._settings.scf_max_cycle
         mf.chkfile = None  # the program keeps its own state; no SCF chkfile
-        mf._chkfile = None  # PySCF's empty temp file is created at construction: drop it
+        if hasattr(mf, "_chkfile"):
+            # PySCF 2.14 SCF.__init__ creates lib.NamedTemporaryFile in TMPDIR; dropping it
+            # deletes the file
+            mf._chkfile = None
         return mf
 
     def _run_scf(self, mol: Any, previous_dm: Any) -> tuple[Any, str]:
