@@ -1,7 +1,11 @@
 from types import SimpleNamespace
 
+import pytest
+
 from gqteashmd.electronic.base import MoleculeSpec
 from gqteashmd.electronic.factory import make_backend
+
+pytestmark = pytest.mark.pyscf
 
 
 def test_make_backend_forwards_the_scratch_directory(ethylene_symbols, make_settings, tmp_path):

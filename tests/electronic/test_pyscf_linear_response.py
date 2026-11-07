@@ -11,6 +11,8 @@ from gqteashmd.electronic.pyscf_backend import PySCFBackend
 from gqteashmd.errors import ElectronicStructureError
 from gqteashmd.overlaps.determinants import state_overlaps, truncate
 
+pytestmark = pytest.mark.pyscf
+
 S0, S1, S2 = StateLabel(1, 0), StateLabel(1, 1), StateLabel(1, 2)
 
 

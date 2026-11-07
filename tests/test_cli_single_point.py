@@ -1,7 +1,11 @@
 import json
 from pathlib import Path
 
+import pytest
+
 from gqteashmd.cli import main
+
+pytestmark = pytest.mark.pyscf
 
 ETHYLENE = (Path(__file__).resolve().parent / "data" / "ethylene.xyz").read_text()
 CAS = (

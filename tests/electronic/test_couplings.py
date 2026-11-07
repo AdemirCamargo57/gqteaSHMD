@@ -7,6 +7,8 @@ from gqteashmd.core.states import StateLabel
 from gqteashmd.electronic.base import MoleculeSpec, Request
 from gqteashmd.electronic.pyscf_backend import PySCFBackend
 
+pytestmark = pytest.mark.pyscf
+
 S0, S1, S2 = StateLabel(1, 0), StateLabel(1, 1), StateLabel(1, 2)
 
 

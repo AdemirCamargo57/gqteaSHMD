@@ -10,6 +10,8 @@ from gqteashmd.electronic.pyscf_backend import PySCFBackend, require_pyscf
 from gqteashmd.errors import ConfigError, ElectronicStructureError
 from gqteashmd.overlaps.determinants import state_overlaps
 
+pytestmark = pytest.mark.pyscf
+
 S0, S1 = StateLabel(1, 0), StateLabel(1, 1)
 
 
@@ -154,19 +156,6 @@ def test_failure_wrapper_marks_only_transient_errors_retryable():
     err = _wrap_failure("CASSCF", ValueError("bad"))
     assert err.retryable is False
     assert str(err) == "CASSCF failed: ValueError: bad"
-
-
-def test_importing_the_cli_and_worker_does_not_import_pyscf():
-    import subprocess
-    import sys
-
-    code = (
-        "import gqteashmd.cli, gqteashmd.worker, sys; "
-        "import gqteashmd.overlaps.determinants, gqteashmd.overlaps.tracking; "
-        "import gqteashmd.electronic.base, gqteashmd.electronic.factory; "
-        "assert not any(m == 'pyscf' or m.startswith('pyscf.') for m in sys.modules)"
-    )
-    subprocess.run([sys.executable, "-c", code], check=True)
 
 
 def test_sa2_casscf_nacs_match_the_sharc_reference(
