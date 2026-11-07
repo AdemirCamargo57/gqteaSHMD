@@ -53,3 +53,25 @@ def test_unknown_override_key_is_rejected(tmp_path, write_input):
     path = write_input(tmp_path, resources="[resources.stages.sampling]\nthreds = 2")
     with pytest.raises(ConfigError, match="threds"):
         load_config(path)
+
+
+def test_empty_override_name_is_rejected(tmp_path, write_input):
+    path = write_input(tmp_path, resources='[resources.stages.""]\nthreads_per_task = 1')
+    with pytest.raises(ConfigError, match="not a valid stage name"):
+        load_config(path)
+
+
+def test_global_oversubscription_is_caught_with_an_override_present(tmp_path, write_input):
+    path = write_input(
+        tmp_path,
+        resources="max_parallel_tasks = 3\nthreads_per_task = 2\n"
+        "[resources.stages.prepare]\nthreads_per_task = 1",
+    )
+    with pytest.raises(ConfigError, match=r"\[resources\]: .*= 3 × 2 = 6 exceeds total_cores = 4"):
+        load_config(path)
+
+
+def test_memory_message_shows_the_factors(tmp_path, write_input):
+    path = write_input(tmp_path, resources="max_parallel_tasks = 3\nmemory_mb_per_task = 2000")
+    with pytest.raises(ConfigError, match="= 3 × 2000 = 6000 MB exceeds total_memory_mb = 4000"):
+        load_config(path)

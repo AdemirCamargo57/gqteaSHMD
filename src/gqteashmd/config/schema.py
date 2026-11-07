@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class _Section(BaseModel):
@@ -68,22 +68,38 @@ class ResourcesSection(_Section):
 
     @model_validator(mode="after")
     def _fits_the_workstation(self) -> ResourcesSection:
-        checks = [("[resources]", self.for_stage(""))]
+        checks = [
+            (
+                "[resources]",
+                EffectiveResources(
+                    self.max_parallel_tasks, self.threads_per_task, self.memory_mb_per_task
+                ),
+            )
+        ]
         checks += [(f"[resources.stages.{name}]", self.for_stage(name)) for name in self.stages]
         for label, eff in checks:
-            cores = eff.max_parallel_tasks * eff.threads_per_task
-            if cores > self.total_cores:
+            p, t, m = eff.max_parallel_tasks, eff.threads_per_task, eff.memory_mb_per_task
+            if p * t > self.total_cores:
                 raise ValueError(
-                    f"{label}: max_parallel_tasks × threads_per_task = {cores} exceeds "
-                    f"total_cores = {self.total_cores}"
+                    f"{label}: max_parallel_tasks × threads_per_task = {p} × {t} = {p * t} "
+                    f"exceeds total_cores = {self.total_cores}"
                 )
-            memory = eff.max_parallel_tasks * eff.memory_mb_per_task
-            if memory > self.total_memory_mb:
+            if p * m > self.total_memory_mb:
                 raise ValueError(
-                    f"{label}: max_parallel_tasks × memory_mb_per_task = {memory} MB exceeds "
-                    f"total_memory_mb = {self.total_memory_mb}"
+                    f"{label}: max_parallel_tasks × memory_mb_per_task = {p} × {m} = {p * m} MB "
+                    f"exceeds total_memory_mb = {self.total_memory_mb}"
                 )
         return self
+
+    @field_validator("stages")
+    @classmethod
+    def _stage_names_are_safe(cls, value: dict[str, StageResources]) -> dict[str, StageResources]:
+        from gqteashmd.stages.base import is_safe_name
+
+        for name in value:
+            if not is_safe_name(name):
+                raise ValueError(f"{name!r} is not a valid stage name")
+        return value
 
 
 class ExecutionSection(_Section):
