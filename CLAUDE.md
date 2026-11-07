@@ -27,7 +27,7 @@ The user writes one TOML input file and runs `gqteashmd run input.toml`. The pro
   Edit files with the normal file tools, using LF line endings.
 - **Git from WSL only.** Pre-commit hooks (ruff 0.17.4) are installed in WSL and do not run from Windows Git. Pushing from Windows is fine (`git -C C:\Users\ajc\OneDrive\gqteaSHMD push ...`), because Windows has the GitHub credentials and pushing runs no hooks. Never use `--no-verify`.
 - **Keep project runs, conda environments and large outputs out of OneDrive and out of `/mnt/c`.** Use `~/...` or `/tmp` in WSL. pytest's `tmp_path` already does this.
-- **Workflow.** Feature branch per sub-project (`feat/<topic>`), one commit per task, conventional commit subjects (`feat:`, `fix:`, `test:`, `docs:`, `ci:`, `build:`). The owner decides merges. P1 and P2 are merged into `main`, which is on GitHub (`AdemirCamargo57/gqteaSHMD`); P3a is on its feature branch, not merged.
+- **Workflow.** Feature branch per sub-project (`feat/<topic>`), one commit per task, conventional commit subjects (`feat:`, `fix:`, `test:`, `docs:`, `ci:`, `build:`). The owner decides merges. P1, P2 and P3a are merged into `main`. `main` up to P2 (`e73609f`) is on GitHub (`AdemirCamargo57/gqteaSHMD`); the P3a merge is local until the owner pushes.
 - **Commit trailer.** End each commit message with the `Co-Authored-By:` trailer for the model that wrote the commit.
 - **Keep the two documents current.** Update **CLAUDE.md and USER_MANUAL.md in the same branch as any change to behaviour, inputs, outputs, formulas or status.** USER_MANUAL.md must always mark what is implemented and what is planned.
 
@@ -121,7 +121,7 @@ tools/sharc_compare/   executes SHARC 4.1 as a black box (never imported by gqte
 ## Current status (2026-11-07)
 - **P1 — foundation & orchestrator: DONE**, merged into `main`.
 - **P2 — input schema & preflight: DONE**, merged into `main`. `main` is on GitHub and CI passed on 2026-11-07.
-- **P3a — PySCF electronic-structure layer: DONE on branch `feat/p3a-pyscf-backend`, NOT merged** (the owner decides). `pytest -m "not slow" -W error`: 260 passed, 1 skipped, 4 deselected (5-6 min). The 4 slow FD tests and the live SHARC test pass. ruff and mypy are clean.
+- **P3a — PySCF electronic-structure layer: DONE**, merged locally into `main` on 2026-11-07 (not pushed yet). `pytest -m "not slow" -W error`: 260 passed, 1 skipped, 4 deselected (5-6 min). With `SHARC_HOME`/`SHARC_PYTHON` set, `pytest -W error` runs everything (the 4 slow tests: 2 FD gradient checks + 2 kill/resume tests; and the live SHARC test): 265 passed in 8.5 min. ruff and mypy are clean.
 - **Implemented features:**
   - the CLI commands `init`, `validate`, `run [--rerun-from]`, `status`, `stop` and `single-point`;
   - the input sections `[project]`, `[molecule]`, `[resources]` (with per-stage overrides), `[execution]`, `[workflow]` and `[electronic]` / `[electronic.casscf]`;
@@ -140,7 +140,7 @@ tools/sharc_compare/   executes SHARC 4.1 as a black box (never imported by gqte
 
 | ID | Sub-project | Notes |
 |---|---|---|
-| P3a | PySCF electronic-structure layer | **DONE** on `feat/p3a-pyscf-backend` (not merged); see Status |
+| P3a | PySCF electronic-structure layer | **DONE**, merged into local `main`; see Status |
 | P3b | Couplings for dynamics | NACs (CASSCF), wavefunction overlaps and phase tracking (TDA/TDDFT), the rest of the strategy §2.3 contract (`capabilities`; `compute_more`, an extra gradient at the same geometry after a hop; explicit serialisable reference-wavefunction state, `save_state`/`load_state` or a state object in/out of `compute`, so restarts are reproducible and `run_task` stays idempotent), scratch/chkfile policy, CASSCF/TDDFT retry ladders, the hardening sweep (limitation 4) |
 | P4 | `optimize` + `frequencies` stages | geomeTRIC; **PySCF Hessian (moved here from P3)**; own harmonic analysis; Molden output; stages declare `required_modules=("pyscf",)` |
 | P5 | `sampling` stage | Own Wigner sampler; compare with SHARC `wigner.py` |
