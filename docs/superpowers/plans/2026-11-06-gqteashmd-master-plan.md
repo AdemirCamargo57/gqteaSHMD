@@ -243,13 +243,13 @@ geometry = "thiophene.xyz"          # Angstrom
 charge = 0
 multiplicity = 1
 
-[electronic]                         # P3
+[electronic]                         # P3a (density_fitting is not implemented yet)
 method = "tda"                       # "tda" | "tddft" | "casscf"   (mc-pdft later)
 basis = "def2-svp"
 functional = "b3lyp"                 # ignored for casscf
 density_fitting = true
 grid_level = 3
-singlets = 4                         # number of singlet states INCLUDING S0     # OPEN (O19)
+singlets = 4                         # number of singlet states INCLUDING S0 (O19, resolved)
 triplets = 0                         # 0 until ISC is in scope (O7)
 # [electronic.casscf]  ncas = 6  nelecas = 6
 
@@ -394,7 +394,7 @@ pause_after = ["selection"]          # review spectrum before dynamics
 
 ### 7.3 Continuous integration
 
-GitHub Actions runs on `ubuntu-latest` inside an **`oraclelinux:9` container**, so it matches the target OS. Lint (ruff) and tests run on every push and PR. `slow`/`e2e` run nightly. `sharc` tests never run in CI.
+GitHub Actions runs on `ubuntu-latest` inside an **`oraclelinux:9` container**, so it matches the target OS. Lint (ruff) and tests run on every push and PR. `slow`/`e2e` run nightly. `sharc` tests never run in CI. CI first ran on 2026-11-07 (`main` at `e73609f`) and passed.
 
 ---
 
@@ -421,16 +421,17 @@ Each sub-project produces working, tested software and gets its own detailed pla
 |---|---|---|---|---|---|
 | **P1** | **Foundation & orchestrator** (detailed plan exists) | Repo, environment, CI, errors, config core, project layout, state store, stage contract, worker, local executor, orchestrator (resume/retry/stop/stale), CLI, `prepare` stage | — | 0 | 3–4 wk |
 | P2 | Input schema & preflight — **DONE** (branch `feat/p2-input-preflight`, not yet merged) | Delivered: required `total_cores` / `total_memory_mb` with the fit rules (`n_p·n_t ≤ total_cores`, `n_p·m ≤ total_memory_mb`, globally and per stage) and a detection **warning** (D17); `[resources.stages.<name>]` overrides with one executor per stage; `execution.min_free_disk_mb`; preflight before the project directory is touched (Windows drive / OneDrive refusal, free disk, required modules); `.gqteashmd/provenance.json`; `[workflow] pause_after` (exit 5); once-only error output with `FILE_ONLY` logging; state-db failures as `ProjectError` and read-only `status`; non-finite coordinates, `~` expansion, `.`/`..` name checks; lock retry; mypy in CI; the `gqteashmd init` template for the implemented sections. **Scope ruling:** the later input sections (`[electronic]`, `[optimize]`, `[frequencies]`, `[sampling]`, `[excitations]`, `[selection]`, `[dynamics]`, `[analysis]`) and state labels are added by the sub-project that consumes them (P3–P8), because their keys depend on open items O3, O4, O8 and O19. The remaining deferred P1 findings stay in the ledgers with an owner (see the P2 plan, "Scope rulings") | P1 | 0 | 2 wk |
-| P3 | PySCF electronic-structure layer | Backend contract (strategy §2.3); SCF/TDA/TDDFT/SA-CASSCF energies, gradients, transition dipoles; Hessian (analytic + finite-difference gradient tasks); retry ladders; threads/memory/scratch handling; chkfile policy. **Validation molecule: ethylene** (`C:\AJCamargo\TOPICOS\Eteno\Eteno.xyz`, copied to `tests/data/ethylene.xyz`) at **SA2-CASSCF(2,2)/6-31G\*** first (vs `SHARC_PYSCF.py`), TDA second (D19) | P1 (P2 for config) | 3 | 5–6 wk |
-| P4 | `optimize` + `frequencies` stages | geomeTRIC driver; own harmonic analysis (mass weighting, Eckart projection, frequencies, normal modes); imaginary-mode policy; Molden writer; `frequencies.h5` | P3 | 5 | 3 wk |
+| **P3a** | PySCF electronic-structure layer — **DONE** (branch `feat/p3a-pyscf-backend`, not yet merged) | Delivered: the `[electronic]` / `[electronic.casscf]` input; `core/` (units, state labels); the backend contract and `PySCFBackend` (RHF/RKS, SA-CASSCF with a singlet-only CI solver and an ⟨S²⟩ guard, TDA, TDDFT, CIS, TDHF); energies, analytic gradients and S0→state transition dipoles; the SCF retry ladder; orbital reuse by projection; threads/memory; `gqteashmd single-point`; ethylene validation against SHARC 4.1 (`tools/sharc_compare/`, `pytest -m sharc`) and against finite differences. **Not delivered, moved:** NACs, wavefunction overlaps, phase tracking, scratch/chkfile policy and TDDFT/CASSCF retry ladders to P3b; the Hessian to P4 | P1 (P2 for config) | 3 | 5–6 wk |
+| P3b | Couplings for dynamics | Nonadiabatic couplings (CASSCF) and wavefunction overlaps with phase tracking for TDA/TDDFT; scratch directory and chkfile policy; CASSCF/TDDFT retry ladders. Needed by P7b, not by P4–P6 | P3a | 3 | 3–4 wk |
+| P4 | `optimize` + `frequencies` stages | geomeTRIC driver; **PySCF Hessian (analytic + finite-difference gradient tasks; moved here from P3)**; own harmonic analysis (mass weighting, Eckart projection, frequencies, normal modes); imaginary-mode policy; Molden writer; `frequencies.h5` | P3 | 5 | 3 wk |
 | P5 | `sampling` stage | Own Wigner sampler (T = 0, thermal option), velocities, momentum removal, `samples.h5`; SHARC `wigner.py` distribution comparison | P4 | 5 | 2–3 wk |
 | P6 | `excitations` + `selection` stages | Parallel single points, spectrum, selection modes, `trajectories.json`, review report for `pause_after`; SHARC excite comparison | P3, P5 | 5 | 3–4 wk |
 | P7a | Dynamics core on model systems | Strategy phases 1–2: integrator, propagators, hopping, rescaling, EDC, MCH/diagonal, analytic + LVC backends, standalone runner | P1 | 1–2 | 10–14 wk |
-| P7b | `dynamics` stage with PySCF | Overlaps and phase tracking with PySCF wavefunctions, per-step restart, SIGTERM handling, outcomes, `dynamics_summary.json` | P3, P6, P7a | 3–4 | 6–8 wk |
+| P7b | `dynamics` stage with PySCF | Overlaps and phase tracking with PySCF wavefunctions, per-step restart, SIGTERM handling, outcomes, `dynamics_summary.json` | P3b, P6, P7a | 3–4 | 6–8 wk |
 | P8 | `analysis` stage + end-to-end workflow | Populations with bootstrap confidence intervals, kinetics fit, `report.md`; nightly end-to-end test | P7b | 5 | 3 wk |
 | P9 | SHARC validation campaign | Strategy §5 on LVC + PySCF systems; documented comparison report | P5–P8 | 5 | 4–6 wk (overlaps) |
 
-**Critical path (one developer):** P1 → P2 → P3 → P4 → P5 → P6 → (P7a) → P7b → P8 ≈ 9–12 months. With a second developer on P7a from month 2, about 7–9 months. ISC (strategy phase 6) and further backends (strategy phase 7) follow afterwards.
+**Critical path (one developer):** P1 → P2 → P3a → P4 → P5 → P6 → (P7a) → P3b → P7b → P8 ≈ 9–12 months. With a second developer on P7a from month 2, about 7–9 months. ISC (strategy phase 6) and further backends (strategy phase 7) follow afterwards.
 
 **Milestones:**
 - **M1** (end of P2): `gqteashmd run` validates the core input file (project, molecule, resources, execution, workflow) and runs `prepare`; CI green on Oracle Linux 9.
@@ -486,8 +487,8 @@ Each sub-project produces working, tested software and gets its own detailed pla
 | O15 | ~~Several molecules or parameter scans per input file?~~ **Resolved (P2): no, one project per input file** | Input design | No: one project per input | P2 |
 | O16 | Extending finished dynamics (e.g. increasing `tmax_fs`) | Resume semantics | Allowed: `tmax_fs` excluded from the fingerprint and handled as an "extend" | P7b |
 | O17 | SHARC `input`-file importer (strategy §2.4) needed? | Validation convenience | Only inside `tools/sharc_compare/` | P9 |
-| O18 | PySCF version pin | Reproducibility | Latest conda-forge release at P3 start | P3 |
-| O19 | State-count convention (`singlets` includes S0?) | Input clarity | Yes, count includes S0 | P3 |
+| O18 | ~~PySCF version pin~~ **Resolved (P3a): `pyscf=2.14.*` pinned in `environment.yml` (2.14.0 at P3a); the runtime requirement is `pyscf>=2.6`, `numpy>=1.26`, and `require_pyscf` rejects older versions** | Reproducibility | Latest conda-forge release at P3 start | P3a |
+| O19 | ~~State-count convention (`singlets` includes S0?)~~ **Resolved (P3a, owner decision 2026-11-07): yes, `singlets` includes S0; labels are `S0`, `S1`, … (0-based)** | Input clarity | Yes, count includes S0 | P3a |
 | O20 | Behaviour when fewer eligible samples than `n_trajectories` | Unattended runs | Stop with a message (no silent reduction); option `allow_fewer = true` | P6 |
 
 ## 12. Workflow-specific risks

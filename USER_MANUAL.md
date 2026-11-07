@@ -1,10 +1,10 @@
 # gqteashmd — User Manual
 
-**Version:** 0.1.0.dev0 (development snapshot, 2026-11-06)
+**Version:** 0.1.0.dev0 (development snapshot, 2026-11-07)
 **Program:** `gqteashmd`, automated surface-hopping molecular dynamics with PySCF
 **Licence:** MIT
 
-> **Read this first: what works today.** This is an early development version. The **workflow engine is complete**: input file (with hardware and per-stage resource settings), checks before a run (preflight), project management, parallel tasks, crash-safe resume, graceful stop, review pauses, change detection, and a record of the software used (provenance). Its first stage is **`prepare`**, which validates and stores the molecule. **No quantum-chemistry stage exists yet.** Optimization, frequencies, Wigner sampling, initial conditions, dynamics and analysis are *planned*. They are described in §8.6–§8.13 so that you can see in advance how results will be computed. Every section is marked:
+> **Read this first: what works today.** This is an early development version. The **workflow engine is complete**: input file (with hardware and per-stage resource settings), checks before a run (preflight), project management, parallel tasks, crash-safe resume, graceful stop, review pauses, change detection, and a record of the software used (provenance). Its first stage is **`prepare`**, which validates and stores the molecule. The **electronic-structure layer** (PySCF: SCF, SA-CASSCF, TDA, TDDFT, CIS, TDHF; energies, analytic gradients, transition dipoles) is also **implemented** and validated against SHARC 4.1; you can use it today with **`gqteashmd single-point`** (§5.3). **No quantum-chemistry *stage* exists yet.** Optimization, frequencies, Wigner sampling, initial conditions, dynamics and analysis are *planned*; so are nonadiabatic couplings, wavefunction overlaps and the Hessian. They are described in §8.7–§8.13 so that you can see in advance how results will be computed. Every section is marked:
 >
 > - **[IMPLEMENTED]**: available in this version.
 > - **[PLANNED]**: designed but not yet available; details may still change.
@@ -44,7 +44,7 @@
 
 In SHARC 4.1 these steps are separate manual tools: `wigner.py`, `setup_init.py`, `excite.py`, `setup_traj.py` and `populations.py`. `gqteashmd` runs them automatically, one after another. You only intervene when the program asks you to fix something.
 
-The electronic-structure program is **PySCF** [PLANNED, P3]. ORCA, Gaussian and others may be added later.
+The electronic-structure program is **PySCF** **[IMPLEMENTED, P3a]** as a library layer: the `[electronic]` input section (§4.2) and the command `gqteashmd single-point` (§5.3) use it today. The workflow **stages** that will call it (`optimize`, `frequencies`, `excitations`, `dynamics`) are still planned, as is the computation of nonadiabatic couplings and wavefunction overlaps (P3b). ORCA, Gaussian and others may be added later.
 
 ---
 
@@ -69,7 +69,7 @@ pip install -e . --no-deps
 gqteashmd --version                        # → gqteashmd 0.1.0.dev0
 ```
 
-The environment also installs PySCF, NumPy, SciPy, h5py and geomeTRIC. The current version doesn't use them yet; later versions need them.
+The environment installs PySCF (pinned to the 2.14 series), NumPy, SciPy, h5py and geomeTRIC. The program itself requires `pydantic>=2.6`, `numpy>=1.26` and `pyscf>=2.6`; SciPy, h5py and geomeTRIC are for later stages. A PySCF older than 2.6 is refused when an electronic-structure calculation starts (§9).
 
 ### 2.3 Where to run projects
 Keep project directories on a **local Linux disk**, for example `~/gqteashmd-runs/` or a data disk on the workstation. **Do not use OneDrive folders or Windows drives (`/mnt/c/...`).** The program writes many small files and uses file locks, and synchronized or Windows-mounted folders are slow and unreliable for both. `gqteashmd run` refuses such a project directory (§7.9). Ordinary Linux data disks mounted under `/mnt`, such as `/mnt/data`, are accepted.
@@ -175,9 +175,18 @@ min_free_disk_mb = 1000      # refuse to start with less free disk space (MB)
 
 [workflow]
 pause_after = []              # stage names to pause after for review, e.g. ["selection"]
+
+# Electronic structure (needed by the quantum-chemistry stages and `gqteashmd single-point`):
+# [electronic]
+# method = "casscf"             # "casscf" | "tda" | "tddft"
+# basis = "6-31g*"
+# singlets = 2                  # number of singlet states INCLUDING S0
+# [electronic.casscf]
+# ncas = 2                      # active orbitals
+# nelecas = 2                   # active electrons
 ```
 
-The template omits one key, `execution.poll_interval_s` (default 0.5). The table lists every key:
+The `[electronic]` block is commented out in the template: it is optional for `run` (today's only stage, `prepare`, does not use it) and required by `single-point`. The template omits one key, `execution.poll_interval_s` (default 0.5). The table lists every key:
 
 | Key | Type | Default | Allowed | Meaning |
 |---|---|---|---|---|
@@ -201,6 +210,19 @@ The template omits one key, `execution.poll_interval_s` (default 0.5). The table
 | `execution.stop_grace_period_s` | float | 30.0 | ≥ 0 | Time between SIGTERM and SIGKILL on stop (s) |
 | `execution.min_free_disk_mb` | int | 1000 | ≥ 0 | `run` refuses to start if the disk holding the project has less free space (MB). `0` switches the check off (the disk is then not queried at all) |
 | `workflow.pause_after` | list of str | `[]` | stage names | Pause for review after these stages (§7.8) |
+| `electronic.method` | str | — (required if `[electronic]` is present) | `"casscf"`, `"tda"`, `"tddft"` | Electronic-structure method (§8.6). `"tda"` and `"tddft"` are linear-response methods on a restricted SCF reference |
+| `electronic.basis` | str | — (required) | any PySCF basis name, e.g. `"6-31g*"`, `"def2-svp"` | Gaussian basis set. An unknown name fails at the first calculation (§9) |
+| `electronic.functional` | str | none | required for `tda`/`tddft`; **not allowed** for `casscf` | Exchange–correlation functional, e.g. `"b3lyp"`. `"hf"` selects Hartree–Fock: `tda` + `"hf"` is CIS, `tddft` + `"hf"` is TDHF (§8.6.3) |
+| `electronic.singlets` | int | — (required) | ≥ 1 | Number of singlet states **including S0**: `singlets = 2` gives S0 and S1 |
+| `electronic.triplets` | int | 0 | must be 0 | Triplet states are **not supported yet** (planned together with intersystem crossing); any value above 0 is an input error |
+| `electronic.grid_level` | int | 3 | 0–9 | PySCF integration-grid level for DFT (`tda`/`tddft` with a functional other than `"hf"`). Use **≥ 5 for dynamics** (§8.6.4) |
+| `electronic.scf_conv_tol` | float | 1e-10 | > 0 | SCF energy convergence threshold (Eh) |
+| `electronic.scf_max_cycle` | int | 100 | ≥ 1 | Maximum SCF iterations per rung of the convergence ladder (§8.6.1) |
+| `electronic.td_conv_tol` | float | 1e-8 | > 0 | Convergence threshold of the linear-response (Davidson) solver |
+| `electronic.casscf.ncas` | int | — (required for `casscf`) | ≥ 1 | Number of active orbitals $n_{\text{cas}}$ |
+| `electronic.casscf.nelecas` | int | — (required for `casscf`) | even, ≥ 1, ≤ 2 `ncas` | Number of active electrons $n_{e,\text{cas}}$ (singlet states need an even number) |
+| `electronic.casscf.conv_tol` | float | 1e-10 | > 0 | SA-CASSCF energy convergence threshold (Eh) |
+| `electronic.casscf.conv_tol_grad` | float | 1e-6 | > 0 | SA-CASSCF orbital-gradient convergence threshold. Tightening it much further (for example to 1e-7 with `conv_tol` 1e-12) can fail to converge at displaced geometries |
 
 **Hardware keys.** `total_cores` and `total_memory_mb` are required, so that the input file records which machine the settings were written for. The input is rejected if the settings do not fit inside them (see the rules below and §8.4). The program also detects the real machine; if your values exceed it, `run` only **warns** (§7.9).
 
@@ -234,6 +256,40 @@ threads_per_task = 32
 - **Fit rule:** for the global settings **and for every override** (after merging), the input must satisfy $n_p n_t \le N_{\text{cores}}$ and $n_p m \le M_{\text{total}}$ (§8.4). Otherwise the input is rejected, naming `[resources]` or `[resources.stages.<name>]` and the numbers. Note that an override that sets only `max_parallel_tasks` is also checked against the global `threads_per_task`.
 - **Stage names:** an override for a stage that does not exist is an input error (`[resources.stages] names unknown stage(s): …`). The only stage in this version is `prepare`; the `frequencies` example above becomes valid when that stage exists (P4).
 
+#### The `[electronic]` section
+**[IMPLEMENTED]** (P3a). A complete example for ethylene, SA2-CASSCF(2,2)/6-31G\*:
+
+```toml
+[electronic]
+method = "casscf"
+basis = "6-31g*"
+singlets = 2                      # S0 and S1
+
+[electronic.casscf]
+ncas = 2
+nelecas = 2
+```
+
+and a TDA example (TDA-B3LYP, three excited states plus S0):
+
+```toml
+[electronic]
+method = "tda"
+functional = "b3lyp"
+basis = "def2-svp"
+singlets = 4                      # S0, S1, S2, S3
+grid_level = 5
+```
+
+The rules, all checked when the input is loaded (`validate`, `run`, `single-point`), with exit code 2:
+
+- `method = "casscf"` needs an `[electronic.casscf]` table and does **not** accept `functional`. `method = "tda"` or `"tddft"` needs `functional` and does **not** accept `[electronic.casscf]`.
+- `nelecas` must be even and at most `2 × ncas`.
+- `triplets > 0` is rejected: *triplets are not supported yet*.
+- When `[electronic]` is present, `molecule.multiplicity` must be 1: *the PySCF backend supports closed-shell singlet molecules only*. A charge that is inconsistent with the electron count (§8.2) is also an input error.
+- **State labels** are `S0` (ground state), `S1`, `S2`, … (0-based, singlets); triplets will be `T1`, `T2`, … when they arrive. `singlets` counts S0, so `singlets = N` gives S0 … S(N−1).
+- Not implemented yet: density fitting, spin-flip or unrestricted references, ECP-specific options, a `scratch` directory key, MC-PDFT.
+
 ### 4.3 The XYZ geometry file
 **[IMPLEMENTED]**
 
@@ -250,12 +306,11 @@ threads_per_task = 32
 
 ### 4.4 Planned sections
 **[PLANNED]** Their key names and meanings are in the master plan §4.3. Each sub-project adds the sections it needs, and this manual is updated each time. The sections for the later stages are not part of the input yet, because their keys depend on decisions that are still open:
-- `[electronic]`: method (`tda`, `tddft`, `casscf`), basis, functional, number of singlet/triplet states, density fitting, CASSCF active space (P3).
 - `[optimize]`, `[frequencies]` (P4); `[sampling]` (P5); `[excitations]`, `[selection]` (P6); `[dynamics]` (P7); `[analysis]` (P8).
-- Electronic states will be named `S0`, `S1`, `T1`, … (arrives with `[electronic]` in P3).
-- A `scratch` directory key in `[resources]` (P3, when PySCF writes temporary files).
+- Additional `[electronic]` keys: density fitting, MC-PDFT, triplet states (with intersystem crossing).
+- A `scratch` directory key in `[resources]` (P3b, together with the checkpoint-file policy).
 
-Until then, an input file that contains one of these sections is rejected as an unknown section (§4.1).
+Until then, an input file that contains one of these sections or keys is rejected as unknown (§4.1).
 
 ---
 
@@ -271,6 +326,7 @@ Until then, an input file that contains one of these sections is rejected as an 
 | `gqteashmd run INPUT --rerun-from STAGE` | Moves the results of `STAGE` and all later stages to `.gqteashmd/superseded/`, then recomputes them |
 | `gqteashmd status INPUT` | Shows whether a controller is running, and per stage the status, the task counts (done/failed/pending/running) and the last message. It opens the progress database read-only and changes nothing, so it is safe at any time |
 | `gqteashmd stop INPUT` | Asks the running controller to stop gracefully |
+| `gqteashmd single-point INPUT [--json FILE] [--log FILE]` | Computes the electronic structure at the input geometry (§5.3) |
 | `gqteashmd --version` | Prints the version |
 
 ### 5.1 Exit codes
@@ -282,7 +338,7 @@ Scripts can rely on these:
 | 1 | Internal error, i.e. a bug. Please report it with the log |
 | 2 | Input or configuration error: input file, geometry, arguments. Nothing was run |
 | 3 | Project or state error: another controller is running, inputs changed (`--rerun-from` needed), or the state database is unreadable or corrupt |
-| 4 | A stage failed: too many failed tasks, or a failed check |
+| 4 | A stage failed (too many failed tasks, or a failed check), **or an electronic-structure calculation failed** (`single-point`: no convergence, unknown basis, wrong spin, …) |
 | 5 | Stopped by the user, **or paused for review** (§7.8). In both cases run the same command again to continue |
 
 Errors are printed once, as `gqteashmd: error: <what happened, where, what to do>`, with no Python traceback. Only errors raised during `gqteashmd run`, after logging is set up, also reach `logs/gqteashmd.log` (§6), with the traceback for internal errors. Load errors, preflight errors, and errors from `validate`, `status`, `init` and `stop` go to the console only.
@@ -297,6 +353,109 @@ gqteashmd stop input.toml                                   # graceful stop
 ```
 
 There is no built-in `--detach` option; `nohup`, `tmux` or `screen` is the supported way.
+
+### 5.3 `gqteashmd single-point`
+**[IMPLEMENTED]** (P3a). It computes the energies of S0 … S(N−1), the S0→SI transition dipoles and the oscillator strengths at the geometry of the input file. Use it to test an electronic-structure setup (method, basis, active space) before a long run.
+
+```text
+gqteashmd single-point INPUT [--json FILE] [--log FILE]
+```
+
+| Option | Meaning |
+|---|---|
+| `--json FILE` | Also write the results to a JSON file (fields below) |
+| `--log FILE` | Write PySCF's own output (SCF iterations, CASSCF macro-iterations, …) to this file. Without it PySCF prints nothing |
+
+- **Needs:** a valid input file with an `[electronic]` section (§4.2) and an existing geometry. `[molecule]` charge and multiplicity must be consistent with the elements (§8.2), and the multiplicity must be 1.
+- **Resources:** it uses `resources.threads_per_task` threads and `resources.memory_mb_per_task` MB (as PySCF `max_memory`). It does not run the preflight checks (§7.9), does not create a project directory, and does not use `[execution]` or `[workflow]`.
+- **Not computed:** gradients (the backend can compute them; the command does not ask for them), nonadiabatic couplings, overlaps.
+
+**Example.** Ethylene, SA2-CASSCF(2,2)/6-31G, in an empty directory with `molecule.xyz` (the 6-atom ethylene geometry, in Å) next to this `input.toml`:
+
+```toml
+[project]
+name = "ethylene"
+directory = "run"
+
+[molecule]
+geometry = "molecule.xyz"
+
+[resources]
+total_cores = 4
+total_memory_mb = 4000
+threads_per_task = 2
+
+[electronic]
+method = "casscf"
+basis = "6-31g"
+singlets = 2
+
+[electronic.casscf]
+ncas = 2
+nelecas = 2
+```
+
+```bash
+gqteashmd single-point input.toml --json sp.json --log pyscf.log
+```
+
+The console output (real output from a development machine; the PySCF version and, in the JSON, `wall_time_s` differ on yours):
+
+```text
+Single point: casscf / 6-31g (PySCF 2.14.0)
+state        energy (Eh)   dE (eV)        f
+S0         -78.025499771    0.0000        -
+S1         -77.638305147   10.5361   0.6206
+Results written to sp.json
+```
+
+The table columns are the absolute energy $E_I$ in hartree, the excitation energy $\Delta E_{0I} = E_I - E_0$ in eV, and the oscillator strength $f_{0I}$ (§8.6.6; `-` for S0). The command exits with code 0.
+
+**JSON file** (`schema_version` 1; all numbers in the units shown):
+
+| Field | Meaning | Unit |
+|---|---|---|
+| `schema_version` | File-format version (1) | — |
+| `states[]` | One entry per state, S0 first | — |
+| `states[].label` | State label, e.g. `"S1"` | — |
+| `states[].energy_hartree` | Total energy $E_I$ | $E_h$ |
+| `states[].excitation_ev` | $E_I - E_0$ | eV |
+| `states[].transition_dipole_au` | $\boldsymbol\mu_{0I}$ as `[x, y, z]`; `null` for S0. **The overall sign is arbitrary** (§8.6.5) | $e\,a_0$ |
+| `states[].oscillator_strength` | $f_{0I}$; `null` for S0 | — |
+| `states[].spin_square` | $\langle S^2\rangle$ of the state (CASSCF only; `null` for linear response) | — |
+| `gradients_hartree_per_bohr` | Gradient per state label; empty (`{}`) for `single-point` | $E_h/a_0$ |
+| `meta.backend`, `meta.pyscf_version` | `"pyscf"` and its version | — |
+| `meta.method`, `meta.basis`, `meta.functional` | Copied from the input (`functional` is `null` for CASSCF) | — |
+| `meta.scf` | The rung of the SCF ladder that converged: `"default"`, `"level shift + damping"` or `"second-order"` (§8.6.1) | — |
+| `meta.scf_energy_hartree` | $E_{\text{SCF}}$ of the reference (§8.6.1) | $E_h$ |
+| `meta.wall_time_s` | Wall time of the calculation | s |
+
+For the example above the JSON contains (shortened):
+
+```json
+{"schema_version": 1,
+ "states": [
+  {"label": "S0", "energy_hartree": -78.025499770717, "excitation_ev": 0.0,
+   "transition_dipole_au": null, "oscillator_strength": null, "spin_square": 0.0},
+  {"label": "S1", "energy_hartree": -77.63830514694367, "excitation_ev": 10.536102459866353,
+   "transition_dipole_au": [1.5496152512384933, 0.054692141511617484, 2.4863201618893523e-07],
+   "oscillator_strength": 0.6206210093458465, "spin_square": 0.0}],
+ "gradients_hartree_per_bohr": {},
+ "meta": {"backend": "pyscf", "basis": "6-31g", "functional": null, "method": "casscf",
+          "pyscf_version": "2.14.0", "scf": "default",
+          "scf_energy_hartree": -78.00336573553878, "wall_time_s": 0.21}}
+```
+
+**Exit codes of `single-point`:**
+
+| Code | When |
+|---|---|
+| 0 | The calculation finished |
+| 2 | Input error: invalid input file or geometry, a missing `[electronic]` section, a multiplicity other than 1, charge/multiplicity inconsistent with the electron count, PySCF missing or older than 2.6 |
+| 4 | The calculation failed: unknown basis, SCF or CASSCF/TD non-convergence, a root that is not a singlet, an active space that does not fit, a failed gradient or dipole |
+| 1 | Internal error (a bug) |
+
+Errors are printed once as `gqteashmd: error: …` (§5.1). An electronic-structure failure is not retried: the same input would fail again (§9 lists the messages).
 
 ---
 
@@ -461,8 +620,8 @@ These two warnings appear when the values you entered exceed the cores or the RA
 ## 8. Computational methods and formulas
 
 This chapter defines every quantity the program computes or will compute.
-- **§8.1–§8.5** describe **what the current version does**.
-- **§8.6–§8.13** describe the **planned** methods. Those formulas document the intended implementation; they are not available yet, and details may change after validation against SHARC 4.1 and the literature.
+- **§8.1–§8.6** describe **what the current version does**.
+- **§8.7–§8.13** describe the **planned** methods. Those formulas document the intended implementation; they are not available yet, and details may change after validation against SHARC 4.1 and the literature.
 
 ### 8.1 Units and constants
 **[IMPLEMENTED]** for input and output:
@@ -470,7 +629,9 @@ This chapter defines every quantity the program computes or will compute.
 - Charges are in units of the elementary charge $e$.
 - Times in `[execution]` are in seconds.
 
-**[PLANNED]** for the calculations:
+**[IMPLEMENTED]** in the electronic-structure layer (§8.6): coordinates are converted from Å to bohr once, when the XYZ file is read, using the CODATA 2018 values below. Energies are in $E_h$, gradients in $E_h/a_0$ and transition dipoles in $e\,a_0$; the only conversion on output is $E_h \to$ eV for the excitation energies.
+
+**[PLANNED]** for the other calculations:
 - All internal quantities will be in **Hartree atomic units**, where $\hbar = m_e = e = 4\pi\varepsilon_0 = 1$.
 - Conversions happen only when files are read or written, using CODATA values:
 
@@ -593,18 +754,182 @@ where $f_{\max}$ is the stage's tolerated fraction. For `prepare`, $f_{\max} = 0
 
 ---
 
-> **Everything below is [PLANNED].** The stages, keys and outputs in §8.6–§8.13 do not exist in the current version.
+> **§8.6 is [IMPLEMENTED].** **Everything below it (§8.7–§8.13) is [PLANNED].** The stages, keys and outputs there do not exist in the current version.
 
 ### 8.6 Electronic structure (PySCF)
-**[PLANNED, P3]**
-- **Methods:** TDA/TDDFT (singlets first) and state-averaged CASSCF (SA-CASSCF), with optional MC-PDFT.
-- **Quantities:** for each geometry $\mathbf R$ the program will compute:
-  - adiabatic energies $E_I(\mathbf R)$ of states $I = S_0, S_1, \dots$;
-  - gradients $\nabla E_I$;
-  - transition dipoles $\boldsymbol\mu_{0I}$;
-  - nonadiabatic couplings $\mathbf d_{IJ} = \langle \Psi_I | \nabla_{\mathbf R} \Psi_J \rangle$ for CASSCF, or wavefunction overlaps $S_{IJ}(t) = \langle \Psi_I(t-\Delta t) | \Psi_J(t) \rangle$.
-- **Validation:** ethylene at SA2-CASSCF(2,2)/6-31G\*, compared with SHARC's PySCF interface.
-- **Assumption (TDDFT):** linear-response TDDFT describes the S₁/S₀ crossing seam incorrectly. Use CASSCF when S₁→S₀ decay matters.
+**[IMPLEMENTED, P3a]** Energies, analytic gradients and transition dipoles. **[PLANNED]** nonadiabatic couplings and wavefunction overlaps (P3b) and the Hessian (P4).
+
+**What is computed.** For a geometry $\mathbf R$ (nuclear coordinates, bohr) and the states $I = S_0, S_1, \dots$ requested by `electronic.singlets`:
+
+| Quantity | Symbol | Unit | Status |
+|---|---|---|---|
+| Adiabatic energy | $E_I(\mathbf R)$ | $E_h$ | **[IMPLEMENTED]** |
+| Excitation energy | $\Delta E_{0I} = E_I - E_0$ | $E_h$ (eV on output) | **[IMPLEMENTED]** |
+| Gradient | $\nabla_{\mathbf R} E_I$, a $3N_{\text{at}}$-vector | $E_h/a_0$ | **[IMPLEMENTED]** (backend; `single-point` does not request it) |
+| Transition dipole | $\boldsymbol\mu_{0I}$ | $e\,a_0$ | **[IMPLEMENTED]** |
+| Oscillator strength | $f_{0I}$ | — | **[IMPLEMENTED]** |
+| Nonadiabatic couplings $\mathbf d_{IJ} = \langle \Psi_I \vert \nabla_{\mathbf R} \Psi_J \rangle$ (CASSCF); wavefunction overlaps $S_{IJ}(t) = \langle \Psi_I(t-\Delta t) \vert \Psi_J(t) \rangle$ (TDA/TDDFT) | $\mathbf d_{IJ}$, $S_{IJ}$ | $a_0^{-1}$, — | [PLANNED, P3b] |
+| Hessian $\partial^2 E_0/\partial x_i\partial x_j$ | $H_{ij}$ | $E_h/a_0^2$ | [PLANNED, P4] |
+
+**Assumptions that apply to everything in §8.6:**
+- **Closed-shell singlet molecules only.** The reference is a restricted determinant (RHF or RKS), so `molecule.multiplicity` must be 1. Open-shell references and radicals are refused (§9).
+- **Singlet excited states only.** `electronic.triplets` must be 0. S→T transitions and intersystem crossing are not available yet.
+- **Born–Oppenheimer, nonrelativistic, all-electron**, in the Gaussian basis `electronic.basis`; no solvent, no external field.
+- **State ordering** is by energy within the computed roots. The labels $S_I$ refer to that order at each geometry; following a state through a crossing needs the overlaps of P3b.
+
+#### 8.6.1 The SCF reference and its convergence ladder
+Every method starts from a self-consistent-field (SCF) calculation on a single closed-shell determinant $\Phi_0$ of doubly occupied orbitals:
+- Hartree–Fock (RHF) for `casscf` and for `functional = "hf"`, with energy $E_{\text{SCF}} = \langle\Phi_0\vert\hat H\vert\Phi_0\rangle$;
+- Kohn–Sham DFT (RKS) for any other functional, with $E_{\text{SCF}} = E[\rho; \text{functional}]$ evaluated on a numerical grid of level `grid_level`.
+
+$E_{\text{SCF}}$ is reported as `meta.scf_energy_hartree` (in $E_h$). The SCF is converged when the energy change between iterations is below `scf_conv_tol` (and PySCF's orbital-gradient criterion, derived from it, is met) within `scf_max_cycle` iterations.
+
+**Convergence ladder.** If the SCF does not converge, the program tries the next rung; it never silently relaxes a threshold:
+
+| Rung | Settings | Reported as `meta.scf` |
+|---|---|---|
+| 1 | PySCF defaults (DIIS); if the same backend object has already computed another geometry, the starting density is that geometry's converged density | `default` |
+| 2 | Level shift $\sigma = 0.2\,E_h$ (virtual-orbital energies raised by $\sigma$) and damping factor 0.5 (the new Fock matrix is mixed 1:1 with the previous one) | `level shift + damping` |
+| 3 | Second-order (Newton) orbital optimization | `second-order` |
+
+Only rung 1 uses the previous geometry's density; rungs 2 and 3 start from PySCF's default guess, because a stale guess is the most likely reason rung 1 failed. If all three rungs fail, the calculation stops with *SCF did not converge (tried: …)* (exit code 4, not retried). An exception inside PySCF (as opposed to non-convergence) stops immediately, because another rung would not fix a broken setup.
+
+#### 8.6.2 State-averaged CASSCF (`method = "casscf"`)
+In a complete-active-space calculation the $n_{\text{core}} = (N_e - n_{e,\text{cas}})/2$ lowest orbitals are doubly occupied and frozen in the configuration space, and the $n_{e,\text{cas}}$ active electrons are distributed in all possible ways over $n_{\text{cas}}$ active orbitals (full CI in the active space; "CAS($n_{e,\text{cas}}$, $n_{\text{cas}}$)"). Here $N_e$ is the total electron count (§8.2), and $n_{e,\text{cas}}$, $n_{\text{cas}}$ are `nelecas`, `ncas`.
+
+For $N$ = `singlets` states, the orbitals $\{\phi_p\}$ and the CI vectors $\{\Psi_I\}$ are optimized together to minimize the **state-averaged energy**
+
+$$
+E_{\mathrm{SA}} \;=\; \sum_{I=0}^{N-1} w_I\, E_I,
+\qquad
+E_I = \langle \Psi_I \vert \hat H \vert \Psi_I \rangle,
+\qquad
+w_I = \frac{1}{N} .
+$$
+
+| Symbol | Meaning | Unit |
+|---|---|---|
+| $\Psi_I$ | CI wavefunction of state $I$ (orthonormal for different $I$), built from the shared orbitals | — |
+| $E_I$ | Energy of state $I$, **reported** as the state's energy | $E_h$ |
+| $w_I$ | Averaging weight; equal for all states | — |
+| $N$ | Number of states in the average (`electronic.singlets`, including S0) | — |
+| $E_{\mathrm{SA}}$ | The minimized quantity; **not** reported as a state energy | $E_h$ |
+
+The common orbital set gives smooth, balanced surfaces for S0 and S1, which is why SA-CASSCF is the recommended method for S1→S0 dynamics (§8.6.4). The reported $E_I$ are the individual state energies, not $E_{\mathrm{SA}}$. Convergence is controlled by `casscf.conv_tol` (change of $E_{\mathrm{SA}}$) and `casscf.conv_tol_grad` (orbital gradient).
+
+- **Singlet-only CI.** PySCF's default CI solver also returns triplet and quintet roots of the active space. The program uses the singlet-restricted solver, so all $N$ roots are singlets.
+- **Spin check.** After convergence, the spin expectation value of every root is computed. A root is accepted only if $\lvert\langle S^2\rangle_I\rvert \le 10^{-3}$; otherwise the run stops (*CASSCF root S1 has <S^2> = …; it is not a singlet*). A singlet has $\langle S^2\rangle = S(S+1) = 0$. The value is stored as `spin_square`.
+- **Orbital reuse by projection.** A backend object that computes several geometries one after another (as the dynamics stage will) starts each CASSCF from the previous geometry's converged orbitals. Those orbitals belong to the old nuclear positions, so they are not orthonormal in the new basis; they are first projected onto the new geometry's atomic-orbital basis (PySCF `project_init_guess`) and re-orthonormalized. The first calculation of a backend object, and every calculation by a new object, starts from the SCF orbitals. The reuse changes the starting point, not the converged result.
+- **Active space.** The program stops with a message if the active electrons do not fit in the molecule, or if the basis has fewer orbitals than the core plus active orbitals require (§9).
+
+#### 8.6.3 Linear response: TDA, TDDFT, CIS, TDHF
+For `method = "tda"` or `"tddft"` the excited states come from the response of the SCF reference to a time-dependent perturbation. The singlet excitation energies $\omega_k$ ($E_h$) solve the Casida equation
+
+$$
+\begin{pmatrix} \mathbf A & \mathbf B \\ -\mathbf B & -\mathbf A \end{pmatrix}
+\begin{pmatrix} \mathbf X_k \\ \mathbf Y_k \end{pmatrix}
+= \omega_k
+\begin{pmatrix} \mathbf X_k \\ \mathbf Y_k \end{pmatrix},
+\qquad
+E_k = E_{\mathrm{SCF}} + \omega_k ,
+$$
+
+with, for an occupied orbital pair $i, j$ and virtual pair $a, b$ of the reference,
+
+$$
+A_{ia,jb} = \delta_{ij}\delta_{ab}(\varepsilon_a - \varepsilon_i) + 2(ia\vert jb) - c_x\,(ij\vert ab) + (ia\vert f_{xc}\vert jb) .
+$$
+
+| Symbol | Meaning | Unit |
+|---|---|---|
+| $\varepsilon_p$ | Orbital energy of orbital $p$ | $E_h$ |
+| $(pq\vert rs)$ | Two-electron repulsion integral | $E_h$ |
+| $c_x$ | Fraction of exact exchange of the functional (1 for Hartree–Fock) | — |
+| $f_{xc}$ | Exchange–correlation kernel (zero for Hartree–Fock) | — |
+| $\mathbf X_k, \mathbf Y_k$ | Excitation and de-excitation amplitudes of root $k$ (spin-adapted, singlet) | — |
+| $\omega_k$ | Excitation energy of root $k$ | $E_h$ |
+| $E_k$ | Total energy of the state; the labels $S_1, S_2, \dots$ are assigned to $k = 1, 2, \dots$ in order of increasing $\omega_k$ | $E_h$ |
+
+$\mathbf B$ is the coupling between excitations and de-excitations; $\mathbf A$ has the form above and $\mathbf B$ is analogous (with the corresponding $(ib\vert ja)$ terms).
+- **TDA** (Tamm–Dancoff approximation) sets $\mathbf B = 0$, so $\mathbf A\mathbf X_k = \omega_k\mathbf X_k$ and $\mathbf Y_k = 0$.
+- **TDDFT** (random-phase approximation) keeps $\mathbf B$.
+- **`functional = "hf"`:** the reference is Hartree–Fock and $f_{xc} = 0$, $c_x = 1$. Then `tda` is **CIS** (configuration interaction singles) and `tddft` is **TDHF**.
+- The ground state S0 is the SCF state itself, $E_0 = E_{\mathrm{SCF}}$ ($\omega_0 = 0$). The iterative solver stops when its residual is below `td_conv_tol`; failure to converge all requested roots stops the run (§9).
+
+#### 8.6.4 Analytic gradients
+$\nabla_{\mathbf R} E_I$ is computed analytically (not by finite differences): PySCF's SCF gradient for S0 of the linear-response methods, the excited-state response (Z-vector) gradient for $S_{k>0}$ of TDA/TDDFT, and the state-specific SA-CASSCF gradient (including the response of the state-averaged orbitals). The gradient is a vector of $3N_{\text{at}}$ components in $E_h/a_0$; the force on the nuclei is $-\nabla_{\mathbf R} E_I$.
+
+**Assumptions and limits:**
+- **DFT gradients omit the integration-grid response.** PySCF's analytic DFT and TDDFT gradients treat the numerical grid as fixed, so they are not the exact derivative of the energy computed on the grid. The error shrinks with `grid_level`. In the validation of §8.6.7 (TDA-B3LYP/STO-3G) the maximum deviation from a finite-difference derivative was $7.6\times10^{-6}\,E_h/a_0$ at the default `grid_level = 3` and $5.7\times10^{-8}\,E_h/a_0$ at `grid_level = 5`. For dynamics, where the gradient drives the nuclei and energy conservation matters, **use `grid_level` ≥ 5**. The effect does not exist for `casscf` or `functional = "hf"`.
+- **TDDFT topology.** Linear-response TDDFT (and TDA) with a ground-state reference does not describe the S₁/S₀ crossing seam correctly: the S₀–S₁ intersection has the wrong dimensionality, because the reference-state S₀ is not coupled to the excited states. Use **SA-CASSCF** (or another multi-reference method) when S₁→S₀ decay matters.
+
+#### 8.6.5 Transition dipoles
+The (electronic) transition dipole from S0 to state $I$ is
+
+$$
+\boldsymbol\mu_{0I} = \langle \Psi_0 \vert\, \hat{\boldsymbol\mu}\, \vert \Psi_I \rangle ,
+\qquad
+\hat{\boldsymbol\mu} = -\sum_{i=1}^{N_e} \mathbf r_i ,
+$$
+
+in $e\,a_0$. The nuclear part of the dipole operator does not contribute, because $\langle\Psi_0\vert\Psi_I\rangle = 0$, so $\boldsymbol\mu_{0I}$ does not depend on the origin of the coordinate system.
+
+**CASSCF.** Using the one-electron transition density matrix $\gamma^{0I}_{pq} = \langle\Psi_0\vert \hat E_{pq}\vert\Psi_I\rangle$ with $\hat E_{pq} = \sum_\sigma a^\dagger_{p\sigma} a_{q\sigma}$ (active orbitals $p, q$; the doubly occupied core orbitals cancel),
+
+$$
+\boldsymbol\mu_{0I} = -\sum_{pq} \mathbf r_{pq}\,\gamma^{0I}_{pq},
+\qquad
+\mathbf r_{pq} = \langle\phi_p\vert\,\mathbf r\,\vert\phi_q\rangle .
+$$
+
+| Symbol | Meaning | Unit |
+|---|---|---|
+| $\phi_p$ | Active molecular orbital | — |
+| $\mathbf r_{pq}$ | Position-operator (length) integral between orbitals $p$ and $q$ | $a_0$ |
+| $\gamma^{0I}_{pq}$ | Transition density matrix between the CI vectors of S0 and state $I$ | — |
+
+**Linear response (TDA/TDDFT/CIS/TDHF).** With the amplitudes of §8.6.3 (spatial orbitals $i$ occupied, $a$ virtual)
+
+$$
+\boldsymbol\mu_{0k} = -\sqrt{2}\,\sum_{ia} \mathbf r_{ia}\,(X_{k,ia} + Y_{k,ia}) ,
+$$
+
+where the factor $\sqrt2$ comes from the sum over the two spin functions in the closed-shell singlet, and $Y = 0$ for TDA, CIS. The amplitudes are normalized as $\sum_{ia}(X_{ia}^2 - Y_{ia}^2) = 1$.
+
+**The sign is arbitrary.** The CI vectors (and the response vectors) are defined only up to an overall sign, $\Psi_I \to -\Psi_I$, which flips $\boldsymbol\mu_{0I}$. Two programs, or two geometries, can therefore give opposite signs for the same physical state. Only $\lvert\boldsymbol\mu_{0I}\rvert$, $f_{0I}$ and quantities that are even in the sign are meaningful. The validation (§8.6.7) compares dipoles up to a global sign.
+
+#### 8.6.6 Oscillator strength
+The dimensionless oscillator strength of the transition $S_0\to S_I$ (length gauge) is
+
+$$
+f_{0I} = \frac{2}{3}\,\Delta E_{0I}\,\big\lvert\boldsymbol\mu_{0I}\big\rvert^2
+\qquad \text{(atomic units)},
+$$
+
+where $\Delta E_{0I} = E_I - E_0$ is in $E_h$ and $\boldsymbol\mu_{0I}$ in $e\,a_0$. It is printed by `single-point` and stored as `oscillator_strength`. It does not depend on the sign of $\boldsymbol\mu_{0I}$. Example: for ethylene SA2-CASSCF(2,2)/6-31G, $\Delta E_{01} = 10.5361$ eV and $f_{01} = 0.6206$ (§5.3). The use of $f$ to build absorption spectra and to choose initial states is planned (§8.9).
+
+#### 8.6.7 Validation
+**Against SHARC 4.1.** Ethylene (`tests/data/ethylene.xyz`), SA2-CASSCF(2,2)/6-31G\*, singlet-only solver. SHARC 4.1's PySCF interface (`SHARC_PYSCF.py`) was *executed* as a black box with `fix-spin-shift 0.2`, `conv-tol 1e-10` and `conv-tol-grad 1e-6`; nothing of SHARC is part of `gqteashmd`. SHARC's output is stored in `tests/data/reference/`, and a fresh SHARC run reproduces it exactly (`pytest -m sharc`, needs a SHARC installation).
+
+| Quantity | `gqteashmd` | SHARC 4.1 | Largest difference |
+|---|---|---|---|
+| $E_0$ (S0) | −78.04902446 $E_h$ | −78.04902443 $E_h$ | $1.4\times10^{-8}\,E_h$ (largest over both states) |
+| $E_1$ (S1) | −77.67250833 $E_h$ | −77.67250836 $E_h$ | |
+| Gradients of S0 and S1 | — | — | $1.4\times10^{-8}\,E_h/a_0$ |
+| Transition dipole $\boldsymbol\mu_{01}$ (≈ (−1.530, −0.054, 0) $e\,a_0$) | — | — | $4.5\times10^{-7}\,e\,a_0$, after one global sign flip |
+| $\langle S^2\rangle$ of both roots | < $10^{-6}$ | — | — |
+
+The sign of $\boldsymbol\mu_{01}$ in `gqteashmd` is opposite to SHARC's, which is allowed (§8.6.5). The automated tests use looser tolerances than the measured differences: $10^{-6}\,E_h$ for energies, $10^{-5}\,E_h/a_0$ for gradients and $10^{-4}\,e\,a_0$ for the dipole (up to sign).
+
+**Against finite differences** (slow tests; central differences with step $h = 10^{-4}$ bohr on each Cartesian component, a fresh backend for every displaced geometry so that no orbital reuse can bias the reference):
+
+| Method | Check | Largest difference between analytic and finite-difference gradient | Tolerance |
+|---|---|---|---|
+| SA-CASSCF(2,2)/6-31G, ethylene | S0 and S1, three components | $1.8\times10^{-7}\,E_h/a_0$ | $10^{-6}$ |
+| TDA-B3LYP/STO-3G, `grid_level = 5`, `td_conv_tol = 1e-9` | S1, two components | $5.7\times10^{-8}\,E_h/a_0$ | $5\times10^{-6}$ |
+| TDA-B3LYP/STO-3G, `grid_level = 3` (default) | S1, two components | $7.6\times10^{-6}\,E_h/a_0$ | — (grid response, §8.6.4) |
+
+**Linear response against direct PySCF calls:** energies, excitation energies and gradients agree to $10^{-13}$ or better. Bright-state transition dipoles and oscillator strengths were checked on small test molecules (TDA-B3LYP/STO-3G S3: $\lvert\boldsymbol\mu\rvert = 1.54$, $f = 0.68$; CIS S1: $f = 0.72$; TDHF S1: $f = 0.50$).
 
 ### 8.7 Harmonic analysis (frequencies)
 **[PLANNED, P4]** From the Cartesian Hessian $H_{ij} = \partial^2 E_0 / \partial x_i \partial x_j$ at the optimized geometry:
@@ -661,13 +986,7 @@ $$
 - **Interpreting the samples:** each sample is one classical "snapshot" of the quantum vibrational distribution. Distributions of bond lengths and kinetic energies will be compared with SHARC's `wigner.py`.
 
 ### 8.9 Initial excitation
-**[PLANNED, P6]** At each sampled geometry, vertical excitation energies $\Delta E_{0J} = E_J - E_0$ and oscillator strengths are computed:
-
-$$
-f_{0J} = \frac{2}{3}\,\Delta E_{0J}\,\big|\boldsymbol\mu_{0J}\big|^2 \qquad \text{(atomic units)},
-$$
-
-where $\boldsymbol\mu_{0J} = \langle \Psi_0 | \hat{\boldsymbol\mu} | \Psi_J \rangle$ is the transition dipole in $e\,a_0$, and $f_{0J}$ is dimensionless.
+**[PLANNED, P6]** At each sampled geometry, the vertical excitation energies $\Delta E_{0J} = E_J - E_0$ and oscillator strengths $f_{0J}$ will be computed with the formulas of §8.6.5 and §8.6.6 (**[IMPLEMENTED]** there for one geometry; this stage will run them at every sampled geometry).
 - **Spectrum:** the absorption spectrum is the sum of $f_{0J}$ over all samples, broadened with Gaussians.
 - **Initial states:** they are chosen within a user-defined energy window, with a probability that increases with $f_{0J}$. The exact rule is open item O3 and will be documented here when fixed.
 
@@ -778,20 +1097,33 @@ $$
 | `State database … is unreadable or corrupt: …` | `state.db` is damaged, is not a database, or is a directory. A message `… has schema version …` or `… unknown stage/task status …` means another program version wrote it | Move the whole `.gqteashmd/` directory aside (it holds `state.db` with its `-wal`/`-shm` files) to start the project over; stage results will be recomputed. Or use the matching version |
 | `Stage '…' has results produced from different inputs` | The input changed after results existed | Run the suggested `--rerun-from` command (§7.5) |
 | `Stage '…' failed: k of n tasks did not succeed` | Task failures | Read the listed `worker.log` files, fix, run again |
+| `This calculation needs an [electronic] section in the input file (method, basis, singlets, ...).` | `single-point` without `[electronic]` (exit 2) | Add the section (§4.2) |
+| `Invalid input file …:` with `electronic.casscf` / `electronic.functional` / `electronic.triplets` text (for example `method = 'casscf' needs an [electronic.casscf] table with ncas and nelecas`, `electronic.functional is required for method = 'tda' (use 'hf' for CIS/TDHF)`, `electronic.casscf.nelecas must be even for singlet states`, `electronic.triplets > 0 is not supported yet`) | Inconsistent `[electronic]` keys (§4.2) | Correct the keys |
+| `the PySCF backend supports closed-shell singlet molecules only (molecule.multiplicity = 1)` | An `[electronic]` section together with a multiplicity other than 1 (exit 2) | Use a closed-shell singlet molecule |
+| `Charge … and multiplicity … are inconsistent with … electrons. Check [molecule] in the input file.` | Same parity rule as §8.2, found by the electronic-structure layer (exit 2) | Correct `charge` or `multiplicity` |
+| `PySCF is not installed in this environment …` / `PySCF … is too old; gqteashmd needs PySCF >= 2.6.0.` | Missing or old PySCF (exit 2) | Install or update PySCF in the conda environment |
+| `PySCF could not build the molecule with basis '…'` | Unknown basis set name or a basis that has no entry for an element (exit 4) | Check `electronic.basis` |
+| `SCF did not converge (tried: default, level shift + damping, second-order; …)` / `PySCF SCF failed (…)` | The SCF ladder (§8.6.1) is exhausted, or PySCF raised an error (exit 4) | Check the geometry, charge and basis; raise `scf_max_cycle`; read the `--log` file |
+| `SA-CASSCF did not converge (conv_tol = …, conv_tol_grad = …)` / `CASSCF failed: …` | The active space or the starting orbitals are unsuitable (exit 4) | Choose another active space; loosen `casscf.conv_tol_grad` slightly |
+| `CASSCF root S1 has <S^2> = …; it is not a singlet.` | A root of the active space is not a singlet (exit 4) | Check the active space and the number of states |
+| `The CASSCF active space (… electrons) does not fit the molecule's … electrons.` / `The CASSCF active space needs … orbitals, but the basis '…' has only …` | `ncas`/`nelecas` do not fit the molecule or the basis (exit 4) | Reduce the active space or use a larger basis |
+| `TDA did not converge for all … excited states (td_conv_tol = …)` (also `TDDFT`) | The linear-response solver did not converge (exit 4) | Ask for fewer states or loosen `td_conv_tol` |
+| `The SA-CASSCF gradient of … failed` / `… gradient of … failed` / `The transition dipole calculation failed` | PySCF failed in a derivative or dipole step (exit 4) | Read the `--log` file; report if the SCF itself converged |
 | `internal error: …` | A program bug | Report it with `logs/gqteashmd.log` and the task's `result.json` |
 
 ---
 
 ## 10. Known limitations
 
-- **Feature scope:** only the `prepare` stage exists. No quantum chemistry is performed yet, so the hardware and per-stage resource settings, and `pause_after`, have little visible effect until the later stages arrive.
+- **Feature scope:** only the `prepare` stage exists. The electronic-structure layer works through `gqteashmd single-point` only; no workflow stage uses it yet, so the hardware and per-stage resource settings and `pause_after` have little visible effect until the later stages arrive.
+- **Electronic structure:** closed-shell singlet molecules with a restricted reference only; no triplet states; no nonadiabatic couplings, wavefunction overlaps or Hessian yet (P3b, P4); no density fitting; no scratch-directory or checkpoint-file handling (P3b); TDDFT/TDA describe the S₁/S₀ crossing seam incorrectly (§8.6.4); DFT gradients omit the grid response, so use `grid_level` ≥ 5 for dynamics (§8.6.4); only the SCF has a convergence ladder (CASSCF and TD calculations that fail to converge stop, §9).
 - **Platform:** Linux only, with no batch-scheduler support. Runs are designed for a single workstation.
 - **Project-folder check:** the check for Windows drives and OneDrive (§7.9) looks at the text of the path. An absolute path that is a symbolic link into a Windows drive or a OneDrive folder is not detected.
-- **No automated build checks yet:** the continuous-integration workflow has never run, because the repository has not been pushed to GitHub. The tests have only been run on the development machine.
+- **SHARC comparison is not automated:** the tests against SHARC 4.1 need a SHARC installation and run only on the development machine (`pytest -m sharc`); the continuous-integration workflow (first run 2026-11-07, passing) runs everything else.
 
 ## 11. Roadmap
 
-P1 foundation (done) → P2 input schema and pre-run checks (done) → **P3 PySCF backend (next)** → P4 optimization and frequencies → P5 Wigner sampling → P6 excitations and initial states → P7 dynamics → P8 analysis → P9 systematic validation against SHARC 4.1. This manual is updated with each step. Sections marked [PLANNED] become [IMPLEMENTED] when their sub-project is finished and validated.
+P1 foundation (done) → P2 input schema and pre-run checks (done) → P3a PySCF backend (done: energies, gradients, transition dipoles, `single-point`) → **P3b couplings and overlaps and P4 optimization, frequencies and Hessian (next; P3b is needed only by the dynamics, P7b)** → P5 Wigner sampling → P6 excitations and initial states → P7 dynamics → P8 analysis → P9 systematic validation against SHARC 4.1. This manual is updated with each step. Sections marked [PLANNED] become [IMPLEMENTED] when their sub-project is finished and validated.
 
 ## 12. References
 1. J. C. Tully, *J. Chem. Phys.* **93**, 1061 (1990): fewest-switches surface hopping.

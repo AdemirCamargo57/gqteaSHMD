@@ -14,11 +14,12 @@ The user writes one TOML input file and runs `gqteashmd run input.toml`. The pro
 - **Scientific background:** [SHMD_implementation_strategy.md](SHMD_implementation_strategy.md), covering methods, SHARC 4.1 scope, the validation strategy and risks.
 - **The P1 plan:** [docs/superpowers/plans/2026-11-06-p1-foundation-orchestrator.md](docs/superpowers/plans/2026-11-06-p1-foundation-orchestrator.md). It is the historical record of how the foundation was built.
 - **The P1 ledger:** `.superpowers/sdd/2026-11-06-p1-foundation-orchestrator/progress.md`. It is git-ignored and local to the development machine. It contains every ruling made during P1 and the deferred findings.
+- **The P3a plan and ledger:** [docs/superpowers/plans/2026-11-07-p3a-pyscf-backend.md](docs/superpowers/plans/2026-11-07-p3a-pyscf-backend.md), and `.superpowers/sdd/2026-11-07-p3a-pyscf-backend/` (git-ignored, local; `progress.md` and the task reports).
 - **The P2 plan and ledger:** [docs/superpowers/plans/2026-11-06-p2-input-preflight.md](docs/superpowers/plans/2026-11-06-p2-input-preflight.md), and `.superpowers/sdd/2026-11-06-p2-input-preflight/progress.md` (git-ignored, local). The plan's "Scope rulings" say which deferred items stay deferred and to which sub-project they belong.
 - **The user-facing behaviour:** [USER_MANUAL.md](USER_MANUAL.md).
 
 ## Rules that always apply
-- **Clean room.** SHARC 4.1 (installed at `\\wsl.localhost\OracleLinux_9_5\home\ajc\sharc4-4.1`) is a reference for the workflow and a black box for output comparison. Implement methods from the literature. SHARC may only be *executed*, from `tools/sharc_compare/`, and must never be imported by `gqteashmd`. The licence is MIT ("The gqteashmd developers").
+- **Clean room.** SHARC 4.1 (installed at `\\wsl.localhost\OracleLinux_9_5\home\ajc\sharc4-4.1`) is a reference for the workflow and a black box for output comparison. Implement methods from the literature. Never read, copy or adapt SHARC source. SHARC may only be *executed*, from `tools/sharc_compare/` (it runs `SHARC_PYSCF.py` and parses `QM.out`), and must never be imported by `gqteashmd`. Live comparison: `SHARC_HOME=/home/ajc/sharc4-4.1 SHARC_PYTHON=/home/ajc/miniforge3/envs/sharc4.1/bin/python pytest -m sharc` (about 12 s; skipped without those variables; never in CI). The licence is MIT ("The gqteashmd developers").
 - **Run everything in WSL.** The repository lives at `C:\Users\ajc\OneDrive\gqteaSHMD` (`/mnt/c/Users/ajc/OneDrive/gqteaSHMD` in WSL), but code, tests and git run inside WSL Oracle Linux 9.5. From the Windows host, wrap each command:
   ```bash
   wsl -d OracleLinux_9_5 -- bash -lc 'cd /mnt/c/Users/ajc/OneDrive/gqteaSHMD && conda activate gqteashmd-dev && <command>'
@@ -26,23 +27,24 @@ The user writes one TOML input file and runs `gqteashmd run input.toml`. The pro
   Edit files with the normal file tools, using LF line endings.
 - **Git from WSL only.** Pre-commit hooks (ruff 0.17.4) are installed in WSL and do not run from Windows Git. Pushing from Windows is fine (`git -C C:\Users\ajc\OneDrive\gqteaSHMD push ...`), because Windows has the GitHub credentials and pushing runs no hooks. Never use `--no-verify`.
 - **Keep project runs, conda environments and large outputs out of OneDrive and out of `/mnt/c`.** Use `~/...` or `/tmp` in WSL. pytest's `tmp_path` already does this.
-- **Workflow.** Feature branch per sub-project (`feat/<topic>`), one commit per task, conventional commit subjects (`feat:`, `fix:`, `test:`, `docs:`, `ci:`, `build:`). The owner decides merges. P1 was merged locally into `main`, and `main` is not yet pushed to GitHub (`AdemirCamargo57/gqteaSHMD`).
+- **Workflow.** Feature branch per sub-project (`feat/<topic>`), one commit per task, conventional commit subjects (`feat:`, `fix:`, `test:`, `docs:`, `ci:`, `build:`). The owner decides merges. P1 and P2 are merged into `main`, which is on GitHub (`AdemirCamargo57/gqteaSHMD`); P3a is on its feature branch, not merged.
 - **Commit trailer.** End each commit message with the `Co-Authored-By:` trailer for the model that wrote the commit.
 - **Keep the two documents current.** Update **CLAUDE.md and USER_MANUAL.md in the same branch as any change to behaviour, inputs, outputs, formulas or status.** USER_MANUAL.md must always mark what is implemented and what is planned.
 
 ## Environment
 - Conda env `gqteashmd-dev` (Miniforge in WSL), created from `environment.yml`. The package is installed editable with `pip install -e . --no-deps`. Python 3.12.
-- The runtime dependency is `pydantic>=2.6` only. PySCF, NumPy, SciPy, h5py and geomeTRIC are preinstalled for P3+.
-- Tests:
-  - `pytest -m "not slow"` takes about 1 min.
-  - `pytest -W error` runs everything, including the slow kill/resume tests, in about 3 min.
+- Runtime dependencies (`pyproject.toml`): `pydantic>=2.6`, `numpy>=1.26`, `pyscf>=2.6`. `environment.yml` pins `pyscf=2.14.*` (O18). SciPy, h5py and geomeTRIC are installed for P4+ and not imported yet.
+- Tests (markers `slow`, `sharc`):
+  - `pytest -m "not slow" -W error`: 241 passed, 1 skipped (live SHARC), 4 deselected. Measured wall time **about 5-6 min** on `/mnt/c` (about 1 min before P3a; the slowdown appeared from P3a Task 1 on, so it is the environment, not the new tests).
+  - The 4 deselected slow tests are the finite-difference gradient checks (about 6 min together). The kill/resume tests from P1 are also `slow`.
   - The tests start real subprocesses, so they need Linux.
+  - Finite-difference tests build a **fresh backend for every displaced geometry**, so orbital reuse cannot bias the reference.
 - Lint: `ruff format . && ruff check .`. The line length is 100, with rules E, F, W, I, B, UP and SIM. Markdown is excluded (`extend-exclude`), because ruff ≥0.17 would rewrite code blocks in the plans.
 - Types: `mypy` runs clean on `src/` (configuration in `pyproject.toml`) and is part of CI.
-- CI: `.github/workflows/ci.yml` runs in an `oraclelinux:9` container on push, on PRs and nightly. It has never run, because `main` has not been pushed yet.
+- CI: `.github/workflows/ci.yml` runs in an `oraclelinux:9` container on push, on PRs and nightly. It first ran on 2026-11-07 (`main` at `e73609f`) and passed.
 - Workstation facts in WSL: 16 cores and about 7 GB RAM. ORCA 6.1.1 and Gaussian 16 are installed, but they are not used before phase P7.
 
-## Architecture (implemented in P1 and P2)
+## Architecture (implemented in P1, P2 and P3a)
 Dependencies point down only; domain code never imports stages or the orchestrator.
 
 ```text
@@ -50,10 +52,22 @@ cli.py ─► orchestrator.Orchestrator ─► execution.local.LocalExecutor (on
    │         │  preflight.py (before the project directory is touched)       worker ─► stage.run_task() ─► result.json
    │         │  project/state.py (SQLite, single writer), project/provenance.py
    │         │  project/layout.py, project/lock.py (flock)
-   │         └► stages/ (Stage contract: plan → run_task → finalize) ─► chem/, util/, (later) electronic/, vib/, dynamics/
+   │         └► stages/ (Stage contract: plan → run_task → finalize) ─► chem/, core/, util/, electronic/, (later) vib/, dynamics/
+   ├► single-point command ─► electronic.factory.make_backend ─► electronic.pyscf_backend.PySCFBackend (no project, no stages)
    └► logging_setup.py (console INFO, logs/gqteashmd.log DEBUG)
+
+tools/sharc_compare/   executes SHARC 4.1 as a black box (never imported by gqteashmd); tests in tests/sharc_compare, pytest -m sharc
 ```
 
+- **`core/`:** `units.py` (CODATA 2018 constants; Hartree atomic units internally, conversions only at file edges), `states.py` (`StateLabel(multiplicity, index)`, `states_from_counts`; labels `S0`, `S1`, ..., `T1`, ...). `chem/electrons.py:count_electrons` is the one electron-count/parity rule, shared by `prepare` and the backend.
+- **`electronic/`** (P3a): `base.py` (`MoleculeSpec`, `Request(coords_bohr, gradients, transition_dipoles)`, `ElectronicResult` with `to_json()`, `ElectronicBackend`), `properties.py` (oscillator strength `f = 2/3 dE |mu|^2`), `factory.py` (`make_backend`), `pyscf_backend.py` (`PySCFBackend(molecule, settings, *, log_file, threads, memory_mb)`, `require_pyscf`).
+  - **PySCF is imported lazily, and only in `electronic/pyscf_backend.py`** (inside functions), so the rest of the package imports without it.
+  - SCF ladder: default, then level shift 0.2 Eh + damping 0.5, then second-order. Only rung 1 starts from the previous geometry's density.
+  - SA-CASSCF uses a **singlet-only CI solver** (`fci.solver(mol, singlet=True)`) with equal weights `1/N`, and a **spin guard**: `|<S^2>| > 1e-3` for any root is an error.
+  - **Orbitals are reused between calls of one backend object only via `mcscf.project_init_guess`.** Never pass old MOs directly: they are not orthonormal at a new geometry.
+  - Transition dipoles: CASSCF `-sum r_pq gamma^{0I}_pq` (active orbitals, `trans_rdm1`); linear response via PySCF `transition_dipole()`. Their overall sign is arbitrary, so compare up to sign.
+  - **Error mapping:** user input errors are `ConfigError` (exit 2: missing PySCF or version < 2.6, multiplicity != 1, charge/multiplicity vs electron count, missing `[electronic]`). **Every PySCF call that can raise is wrapped into `ElectronicStructureError`** (a non-retryable `TaskError`, exit 4: unknown basis, SCF/CASSCF/TD non-convergence, spin, active space, gradient/dipole failures). Never let a raw PySCF exception escape.
+  - Not implemented: NACs, wavefunction overlaps, phase tracking, Hessian, triplets, open-shell, density fitting, scratch/chkfile policy.
 - **Stage contract** (`stages/base.py`):
   - `plan(ctx)` runs in the controller and returns `TaskSpec` objects deterministically.
   - `run_task(ctx, task, task_dir)` runs in a worker subprocess. It must be idempotent, write only in `task_dir`, and return a small JSON-serialisable dict.
@@ -76,7 +90,7 @@ cli.py ─► orchestrator.Orchestrator ─► execution.local.LocalExecutor (on
   - **Restart:** tasks left RUNNING by a dead controller are reconciled. A task with an ok `result.json` becomes DONE; otherwise its orphan is killed (verified via `/proc/<pid>/cmdline`) and the task is requeued.
   - **`--rerun-from`** is applied once per orchestrator (`self.rerun_from` is cleared after use). The hint printed for a stale stage is shell-quoted. A fingerprint input that is not JSON-serializable raises `ProjectError`.
   - **Pause:** after a stage listed in `workflow.pause_after` completes **in this run** and is not the last stage, `RunSummary.paused_after` is set, the loop stops and the CLI prints a message and exits 5 (`EXIT_STOPPED`). A rerun continues, because that stage is then up to date. A skipped or up-to-date stage never pauses. Unknown names in `pause_after` and in `[resources.stages]` are a `ConfigError` raised by `check_stage_names` (`stages/pipeline.py`), which both `Orchestrator.__init__` and `validate` call.
-- **Config** (`config/schema.py`): `[resources]` requires `total_cores` and `total_memory_mb`. A model validator checks `max_parallel_tasks × threads_per_task ≤ total_cores` and `max_parallel_tasks × memory_mb_per_task ≤ total_memory_mb` for the global values and for every stage override (merged with the global values); the message shows the factors (`3 × 2 = 6 exceeds total_cores = 4`). The keys of `[resources.stages]` must be safe stage names (`is_safe_name`). `execution.min_free_disk_mb` (default 1000) and `[workflow] pause_after` also live here. `loader.py` expands `~` (an unknown `~user` is a `ConfigError`) and resolves relative paths against the input file's directory. The later input sections are not in the schema yet (they arrive with P3–P8).
+- **Config** (`config/schema.py`): `[resources]` requires `total_cores` and `total_memory_mb`. A model validator checks `max_parallel_tasks × threads_per_task ≤ total_cores` and `max_parallel_tasks × memory_mb_per_task ≤ total_memory_mb` for the global values and for every stage override (merged with the global values); the message shows the factors (`3 × 2 = 6 exceeds total_cores = 4`). The keys of `[resources.stages]` must be safe stage names (`is_safe_name`). `execution.min_free_disk_mb` (default 1000) and `[workflow] pause_after` also live here. `loader.py` expands `~` (an unknown `~user` is a `ConfigError`) and resolves relative paths against the input file's directory. `[electronic]` (`ElectronicSection`, with the optional `CasscfSection` as `[electronic.casscf]`) is in the schema since P3a: `method` casscf|tda|tddft, `basis`, `functional` (required for tda/tddft, forbidden for casscf; `"hf"` gives CIS/TDHF), `singlets` (**includes S0**, O19), `triplets` (must be 0), `grid_level` (3), `scf_conv_tol`, `scf_max_cycle`, `td_conv_tol`; casscf: `ncas`, `nelecas` (even, <= 2 ncas), `conv_tol`, `conv_tol_grad`. A present `[electronic]` requires `molecule.multiplicity = 1`. The later sections (`[optimize]`, `[frequencies]`, `[sampling]`, ...) arrive with P4-P8.
 - **Preflight** (`preflight.py:run_preflight`): runs from `Orchestrator.preflight()` (called by `cli._cmd_run`; the result is cached, so `run()` does not repeat it), **before** `layout.ensure()` creates anything.
   - It raises `ConfigError` for: a project directory on a Windows drive in WSL (`/mnt/<letter>/`; `/mnt/data` is fine) or under a OneDrive folder; a project directory that exists as a file, or whose nearest existing parent is not a writable directory; free disk below `min_free_disk_mb` or a failed disk query (`min_free_disk_mb = 0` skips the query); a missing `required_modules` entry of an enabled stage.
   - It only returns a **warning** (D17) when `total_cores` or `total_memory_mb` exceeds the detected machine (`detect_machine()`: `sched_getaffinity` and `/proc/meminfo`). The CLI logs warnings after logging is configured, so they reach the console and the log file. As a backstop, `cli._cmd_run` turns an `OSError` from `layout.ensure()` or `configure_logging` into a `ConfigError`.
@@ -91,7 +105,7 @@ cli.py ─► orchestrator.Orchestrator ─► execution.local.LocalExecutor (on
   - Every error reaches the user as `gqteashmd: error: <message>`.
   - `.` and `..` are not safe stage or task names (`is_safe_name`). The XYZ parser rejects non-finite coordinates; `validate` also requires the geometry to be a regular file.
 - **Testing seam:** `gqteashmd.testing.fake_stages` provides fake stages whose behaviour is set by the environment variable `GQTEASHMD_FAKE_BEHAVIOUR` (JSON). The keys are `sleep`, `fail`, `unexpected`, `crash_once`, `retryable_once`, `plan_raises`, `bad_fingerprint`, `requires` (stage name to required modules) and `skip_optimize`. The CLI's hidden `--pipeline` option selects them in tests.
-- **The production pipeline** (`stages/registry.py:default_pipeline`) contains only `prepare` today.
+- **The production pipeline** (`stages/registry.py:default_pipeline`) contains only `prepare` today. `gqteashmd single-point INPUT [--json F] [--log F]` runs `PySCFBackend` once outside the pipeline (no project directory, no preflight): exit 0, 2 (input) or 4 (calculation failed). Its table and JSON schema are in USER_MANUAL.md §5.3.
 
 ## Key decisions (full list in master plan §10)
 - **Python core.** Electronic structure dominates the cost, so the core is plain Python (D1).
@@ -100,36 +114,38 @@ cli.py ─► orchestrator.Orchestrator ─► execution.local.LocalExecutor (on
 - **Strict input file.** One strict TOML input. Units go in key names (`dt_fs`, `temperature_K`, ...), and state labels are `S0`, `S1`, `T1` (0-based internally) (D7, D13).
 - **Hardware from the user.** The user enters the hardware in `[resources]`. The program warns, without stopping, when the values exceed the detected machine (D17, implemented in P2).
 - **Naming.** The package and command are `gqteashmd`; internal class names keep the `Shmd` prefix (D18).
-- **P3 validation target.** Ethylene (`C:\AJCamargo\TOPICOS\Eteno\Eteno.xyz` → `tests/data/ethylene.xyz`) at SA2-CASSCF(2,2)/6-31G\* first, then TDA (D19).
+- **P3 validation target.** Ethylene (`C:\AJCamargo\TOPICOS\Eteno\Eteno.xyz` → `tests/data/ethylene.xyz`) at SA2-CASSCF(2,2)/6-31G\* first, then TDA (D19). Done in P3a: it matches SHARC 4.1 to 1.4e-8 Eh (energies) and 1.4e-8 Eh/bohr (gradients), the dipole to 4.5e-7 e a0 up to sign; finite-difference gradient checks 1.8e-7 (CASSCF) and 5.7e-8 (TDA-B3LYP, grid_level 5) Eh/bohr.
+- **O18 resolved:** `pyscf=2.14.*` pinned in `environment.yml`; runtime `pyscf>=2.6`. **O19 resolved:** `singlets` includes S0 (owner decision 2026-11-07).
+- **Method caveats:** PySCF DFT gradients omit the grid response, so use `grid_level >= 5` for dynamics. TDA/TDDFT have the wrong S0/S1 crossing topology; use SA-CASSCF for S1->S0 decay.
 
-## Current status (2026-11-06)
-- **P1 — foundation & orchestrator: DONE.** It is merged into local `main` at `e4a9319` (111 tests passing) and not pushed.
-- **P2 — input schema & preflight: DONE, on branch `feat/p2-input-preflight`, NOT yet merged** (owner decides the merge; `main` is not pushed). Full suite: 184 tests passing (`pytest -W error`), ruff and mypy clean.
+## Current status (2026-11-07)
+- **P1 — foundation & orchestrator: DONE**, merged into `main`.
+- **P2 — input schema & preflight: DONE**, merged into `main`. `main` is on GitHub and CI passed on 2026-11-07.
+- **P3a — PySCF electronic-structure layer: DONE on branch `feat/p3a-pyscf-backend`, NOT merged** (the owner decides). `pytest -m "not slow" -W error`: 241 passed, 1 skipped, 4 deselected (5-6 min). The 4 slow FD tests and the live SHARC test pass. ruff and mypy are clean.
 - **Implemented features:**
-  - the CLI commands `init`, `validate`, `run [--rerun-from]`, `status` and `stop`;
-  - the input sections `[project]`, `[molecule]`, `[resources]` (with required `total_cores` and `total_memory_mb`, and `[resources.stages.<name>]` overrides), `[execution]` (with `min_free_disk_mb`) and `[workflow]` (`pause_after`);
-  - preflight checks before a run, provenance record per run, review pauses (exit 5), per-stage executors;
-  - the `prepare` stage, which validates the XYZ file, the elements and the charge/multiplicity parity, and writes `geometry.xyz` and `molecule.json`;
-  - resumable, crash-safe orchestration.
-- **Not implemented yet:** every quantum-chemistry stage (optimize, frequencies, sampling, excitations, selection, dynamics, analysis), the PySCF backend, and the input sections of those stages (`[electronic]`, `[optimize]`, `[frequencies]`, `[sampling]`, `[excitations]`, `[selection]`, `[dynamics]`, `[analysis]`). By ruling, each sub-project adds the input sections it consumes (their keys depend on open items O3, O4, O8, O19). State labels (`S0`/`S1`/`T1`) arrive with `[electronic]` in P3.
+  - the CLI commands `init`, `validate`, `run [--rerun-from]`, `status`, `stop` and `single-point`;
+  - the input sections `[project]`, `[molecule]`, `[resources]` (with per-stage overrides), `[execution]`, `[workflow]` and `[electronic]` / `[electronic.casscf]`;
+  - preflight, provenance, review pauses (exit 5), per-stage executors, the `prepare` stage, resumable crash-safe orchestration;
+  - the PySCF backend: SCF (RHF/RKS), SA-CASSCF, TDA, TDDFT, CIS, TDHF; energies, analytic gradients, S0->SI transition dipoles, oscillator strengths; validated against SHARC 4.1 and finite differences.
+- **Not implemented yet:** every quantum-chemistry *stage* (optimize, frequencies, sampling, excitations, selection, dynamics, analysis) and its input section; NACs, wavefunction overlaps and phase tracking (P3b); the Hessian (P4); triplets and open-shell; density fitting; the scratch/chkfile policy (P3b).
 
 ## Known limitations
-1. **Only `prepare` exists.** There is no quantum chemistry yet, so per-stage resources and `pause_after` have no visible effect (the last stage never pauses).
+1. **Only `prepare` exists as a stage.** The electronic-structure layer is reachable only through `single-point`, so per-stage resources and `pause_after` have no visible effect (the last stage never pauses).
 2. **The project-folder check is a path-text check.** An absolute path that is a symlink into a Windows drive or a OneDrive folder is not detected (relative paths are resolved, so they are).
-3. **CI has never run**, because `main` has not been pushed.
-4. **Other deferred items** are listed in the P1 and P2 ledgers under `.superpowers/sdd/` (git-ignored, local). The P2 plan's "Scope rulings" assign them: refused runs still writing state, and optional-stage handling (P4); the worker orphan window between `Popen` and `on_start` (P7b); SIGKILL to the group after the leader exits, and an unreadable `task.json` (P3); `.tmp` cleanup, a DONE stage directory deleted by hand, and `ensure()`/logging set up before the lock (P3 hardening sweep, together with the other P3 items recorded in the P2 ledger).
+3. **Electronic structure:** closed-shell singlets only; no NACs, overlaps or Hessian (P3b, P4); only the SCF has a convergence ladder (CASSCF and TD failures stop the run); `single-point` does not run the preflight.
+4. **Other deferred items** are listed in the P1 and P2 ledgers under `.superpowers/sdd/` (git-ignored, local). The P2 plan's "Scope rulings" assign them: refused runs still writing state, and optional-stage handling (P4); the worker orphan window between `Popen` and `on_start` (P7b); SIGKILL to the group after the leader exits, and an unreadable `task.json` (P3); `.tmp` cleanup, a DONE stage directory deleted by hand, and `ensure()`/logging set up before the lock (hardening sweep, now assigned to P3b together with the other items recorded in the P2 and P3a ledgers).
 
 ## Remaining work (master plan §9)
-**P3 is next.**
+**P3b and P4 are next.** P3b is needed only by P7b, so the owner may order them.
 
 | ID | Sub-project | Notes |
 |---|---|---|
-| P2 | Input schema & preflight | **DONE** on `feat/p2-input-preflight` (not merged); see Status |
-| P3 | PySCF electronic-structure layer | **Next.** Adds `[electronic]` and state labels; includes the hardening sweep of deferred items (limitation 4) and the PySCF/geomeTRIC version and writable-scratch preflight checks. Backend contract (strategy §2.3); SCF/TDA/TDDFT/SA-CASSCF energies, gradients, NACs, Hessian; ethylene validation |
-| P4 | `optimize` + `frequencies` stages | geomeTRIC; own harmonic analysis; Molden output |
+| P3a | PySCF electronic-structure layer | **DONE** on `feat/p3a-pyscf-backend` (not merged); see Status |
+| P3b | Couplings for dynamics | NACs (CASSCF), wavefunction overlaps and phase tracking (TDA/TDDFT), scratch/chkfile policy, CASSCF/TDDFT retry ladders, the hardening sweep (limitation 4) |
+| P4 | `optimize` + `frequencies` stages | geomeTRIC; **PySCF Hessian (moved here from P3)**; own harmonic analysis; Molden output; stages declare `required_modules=("pyscf",)` |
 | P5 | `sampling` stage | Own Wigner sampler; compare with SHARC `wigner.py` |
 | P6 | `excitations` + `selection` stages | Spectrum and initial-state selection |
-| P7a/b | Dynamics core (models), then PySCF dynamics stage | Strategy §4 |
+| P7a/b | Dynamics core (models), then PySCF dynamics stage | Strategy §4; 7b needs P3b |
 | P8 | `analysis` stage + end-to-end test | Populations and kinetics |
 | P9 | SHARC validation campaign | Strategy §5 |
 
