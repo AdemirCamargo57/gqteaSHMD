@@ -250,3 +250,61 @@ def test_a_run_refused_by_the_lock_writes_no_log(tmp_path, write_input, capsys):
         code = main(["run", str(path), "--pipeline", FAKE])
     assert code == 3
     assert not (layout.logs_dir / "gqteashmd.log").exists()
+
+
+def test_ctrl_c_anywhere_exits_cleanly(monkeypatch, capsys):
+    import argparse
+
+    from gqteashmd import cli
+
+    def interrupted(args):
+        raise KeyboardInterrupt
+
+    class Parser:
+        def parse_args(self, argv=None):
+            return argparse.Namespace(func=interrupted)
+
+    monkeypatch.setattr(cli, "build_parser", lambda: Parser())
+    assert cli.main(["anything"]) == cli.EXIT_STOPPED
+    assert capsys.readouterr().err.count("gqteashmd: interrupted") == 1
+
+
+def test_internal_error_traceback_goes_to_the_log_file_only(project, monkeypatch, capsys):
+    from gqteashmd.orchestrator import Orchestrator
+    from gqteashmd.project.layout import ProjectLayout
+
+    def boom(self, state, should_stop):
+        raise RuntimeError("controller kaboom")
+
+    monkeypatch.setattr(Orchestrator, "_run_pipeline", boom)
+    assert main(["run", str(project), "--pipeline", FAKE]) == 1
+    err = capsys.readouterr().err
+    assert "internal error: RuntimeError: controller kaboom" in err
+    assert "Traceback" not in err
+    layout = ProjectLayout(load_config(project).config.project.directory)
+    log_text = (layout.logs_dir / "gqteashmd.log").read_text()
+    assert "Traceback (most recent call last)" in log_text
+    assert "controller kaboom" in log_text
+
+
+def test_status_while_a_controller_holds_the_lock(project, capsys):
+    from gqteashmd.project.layout import ProjectLayout
+    from gqteashmd.project.lock import ProjectLock
+
+    assert main(["run", str(project), "--pipeline", FAKE]) == 0
+    layout = ProjectLayout(load_config(project).config.project.directory)
+    capsys.readouterr()
+    with ProjectLock(layout.lock_file):
+        assert main(["status", str(project), "--pipeline", FAKE]) == 0
+    assert f"running (pid {os.getpid()})" in capsys.readouterr().out
+
+
+def test_preflight_warnings_are_printed_once(tmp_path, write_input, monkeypatch, capsys):
+    monkeypatch.setenv(BEHAVIOUR_ENV, "{}")
+    path = write_input(tmp_path, execution=FAST, total_cores=100000, total_memory_mb=10**9)
+    main(["run", str(path), "--pipeline", FAKE])
+    err = capsys.readouterr().err
+    lines = {line for line in err.splitlines() if "Preflight:" in line}
+    assert lines
+    for line in lines:
+        assert err.count(line) == 1

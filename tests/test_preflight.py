@@ -131,3 +131,15 @@ def test_unsearchable_ancestor_is_a_config_error(tmp_path, write_input):
             run_preflight(cfg, [PrepareStage()], machine=MachineInfo(None, None))
     finally:
         locked.chmod(0o755)
+
+
+def test_module_check_treats_import_errors_as_missing(monkeypatch):
+    import importlib.util
+
+    from gqteashmd import preflight
+
+    def broken(name):
+        raise ImportError("broken parent package")
+
+    monkeypatch.setattr(importlib.util, "find_spec", broken)
+    assert preflight._module_available("anything") is False

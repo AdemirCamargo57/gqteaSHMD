@@ -294,11 +294,14 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
     log = logging.getLogger("gqteashmd.cli")
     try:
+        args = build_parser().parse_args(argv)
         code: int = args.func(args)
         return code
+    except KeyboardInterrupt:
+        print("gqteashmd: interrupted", file=sys.stderr)
+        return EXIT_STOPPED
     except ShmdError as exc:
         log.error("%s", exc, extra=FILE_ONLY)
         print(f"gqteashmd: error: {exc}", file=sys.stderr)
