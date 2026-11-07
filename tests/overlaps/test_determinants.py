@@ -3,6 +3,7 @@ import math
 import numpy as np
 import pytest
 
+from gqteashmd.overlaps import determinants
 from gqteashmd.overlaps.determinants import DeterminantExpansion, state_overlaps, truncate
 
 
@@ -65,6 +66,9 @@ def test_electron_counts_must_match():
     b = DeterminantExpansion([[0]], [[0]], [[1.0]])
     with pytest.raises(ValueError, match="electron"):
         state_overlaps(a, b, np.eye(3))
+    c = DeterminantExpansion([[0, 1]], [[0, 1]], [[1.0]])
+    with pytest.raises(ValueError, match="electron"):
+        state_overlaps(a, c, np.eye(3))
 
 
 def test_inconsistent_shapes_are_rejected():
@@ -78,16 +82,51 @@ def test_with_signs_flips_whole_states():
     np.testing.assert_array_equal(flipped.coeffs, [[1.0, 0.0], [0.0, -1.0]])
 
 
+@pytest.mark.parametrize("tiny_blocks", [False, True])
+def test_multi_electron_expansions_match_double_sum(monkeypatch, tiny_blocks):
+    if tiny_blocks:
+        monkeypatch.setattr(determinants, "_MAX_BLOCK_ELEMENTS", 1)
+    rng = np.random.default_rng(7)
+    s_mo = rng.normal(size=(6, 6))  # non-symmetric
+    bra_a = [[0, 2, 4], [1, 3, 5], [0, 2, 4], [2, 0, 4], [1, 2, 3]]
+    bra_b = [[0, 1], [2, 3], [0, 1], [1, 0], [4, 5]]
+    ket_a = [[1, 2, 5], [0, 2, 4], [1, 2, 5], [3, 4, 0], [5, 1, 2], [0, 1, 2]]
+    ket_b = [[3, 4], [0, 1], [3, 4], [5, 2], [3, 4], [0, 5]]
+    bra = DeterminantExpansion(bra_a, bra_b, rng.normal(size=(3, 5)))
+    ket = DeterminantExpansion(ket_a, ket_b, rng.normal(size=(2, 6)))
+    expected = np.zeros((3, 2))
+    for k in range(5):
+        for m in range(6):
+            d = np.linalg.det(s_mo[np.ix_(bra_a[k], ket_a[m])]) * np.linalg.det(
+                s_mo[np.ix_(bra_b[k], ket_b[m])]
+            )
+            expected += np.outer(bra.coeffs[:, k], ket.coeffs[:, m]) * d
+    np.testing.assert_allclose(state_overlaps(bra, ket, s_mo), expected, rtol=1e-12, atol=1e-12)
+
+
 def test_truncate_keeps_the_dominant_determinants_and_renormalises():
     coeffs = np.array([[0.9, 0.4, 0.1, 0.0], [0.0, 0.1, 0.995, 0.0]])
     wf = DeterminantExpansion([[0], [1], [2], [3]], [[0]] * 4, coeffs)
     kept = truncate(wf, 0.95)
     assert kept.n_dets == 3  # determinant 3 is used by no state
     np.testing.assert_allclose(np.linalg.norm(kept.coeffs, axis=1), 1.0)
-    assert (
-        kept.coeffs[0, 2] == 0.0
-    )  # 0.81 + 0.16 = 0.97 of state 0: the 0.01 determinant is dropped
+    # state 0: 0.95 of its 0.98 total is 0.931; 0.81 + 0.16 = 0.97 reaches it, so the 0.01
+    # determinant is dropped and the rest is renormalised
+    norm0 = math.hypot(0.9, 0.4)
+    np.testing.assert_allclose(kept.coeffs[0], [0.9 / norm0, 0.4 / norm0, 0.0])
+    assert kept.coeffs[0, 2] == 0.0
     full = truncate(wf, 1.0)
     assert full.n_dets == 3
     with pytest.raises(ValueError, match="norm_kept"):
         truncate(wf, 0.0)
+    with pytest.raises(ValueError, match="norm_kept"):
+        truncate(wf, 1.5)
+
+
+def test_truncate_rejects_zero_and_non_finite_states():
+    zero = DeterminantExpansion([[0], [1]], [[0], [0]], [[1.0, 0.0], [0.0, 0.0]])
+    with pytest.raises(ValueError, match="zero coefficients"):
+        truncate(zero, 0.9)
+    bad = DeterminantExpansion([[0], [1]], [[0], [0]], [[1.0, np.nan]])
+    with pytest.raises(ValueError, match="finite"):
+        truncate(bad, 0.9)

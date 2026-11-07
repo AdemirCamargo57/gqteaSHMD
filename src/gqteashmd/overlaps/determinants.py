@@ -64,9 +64,17 @@ class DeterminantExpansion:
 
 def truncate(expansion: DeterminantExpansion, norm_kept: float) -> DeterminantExpansion:
     """Keep, per state, the largest coefficients until their squared sum reaches `norm_kept` of
-    the state's squared norm; drop determinants no state keeps; renormalise every state."""
+    the state's squared norm; drop determinants no state keeps; renormalise every state.
+
+    The target carries a relative margin of 1e-12, so norm_kept = 1.0 still drops weights below
+    1e-12 of the state's squared norm. Ties between equal weights are broken by determinant
+    order (stable sort). Renormalising the kept coefficients to unit norm assumes distinct
+    determinants over orthonormal MOs.
+    """
     if not 0.0 < norm_kept <= 1.0:
         raise ValueError(f"norm_kept must be in (0, 1], got {norm_kept}")
+    if not np.all(np.isfinite(expansion.coeffs)):
+        raise ValueError("coefficients must be finite")
     coeffs = expansion.coeffs.copy()
     for s in range(coeffs.shape[0]):
         weights = coeffs[s] ** 2
