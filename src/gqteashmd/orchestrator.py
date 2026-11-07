@@ -180,6 +180,12 @@ class Orchestrator:
                 log.info("Stage %s: inputs changed since last attempt; starting over", stage.name)
                 self._reset_stage(state, index, stage)
                 record = None
+            if record is not None and record.status == StageStatus.DONE and not stage_dir.exists():
+                log.warning(
+                    "Stage %s: results directory %s is missing; recomputing", stage.name, stage_dir
+                )
+                state.reset_stage(stage.name)
+                record = None
             if record is not None and record.status == StageStatus.DONE:
                 summary.up_to_date.append(stage.name)
                 upstream_dirs[stage.name] = stage_dir

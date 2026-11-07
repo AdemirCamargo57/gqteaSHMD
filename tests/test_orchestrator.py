@@ -331,3 +331,19 @@ def test_session_removes_stale_temp_files_and_nests(tmp_path, write_input, behav
             pass
         summary = orch.run()
     assert summary.completed
+
+
+def test_a_done_stage_whose_directory_was_deleted_is_recomputed(project, behaviour, caplog):
+    import shutil
+
+    first = _run(project)
+    assert first.completed == ALL
+    orch = Orchestrator(load_config(project), pipeline_ref=FAKE)
+    victim = orch.stages[0]
+    shutil.rmtree(orch.layout.stage_dir(0, victim.name))
+    with caplog.at_level("WARNING", logger="gqteashmd.orchestrator"):
+        second = orch.run()
+    assert victim.name in second.completed
+    assert all(name in second.up_to_date for name in first.completed if name != victim.name)
+    assert orch.layout.stage_dir(0, victim.name).is_dir()
+    assert "is missing; recomputing" in caplog.text
