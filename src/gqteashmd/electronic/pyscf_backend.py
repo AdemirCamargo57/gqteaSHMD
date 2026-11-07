@@ -328,7 +328,7 @@ class PySCFBackend(ElectronicBackend):
                     f"{method} did not converge for all {len(excited)} "
                     f"excited states (td_conv_tol = {self._settings.td_conv_tol})."
                 )
-            for label, omega in zip(excited, td.e, strict=False):
+            for label, omega in zip(excited, td.e[: len(excited)], strict=True):
                 energies[label] = float(mf.e_tot + omega)
             if request.transition_dipoles:
                 try:
@@ -337,7 +337,7 @@ class PySCFBackend(ElectronicBackend):
                     raise ElectronicStructureError(
                         f"{method} transition dipole failed: {type(exc).__name__}: {exc}"
                     ) from exc
-                for label, mu in zip(excited, mus, strict=False):
+                for label, mu in zip(excited, mus, strict=True):
                     dipoles[label] = np.asarray(mu, dtype=float)
         for label in sorted(request.gradients):
             try:
