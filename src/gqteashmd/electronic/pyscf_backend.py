@@ -13,6 +13,7 @@ import re
 import sys
 import time
 import warnings
+import zipfile
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -43,6 +44,7 @@ _LOG = logging.getLogger(__name__)
 
 MIN_PYSCF_VERSION = (2, 6, 0)
 _STATE_FORMAT = 1
+_STATE_ARRAYS = ("coords", "mo_coeff", "density", "alpha", "beta", "coeffs")
 
 # (name, level shift / Eh, damping factor, second-order solver)
 _SCF_LADDER: tuple[tuple[str, float, float, bool], ...] = (
@@ -134,6 +136,7 @@ class PySCFBackend(ElectronicBackend):
         decides whether `overlaps` and `phases` are returned.
         """
         self._validate(request)
+        self._live = None  # a failing compute() must not leave compute_more() on a stale geometry
         started = time.perf_counter()
         previous = self._snapshot
         with self._environment() as stdout:
@@ -156,13 +159,19 @@ class PySCFBackend(ElectronicBackend):
                 mo_coeff = np.asarray(mf.mo_coeff)
                 expansion = pyscf_response.response_expansion(mf, solver, len(self._states) - 1)
                 rung_meta = {"td": outcome_r.rung}
-            expansion = truncate(expansion, self._settings.overlap_norm_kept)
+            try:
+                expansion = truncate(expansion, self._settings.overlap_norm_kept)
+            except (ValueError, MemoryError) as exc:
+                raise wrap_failure("The wavefunction overlap", exc) from exc
             phases = np.ones(len(self._states))
             overlaps = None
             if previous is None:
                 rung_meta["overlaps"] = "no previous geometry"
             else:
-                tracked = track(self._state_overlaps(previous, mol, mo_coeff, expansion))
+                try:
+                    tracked = track(self._state_overlaps(previous, mol, mo_coeff, expansion))
+                except (ValueError, MemoryError) as exc:  # LinAlgError is a ValueError
+                    raise wrap_failure("The wavefunction overlap", exc) from exc
                 phases = tracked.phases
                 expansion = expansion.with_signs(phases)
                 if request.overlaps:
@@ -207,6 +216,11 @@ class PySCFBackend(ElectronicBackend):
             phases=None if overlaps is None else phases,
             meta=meta,
         )
+
+    def reset(self) -> None:
+        """Forget the previous geometry: the next compute() is a first geometry."""
+        self._snapshot = None
+        self._live = None
 
     @property
     def capabilities(self) -> Capabilities:
@@ -253,7 +267,10 @@ class PySCFBackend(ElectronicBackend):
                 "multiplicity": self._molecule.multiplicity,
                 "singlets": s.singlets,
                 "triplets": s.triplets,
-                "casscf": None if s.casscf is None else s.casscf.model_dump(),
+                # only the active space; tolerances do not invalidate a saved state
+                "casscf": None
+                if s.casscf is None
+                else {"ncas": s.casscf.ncas, "nelecas": s.casscf.nelecas},
                 "overlap_norm_kept": s.overlap_norm_kept,
             },
             sort_keys=True,
@@ -275,25 +292,44 @@ class PySCFBackend(ElectronicBackend):
             beta=snap.expansion.beta,
             coeffs=snap.expansion.coeffs,
         )
-        write_bytes_atomic(Path(path), buffer.getvalue())
+        try:
+            write_bytes_atomic(Path(path), buffer.getvalue())
+        except OSError as exc:
+            raise wrap_failure(f"Writing the electronic state {path}", exc) from exc
 
     def load_state(self, path: Path) -> None:
-        with np.load(Path(path), allow_pickle=False) as data:
-            if int(data["format"]) != _STATE_FORMAT:
-                raise ValueError(
-                    f"{path}: unsupported electronic state format {int(data['format'])}."
-                )
-            if str(data["fingerprint"]) != self._fingerprint():
-                raise ValueError(
-                    f"The electronic state in {path} was saved with different settings or a "
-                    "different molecule; it cannot be reused."
-                )
-            self._snapshot = _Snapshot(
-                coords=np.array(data["coords"]),
-                mo_coeff=np.array(data["mo_coeff"]),
-                density=np.array(data["density"]),
-                expansion=DeterminantExpansion(data["alpha"], data["beta"], data["coeffs"]),
+        def unreadable(reason: str) -> ValueError:
+            return ValueError(f"{path} is not a readable gqteashmd electronic state: {reason}")
+
+        body: dict[str, np.ndarray] | None = None
+        try:
+            with np.load(Path(path), allow_pickle=False) as data:
+                version = int(data["format"])
+                fingerprint = str(data["fingerprint"])
+                if version == _STATE_FORMAT:
+                    body = {k: np.array(data[k]) for k in _STATE_ARRAYS}
+        except (OSError, zipfile.BadZipFile, KeyError, ValueError) as exc:
+            raise unreadable(f"{type(exc).__name__}: {exc}") from exc
+        if body is None:
+            raise ValueError(f"{path}: unsupported electronic state format {version}.")
+        if fingerprint != self._fingerprint():
+            raise ValueError(
+                f"The electronic state in {path} was saved with different settings or a "
+                "different molecule; it cannot be reused."
             )
+        natom = len(self._molecule.symbols)
+        if body["coords"].shape != (natom, 3):
+            raise unreadable(f"coords has shape {body['coords'].shape}, expected ({natom}, 3)")
+        if body["mo_coeff"].ndim != 2:
+            raise unreadable(f"mo_coeff must be 2-D, got shape {body['mo_coeff'].shape}")
+        nao = body["mo_coeff"].shape[0]
+        if body["density"].shape != (nao, nao):
+            raise unreadable(f"density has shape {body['density'].shape}, expected ({nao}, {nao})")
+        try:
+            expansion = DeterminantExpansion(body["alpha"], body["beta"], body["coeffs"])
+        except ValueError as exc:
+            raise unreadable(str(exc)) from exc
+        self._snapshot = _Snapshot(body["coords"], body["mo_coeff"], body["density"], expansion)
         self._live = None
 
     # ------------------------------------------------------------------ setup

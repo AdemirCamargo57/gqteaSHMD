@@ -25,7 +25,8 @@ class MoleculeSpec:
 
 @dataclass(frozen=True)
 class Capabilities:
-    """What a backend can compute (strategy §2.3)."""
+    """What a backend can compute (strategy §2.3). Fields may be added later, always with
+    defaults, so existing backends keep working."""
 
     gradients: bool
     nacs: bool  # analytic nonadiabatic coupling vectors d_IJ = <I|dJ/dR>
@@ -38,8 +39,9 @@ class Request:
     """One electronic-structure evaluation at a geometry (coordinates in bohr).
 
     nacs: pairs (I, J) with I < J; the result holds d_IJ = <Psi_I|dPsi_J/dR> (1/bohr).
-    overlaps: return the overlaps with the previous geometry and the phases in the result. The
-    backend tracks and applies the phases whenever it holds a previous geometry, requested or not.
+    overlaps: return the overlaps with the previous geometry and the phases in the result. Phase
+    continuity is the job of the backend: whenever it holds a previous geometry and overlaps are
+    available, it tracks the states and applies the phases, requested or not.
     """
 
     coords_bohr: np.ndarray
@@ -124,6 +126,10 @@ class ElectronicResult:
 
 
 class ElectronicBackend(ABC):
+    """One backend object serves one trajectory: it remembers the previous geometry for guesses,
+    state tracking and phase continuity. Call reset() (or use a new backend) before computing an
+    unrelated geometry."""
+
     @property
     @abstractmethod
     def states(self) -> tuple[StateLabel, ...]: ...
@@ -141,11 +147,23 @@ class ElectronicBackend(ABC):
         gradients: frozenset[StateLabel] = frozenset(),
         nacs: frozenset[tuple[StateLabel, StateLabel]] = frozenset(),
     ) -> ElectronicResult:
-        """Extra gradients/NACs at the geometry of the last compute() (e.g. after a hop)."""
+        """Extra gradients/NACs at the geometry of the last compute() (e.g. after a hop).
+
+        Raises ValueError when there is no successful preceding compute() (a failed compute()
+        discards the previous one).
+        """
+
+    @abstractmethod
+    def reset(self) -> None:
+        """Forget the previous geometry: the next compute() is a first geometry (no orbital
+        guess, no projection, no state tracking)."""
 
     @abstractmethod
     def save_state(self, path: Path) -> None:
-        """Write the reference wavefunction state the next compute() depends on."""
+        """Write the reference wavefunction state the next compute() depends on.
+
+        Writes exactly `path`; a backend may not write sibling files.
+        """
 
     @abstractmethod
     def load_state(self, path: Path) -> None:

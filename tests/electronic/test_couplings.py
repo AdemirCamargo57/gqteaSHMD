@@ -181,3 +181,72 @@ def test_compute_more_writes_to_the_log_for_casscf(
     size = log.stat().st_size
     backend.compute_more(gradients=frozenset({S1}), nacs=frozenset({(S0, S1)}))
     assert log.stat().st_size > size
+
+
+def test_a_failed_compute_leaves_no_live_objects_for_compute_more(
+    ethylene_symbols, ethylene_bohr, make_settings, monkeypatch
+):
+    backend = PySCFBackend(MoleculeSpec(tuple(ethylene_symbols)), _tda(make_settings))
+    backend.compute(Request(ethylene_bohr))
+    assert backend._live is not None
+
+    def boom(self, *args, **kwargs):
+        raise RuntimeError("gradient path failed")
+
+    monkeypatch.setattr(PySCFBackend, "_derivatives", boom)
+    with pytest.raises(RuntimeError, match="gradient path failed"):
+        backend.compute(Request(_step(ethylene_bohr), gradients=frozenset({S1})))
+    with pytest.raises(ValueError, match="needs a preceding"):
+        backend.compute_more(gradients=frozenset({S1}))
+
+
+def test_reset_makes_the_next_compute_a_first_geometry(
+    ethylene_symbols, ethylene_bohr, make_settings, monkeypatch
+):
+    from pyscf import mcscf
+
+    calls = []
+    original = mcscf.project_init_guess
+    monkeypatch.setattr(
+        mcscf, "project_init_guess", lambda *a, **k: calls.append(1) or original(*a, **k)
+    )
+    backend = PySCFBackend(MoleculeSpec(tuple(ethylene_symbols)), make_settings(basis="sto-3g"))
+    backend.compute(Request(ethylene_bohr))
+    backend.compute(Request(_step(ethylene_bohr), overlaps=True))
+    assert calls == [1]
+    backend.reset()
+    assert backend._snapshot is None and backend._live is None
+    result = backend.compute(Request(_step(ethylene_bohr, seed=3), overlaps=True))
+    assert calls == [1]  # no projection from the forgotten geometry
+    assert result.meta["overlaps"] == "no previous geometry" and result.overlaps is None
+
+
+def test_overlap_failures_are_electronic_structure_errors(
+    ethylene_symbols, ethylene_bohr, make_settings, monkeypatch
+):
+    from gqteashmd.electronic import pyscf_backend
+    from gqteashmd.errors import ElectronicStructureError
+
+    backend = PySCFBackend(MoleculeSpec(tuple(ethylene_symbols)), _tda(make_settings))
+    backend.compute(Request(ethylene_bohr))
+    request = Request(_step(ethylene_bohr), overlaps=True)
+
+    def failing(exc):
+        def raiser(*args, **kwargs):
+            raise exc
+
+        return raiser
+
+    for exc in (ValueError("bad shapes"), np.linalg.LinAlgError("singular")):
+        monkeypatch.setattr(pyscf_backend, "state_overlaps", failing(exc))
+        with pytest.raises(ElectronicStructureError, match="wavefunction overlap failed") as info:
+            backend.compute(request)
+        assert info.value.retryable is False
+    monkeypatch.setattr(pyscf_backend, "state_overlaps", failing(MemoryError("estimated 9 GiB")))
+    with pytest.raises(ElectronicStructureError, match="estimated 9 GiB") as info:
+        backend.compute(request)
+    assert info.value.retryable is True
+    monkeypatch.undo()
+    monkeypatch.setattr(pyscf_backend, "truncate", failing(ValueError("zero coefficients")))
+    with pytest.raises(ElectronicStructureError, match="wavefunction overlap failed"):
+        backend.compute(request)

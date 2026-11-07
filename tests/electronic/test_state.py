@@ -129,3 +129,94 @@ def test_state_errors(tmp_path, ethylene_symbols, ethylene_bohr, make_settings):
     with pytest.raises(ValueError, match="different settings"):
         other.load_state(tmp_path / "s.npz")
     assert sorted(p.name for p in tmp_path.iterdir()) == ["s.npz"]  # atomic: no temp file left
+
+
+def _tda_backend(ethylene_symbols, make_settings, **fields):
+    settings = make_settings(
+        method="tda", basis="sto-3g", functional="b3lyp", singlets=3, casscf=None, **fields
+    )
+    return PySCFBackend(MoleculeSpec(tuple(ethylene_symbols)), settings)
+
+
+def _saved_state(tmp_path, ethylene_symbols, ethylene_bohr, make_settings):
+    backend = _tda_backend(ethylene_symbols, make_settings)
+    backend.compute(Request(ethylene_bohr))
+    path = tmp_path / "good.npz"
+    backend.save_state(path)
+    return path
+
+
+def _rewrite(path, out, **changes):
+    with np.load(path) as data:
+        fields = {k: np.array(data[k]) for k in data.files}
+    for key, value in changes.items():
+        if value is None:
+            del fields[key]
+        else:
+            fields[key] = value
+    np.savez(out, **fields)
+
+
+def test_unreadable_state_files_raise_a_clear_value_error(
+    tmp_path, ethylene_symbols, ethylene_bohr, make_settings
+):
+    good = _saved_state(tmp_path, ethylene_symbols, ethylene_bohr, make_settings)
+    garbage = tmp_path / "garbage.npz"
+    garbage.write_bytes(b"this is not a zip archive")
+    missing_field = tmp_path / "missing.npz"
+    _rewrite(good, missing_field, density=None)
+    bad_coords = tmp_path / "coords.npz"
+    _rewrite(good, bad_coords, coords=np.zeros((3, 3)))
+    bad_mo = tmp_path / "mo.npz"
+    _rewrite(good, bad_mo, mo_coeff=np.zeros(4))
+    bad_density = tmp_path / "density.npz"
+    _rewrite(good, bad_density, density=np.zeros((3, 4)))
+    for path in (tmp_path / "absent.npz", garbage, missing_field, bad_coords, bad_mo, bad_density):
+        backend = _tda_backend(ethylene_symbols, make_settings)
+        with pytest.raises(ValueError, match="is not a readable gqteashmd electronic state"):
+            backend.load_state(path)
+        assert backend._snapshot is None  # a failed load leaves the backend untouched
+
+
+def test_wrong_state_format_version_is_rejected(
+    tmp_path, ethylene_symbols, ethylene_bohr, make_settings
+):
+    good = _saved_state(tmp_path, ethylene_symbols, ethylene_bohr, make_settings)
+    future = tmp_path / "future.npz"
+    _rewrite(good, future, format=np.array(99))
+    with pytest.raises(ValueError, match="unsupported electronic state format 99"):
+        _tda_backend(ethylene_symbols, make_settings).load_state(future)
+
+
+def test_fingerprint_ignores_casscf_tolerances_but_not_the_active_space(
+    tmp_path, ethylene_symbols, ethylene_bohr, make_settings
+):
+    spec = MoleculeSpec(tuple(ethylene_symbols))
+    base = make_settings(basis="sto-3g")
+    backend = PySCFBackend(spec, base)
+    backend.compute(Request(ethylene_bohr))
+    path = tmp_path / "cas.npz"
+    backend.save_state(path)
+    tighter = make_settings(basis="sto-3g", casscf={"ncas": 2, "nelecas": 2, "conv_tol": 1e-8})
+    PySCFBackend(spec, tighter).load_state(path)  # tolerances do not invalidate a state
+    wider = make_settings(basis="sto-3g", casscf={"ncas": 3, "nelecas": 2})
+    with pytest.raises(ValueError, match="different settings"):
+        PySCFBackend(spec, wider).load_state(path)
+
+
+def test_save_state_write_failure_is_a_retryable_electronic_error(
+    tmp_path, ethylene_symbols, ethylene_bohr, make_settings, monkeypatch
+):
+    from gqteashmd.electronic import pyscf_backend
+    from gqteashmd.errors import ElectronicStructureError
+
+    backend = _tda_backend(ethylene_symbols, make_settings)
+    backend.compute(Request(ethylene_bohr))
+
+    def full_disk(path, data):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(pyscf_backend, "write_bytes_atomic", full_disk)
+    with pytest.raises(ElectronicStructureError, match="No space left") as info:
+        backend.save_state(tmp_path / "s.npz")
+    assert info.value.retryable is True

@@ -16,6 +16,7 @@ def make_backend(
     log_file: Path | None = None,
     threads: int | None = None,
     memory_mb: int | None = None,
+    scratch_dir: Path | None = None,
 ) -> ElectronicBackend:
     if config.electronic is None:
         raise ConfigError(
@@ -25,5 +26,10 @@ def make_backend(
     from gqteashmd.electronic.pyscf_backend import PySCFBackend
 
     return PySCFBackend(
-        molecule, config.electronic, log_file=log_file, threads=threads, memory_mb=memory_mb
+        molecule,
+        config.electronic,
+        log_file=log_file,
+        threads=threads,
+        memory_mb=memory_mb,
+        scratch_dir=scratch_dir,
     )
