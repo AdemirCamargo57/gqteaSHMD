@@ -1,4 +1,4 @@
-"""Input file schema (core sections; P2 adds electronic, sampling, dynamics, ...)."""
+"""Input file schema."""
 
 from __future__ import annotations
 
@@ -113,6 +113,61 @@ class WorkflowSection(_Section):
     pause_after: list[str] = Field(default_factory=list)
 
 
+class CasscfSection(_Section):
+    ncas: int = Field(ge=1)
+    nelecas: int = Field(ge=1)
+    conv_tol: float = Field(default=1e-10, gt=0)
+    conv_tol_grad: float = Field(default=1e-6, gt=0)
+
+    @model_validator(mode="after")
+    def _singlet_active_space(self) -> CasscfSection:
+        if self.nelecas % 2:
+            raise ValueError("electronic.casscf.nelecas must be even for singlet states")
+        if self.nelecas > 2 * self.ncas:
+            raise ValueError(
+                f"electronic.casscf.nelecas = {self.nelecas} must be at most 2 × ncas = "
+                f"{2 * self.ncas}"
+            )
+        return self
+
+
+class ElectronicSection(_Section):
+    method: Literal["casscf", "tda", "tddft"]
+    basis: str = Field(min_length=1)
+    functional: str | None = None
+    singlets: int = Field(ge=1)
+    triplets: int = Field(default=0, ge=0)
+    grid_level: int = Field(default=3, ge=0, le=9)
+    scf_conv_tol: float = Field(default=1e-10, gt=0)
+    scf_max_cycle: int = Field(default=100, ge=1)
+    td_conv_tol: float = Field(default=1e-8, gt=0)
+    casscf: CasscfSection | None = None
+
+    @model_validator(mode="after")
+    def _method_options(self) -> ElectronicSection:
+        if self.triplets:
+            raise ValueError(
+                "electronic.triplets > 0 is not supported yet (planned together with "
+                "intersystem crossing); set triplets = 0"
+            )
+        if self.method == "casscf":
+            if self.casscf is None:
+                raise ValueError(
+                    "method = 'casscf' needs an [electronic.casscf] table with ncas and nelecas"
+                )
+            if self.functional is not None:
+                raise ValueError("electronic.functional is not used by method = 'casscf'")
+        else:
+            if self.functional is None:
+                raise ValueError(
+                    f"electronic.functional is required for method = '{self.method}' "
+                    "(use 'hf' for CIS/TDHF)"
+                )
+            if self.casscf is not None:
+                raise ValueError("[electronic.casscf] is only used by method = 'casscf'")
+        return self
+
+
 class ShmdConfig(_Section):
     schema_version: Literal[1] = 1
     project: ProjectSection
@@ -120,3 +175,13 @@ class ShmdConfig(_Section):
     resources: ResourcesSection
     execution: ExecutionSection = Field(default_factory=ExecutionSection)
     workflow: WorkflowSection = Field(default_factory=WorkflowSection)
+    electronic: ElectronicSection | None = None
+
+    @model_validator(mode="after")
+    def _closed_shell_for_electronic_structure(self) -> ShmdConfig:
+        if self.electronic is not None and self.molecule.multiplicity != 1:
+            raise ValueError(
+                "the PySCF backend supports closed-shell singlet molecules only "
+                "(molecule.multiplicity = 1)"
+            )
+        return self

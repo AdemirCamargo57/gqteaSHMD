@@ -54,6 +54,15 @@ min_free_disk_mb = 1000      # refuse to start with less free disk space (MB)
 
 [workflow]
 pause_after = []              # stage names to pause after for review, e.g. ["selection"]
+
+# Electronic structure (needed by the quantum-chemistry stages and `gqteashmd single-point`):
+# [electronic]
+# method = "casscf"             # "casscf" | "tda" | "tddft"
+# basis = "6-31g*"
+# singlets = 2                  # number of singlet states INCLUDING S0
+# [electronic.casscf]
+# ncas = 2                      # active orbitals
+# nelecas = 2                   # active electrons
 """
 
 
