@@ -6,6 +6,8 @@ Exit codes: 0 ok, 1 generic, 2 configuration, 3 project/state, 4 stage failed,
 
 from __future__ import annotations
 
+from typing import Any
+
 
 class ShmdError(Exception):
     """Base class for all errors raised deliberately by gqteashmd."""
@@ -41,6 +43,13 @@ class TaskError(ShmdError):
     def __init__(self, message: str, *, retryable: bool) -> None:
         super().__init__(message)
         self.retryable = retryable
+
+    def __reduce__(self) -> tuple[Any, tuple[Any, ...]]:
+        return (_rebuild_task_error, (type(self), str(self), self.retryable))
+
+
+def _rebuild_task_error(cls: type[TaskError], message: str, retryable: bool) -> TaskError:
+    return cls(message, retryable=retryable)
 
 
 class ElectronicStructureError(TaskError):

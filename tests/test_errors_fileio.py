@@ -77,3 +77,18 @@ def test_failed_atomic_write_leaves_no_temp_file(tmp_path, monkeypatch):
     with pytest.raises(OSError, match="No space"):
         write_bytes_atomic(target, b"data")
     assert list(tmp_path.iterdir()) == []
+
+
+def test_task_errors_survive_pickling():
+    import pickle
+
+    from gqteashmd.errors import ElectronicStructureError, TaskError
+
+    for err in (
+        TaskError("boom", retryable=True),
+        ElectronicStructureError("scf", retryable=True),
+        ElectronicStructureError("spin"),
+    ):
+        copy = pickle.loads(pickle.dumps(err))
+        assert type(copy) is type(err) and str(copy) == str(err)
+        assert copy.retryable == err.retryable

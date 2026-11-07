@@ -95,3 +95,40 @@ def test_worker_unexpected_exception_traceback_goes_to_stderr(make_task, capsys)
     err = capsys.readouterr().err
     assert "RuntimeError: unexpected fake error" in err
     assert "Traceback" in err
+
+
+def test_unreadable_task_file_gives_an_error_result(tmp_path):
+    task_dir = tmp_path / "tasks" / "t0"
+    task_dir.mkdir(parents=True)
+    task_file = task_dir / "task.json"
+    task_file.write_text("{ not json")
+    assert run_task_file(task_file) == 1
+    result = json.loads((task_dir / "result.json").read_text())
+    assert result["status"] == "error" and result["error_type"] == "ProjectError"
+    assert result["retryable"] is False and "Cannot read task file" in result["message"]
+
+
+def test_task_file_missing_keys_gives_an_error_result(tmp_path):
+    task_file = tmp_path / "task.json"
+    task_file.write_text("{}")
+    assert run_task_file(task_file) == 1
+    assert json.loads((tmp_path / "result.json").read_text())["error_type"] == "ProjectError"
+
+
+@pytest.mark.parametrize("kind", ["circular", "set"])
+def test_unserialisable_result_gives_an_error_result(make_task, monkeypatch, kind):
+    from gqteashmd.testing.fake_stages import FakeStage
+
+    def bad_result(self, ctx, task, task_dir):
+        if kind == "set":
+            return {"x": {1, 2}}
+        d = {}
+        d["self"] = d
+        return d
+
+    monkeypatch.setattr(FakeStage, "run_task", bad_result)
+    task_dir = make_task()
+    assert run_task_file(task_dir / TASK_FILE) == 1
+    result = read_result(task_dir)
+    assert result["status"] == "error" and result["retryable"] is False
+    assert "task result is not JSON-serializable" in result["message"]

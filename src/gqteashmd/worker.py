@@ -67,8 +67,17 @@ def _error(exc: BaseException, *, retryable: bool, with_traceback: bool) -> dict
 
 
 def run_task_file(task_file: Path) -> int:
-    spec = read_json(task_file)
-    task_dir = Path(spec["task_dir"])
+    try:
+        spec = read_json(task_file)
+        task_dir = Path(spec["task_dir"])
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        message = f"Cannot read task file {task_file}: {type(exc).__name__}: {exc}"
+        print(message, file=sys.stderr)
+        write_json_atomic(
+            Path(task_file).parent / RESULT_FILE,
+            _error(ProjectError(message), retryable=False, with_traceback=False),
+        )
+        return 1
     try:
         loaded = load_snapshot(Path(spec["config_snapshot"]))
         stages = {s.name: s for s in import_pipeline(spec["pipeline_ref"])(loaded.config)}
@@ -101,7 +110,7 @@ def run_task_file(task_file: Path) -> int:
         return 1
     try:
         write_json_atomic(task_dir / RESULT_FILE, {"status": "ok", "result": result})
-    except TypeError as exc:
+    except (TypeError, ValueError) as exc:
         print(f"TypeError: task result is not JSON-serializable: {exc}", file=sys.stderr)
         write_json_atomic(
             task_dir / RESULT_FILE,
