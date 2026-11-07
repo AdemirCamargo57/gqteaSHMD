@@ -58,7 +58,7 @@ cli.py ─► orchestrator.Orchestrator ─► execution.local.LocalExecutor (on
   - `plan(ctx)` runs in the controller and returns `TaskSpec` objects deterministically.
   - `run_task(ctx, task, task_dir)` runs in a worker subprocess. It must be idempotent, write only in `task_dir`, and return a small JSON-serialisable dict.
   - `finalize(ctx, results)` runs in the controller, writes the stage artifacts and raises `StageFailedError` if checks fail.
-  - Stage attributes: `name`, `version`, `depends_on`, `config_sections`, `max_failed_fraction`, `enabled(config)`.
+  - Stage attributes: `name`, `version`, `depends_on`, `config_sections`, `required_modules` (checked by preflight), `max_failed_fraction`, `enabled(config)`.
 - **Worker protocol** (`worker.py`): the worker reads `task.json` and writes `result.json` atomically, either `{"status": "ok", "result": ...}` or `{"status": "error", "error_type", "message", "retryable", "traceback"?}`. Errors are also written to stderr, which goes to `worker.log`. A worker that exits without `result.json` is treated as a crash, which is retryable. Workers read the config snapshot `.gqteashmd/config.json` and never the user's input file.
 - **Executor** (`execution/local.py`):
   - one subprocess per task, each in its own session;
@@ -75,14 +75,14 @@ cli.py ─► orchestrator.Orchestrator ─► execution.local.LocalExecutor (on
   - **Stage failure:** a stage fails when `failed/total > max_failed_fraction`. Any exception inside a stage marks it FAILED.
   - **Restart:** tasks left RUNNING by a dead controller are reconciled. A task with an ok `result.json` becomes DONE; otherwise its orphan is killed (verified via `/proc/<pid>/cmdline`) and the task is requeued.
   - **`--rerun-from`** is applied once per orchestrator (`self.rerun_from` is cleared after use). The hint printed for a stale stage is shell-quoted. A fingerprint input that is not JSON-serializable raises `ProjectError`.
-  - **Pause:** after a stage listed in `workflow.pause_after` completes **in this run** and is not the last stage, `RunSummary.paused_after` is set, the loop stops and the CLI prints a message and exits 5 (`EXIT_STOPPED`). A rerun continues, because that stage is then up to date. A skipped or up-to-date stage never pauses. Unknown names in `pause_after` and in `[resources.stages]` are a `ConfigError` raised in `Orchestrator.__init__`.
-- **Config** (`config/schema.py`): `[resources]` requires `total_cores` and `total_memory_mb`. A model validator checks `max_parallel_tasks × threads_per_task ≤ total_cores` and `max_parallel_tasks × memory_mb_per_task ≤ total_memory_mb` for the global values and for every stage override (merged with the global values). `execution.min_free_disk_mb` (default 1000) and `[workflow] pause_after` also live here. `loader.py` expands `~` (an unknown `~user` is a `ConfigError`) and resolves relative paths against the input file's directory. The later input sections are not in the schema yet (they arrive with P3–P8).
+  - **Pause:** after a stage listed in `workflow.pause_after` completes **in this run** and is not the last stage, `RunSummary.paused_after` is set, the loop stops and the CLI prints a message and exits 5 (`EXIT_STOPPED`). A rerun continues, because that stage is then up to date. A skipped or up-to-date stage never pauses. Unknown names in `pause_after` and in `[resources.stages]` are a `ConfigError` raised by `check_stage_names` (`stages/pipeline.py`), which both `Orchestrator.__init__` and `validate` call.
+- **Config** (`config/schema.py`): `[resources]` requires `total_cores` and `total_memory_mb`. A model validator checks `max_parallel_tasks × threads_per_task ≤ total_cores` and `max_parallel_tasks × memory_mb_per_task ≤ total_memory_mb` for the global values and for every stage override (merged with the global values); the message shows the factors (`3 × 2 = 6 exceeds total_cores = 4`). The keys of `[resources.stages]` must be safe stage names (`is_safe_name`). `execution.min_free_disk_mb` (default 1000) and `[workflow] pause_after` also live here. `loader.py` expands `~` (an unknown `~user` is a `ConfigError`) and resolves relative paths against the input file's directory. The later input sections are not in the schema yet (they arrive with P3–P8).
 - **Preflight** (`preflight.py:run_preflight`): runs from `Orchestrator.preflight()` (called by `cli._cmd_run`; the result is cached, so `run()` does not repeat it), **before** `layout.ensure()` creates anything.
-  - It raises `ConfigError` for: a project directory on a Windows drive in WSL (`/mnt/<letter>/`; `/mnt/data` is fine) or under a OneDrive folder; free disk below `min_free_disk_mb` or a failed disk query; a missing `required_modules` entry of an enabled stage.
-  - It only returns a **warning** (D17) when `total_cores` or `total_memory_mb` exceeds the detected machine (`detect_machine()`: `sched_getaffinity` and `/proc/meminfo`). The CLI logs warnings after logging is configured, so they reach the console and the log file.
-  - The location check is on the path text only; a symlink is not followed.
-- **Provenance** (`project/provenance.py`): each `run` that passes preflight appends one record to `.gqteashmd/provenance.json` (`started_at`, `gqteashmd`, `git_commit`, `git_dirty`, `python`, `platform`, `hostname`, `cpu_count`, `packages`). A damaged file with invalid JSON is replaced by a fresh list; non-UTF-8 bytes are not handled (see limitations).
-- **State** (`project/state.py`): `StateStore(db_path, *, readonly=False)`. Any `sqlite3.DatabaseError` (including a db path that is a directory) becomes `ProjectError` ("unreadable or corrupt", exit 3). `status` opens the db read-only (`mode=ro`) and never writes.
+  - It raises `ConfigError` for: a project directory on a Windows drive in WSL (`/mnt/<letter>/`; `/mnt/data` is fine) or under a OneDrive folder; a project directory that exists as a file, or whose nearest existing parent is not a writable directory; free disk below `min_free_disk_mb` or a failed disk query (`min_free_disk_mb = 0` skips the query); a missing `required_modules` entry of an enabled stage.
+  - It only returns a **warning** (D17) when `total_cores` or `total_memory_mb` exceeds the detected machine (`detect_machine()`: `sched_getaffinity` and `/proc/meminfo`). The CLI logs warnings after logging is configured, so they reach the console and the log file. As a backstop, `cli._cmd_run` turns an `OSError` from `layout.ensure()` or `configure_logging` into a `ConfigError`.
+  - The location check is on the path text. A relative path is resolved (symlinks followed) against the input file's directory; an absolute path is taken as written, so a symlink in it is not followed.
+- **Provenance** (`project/provenance.py`): each `run` appends one record to `.gqteashmd/provenance.json`, once the controller holds the lock and has opened `state.db` (so a run later refused by `StaleStageError` has a record; a run refused by preflight, the lock or a corrupt `state.db` has none) (`started_at`, `gqteashmd`, `git_commit`, `git_dirty`, `python`, `platform`, `hostname`, `cpu_count`, `packages`). `git_commit`/`git_dirty` are `null` unless gqteashmd runs from a git checkout (an editable install). A damaged file (invalid JSON, non-UTF-8 bytes, or `runs` not a list) is replaced by a fresh list.
+- **State** (`project/state.py`): `StateStore(db_path, *, readonly=False)`. A failure to open or read the database at start-up (a `sqlite3.DatabaseError`, including a db path that is a directory) becomes `ProjectError` ("unreadable or corrupt", exit 3; the advice is to move the project's `.gqteashmd` directory aside, and stage results are then recomputed). Other sqlite errors at query time are not converted (P3). `status` opens the db read-only (`mode=ro`) and never writes.
 - **Lock** (`project/lock.py`): `ProjectLock` tries `flock` twice, 0.2 s apart (`locked_by` probes the same lock briefly). The error reads "pid unknown" when the holder's PID cannot be read.
 - **Logging** (`logging_setup.py`): `configure_logging` is called by `run` after the project directory exists; `close_logging` (in `cli.main`'s `finally`) closes all handlers and returns to a `NullHandler`. Records logged with `extra=FILE_ONLY` go to `logs/gqteashmd.log` but not to the console. `cli.main` uses it for errors and tracebacks, so each error is printed **once** on stderr (`gqteashmd: error: <message>`) with no traceback.
 - **Errors** (`errors.py`):
@@ -90,7 +90,7 @@ cli.py ─► orchestrator.Orchestrator ─► execution.local.LocalExecutor (on
   - `TaskError(msg, retryable=...)` is raised inside tasks.
   - Every error reaches the user as `gqteashmd: error: <message>`.
   - `.` and `..` are not safe stage or task names (`is_safe_name`). The XYZ parser rejects non-finite coordinates; `validate` also requires the geometry to be a regular file.
-- **Testing seam:** `gqteashmd.testing.fake_stages` provides fake stages whose behaviour is set by the environment variable `GQTEASHMD_FAKE_BEHAVIOUR` (JSON). The keys are `sleep`, `fail`, `unexpected`, `crash_once`, `retryable_once`, `plan_raises` and `skip_optimize`. The CLI's hidden `--pipeline` option selects them in tests.
+- **Testing seam:** `gqteashmd.testing.fake_stages` provides fake stages whose behaviour is set by the environment variable `GQTEASHMD_FAKE_BEHAVIOUR` (JSON). The keys are `sleep`, `fail`, `unexpected`, `crash_once`, `retryable_once`, `plan_raises`, `bad_fingerprint`, `requires` (stage name to required modules) and `skip_optimize`. The CLI's hidden `--pipeline` option selects them in tests.
 - **The production pipeline** (`stages/registry.py:default_pipeline`) contains only `prepare` today.
 
 ## Key decisions (full list in master plan §10)
@@ -104,7 +104,7 @@ cli.py ─► orchestrator.Orchestrator ─► execution.local.LocalExecutor (on
 
 ## Current status (2026-11-06)
 - **P1 — foundation & orchestrator: DONE.** It is merged into local `main` at `e4a9319` (111 tests passing) and not pushed.
-- **P2 — input schema & preflight: DONE, on branch `feat/p2-input-preflight`, NOT yet merged** (owner decides the merge; `main` is not pushed). Full suite: 168 tests passing (`pytest -W error`), ruff and mypy clean.
+- **P2 — input schema & preflight: DONE, on branch `feat/p2-input-preflight`, NOT yet merged** (owner decides the merge; `main` is not pushed). Full suite: 184 tests passing (`pytest -W error`), ruff and mypy clean.
 - **Implemented features:**
   - the CLI commands `init`, `validate`, `run [--rerun-from]`, `status` and `stop`;
   - the input sections `[project]`, `[molecule]`, `[resources]` (with required `total_cores` and `total_memory_mb`, and `[resources.stages.<name>]` overrides), `[execution]` (with `min_free_disk_mb`) and `[workflow]` (`pause_after`);
@@ -116,9 +116,8 @@ cli.py ─► orchestrator.Orchestrator ─► execution.local.LocalExecutor (on
 ## Known limitations
 1. **Only `prepare` exists.** There is no quantum chemistry yet, so per-stage resources and `pause_after` have no visible effect (the last stage never pauses).
 2. **The project-folder check is a path-text check.** An absolute path that is a symlink into a Windows drive or a OneDrive folder is not detected (relative paths are resolved, so they are).
-3. **A corrupt `provenance.json` with non-UTF-8 bytes would stop a run** (invalid JSON is tolerated and replaced). gqteashmd writes that file itself, so this is unlikely.
-4. **CI has never run**, because `main` has not been pushed.
-5. **Other deferred items** are listed in the P1 and P2 ledgers under `.superpowers/sdd/` (git-ignored, local). The P2 plan's "Scope rulings" assign them: refused runs still writing state, and optional-stage handling (P4); the worker orphan window between `Popen` and `on_start` (P7b); SIGKILL to the group after the leader exits, and an unreadable `task.json` (P3); `.tmp` cleanup, a DONE stage directory deleted by hand, and `ensure()`/logging set up before the lock (no sub-project assigned).
+3. **CI has never run**, because `main` has not been pushed.
+4. **Other deferred items** are listed in the P1 and P2 ledgers under `.superpowers/sdd/` (git-ignored, local). The P2 plan's "Scope rulings" assign them: refused runs still writing state, and optional-stage handling (P4); the worker orphan window between `Popen` and `on_start` (P7b); SIGKILL to the group after the leader exits, and an unreadable `task.json` (P3); `.tmp` cleanup, a DONE stage directory deleted by hand, and `ensure()`/logging set up before the lock (P3 hardening sweep, together with the other P3 items recorded in the P2 ledger).
 
 ## Remaining work (master plan §9)
 **P3 is next.**
@@ -126,7 +125,7 @@ cli.py ─► orchestrator.Orchestrator ─► execution.local.LocalExecutor (on
 | ID | Sub-project | Notes |
 |---|---|---|
 | P2 | Input schema & preflight | **DONE** on `feat/p2-input-preflight` (not merged); see Status |
-| P3 | PySCF electronic-structure layer | **Next.** Adds `[electronic]` and state labels. Backend contract (strategy §2.3); SCF/TDA/TDDFT/SA-CASSCF energies, gradients, NACs, Hessian; ethylene validation |
+| P3 | PySCF electronic-structure layer | **Next.** Adds `[electronic]` and state labels; includes the hardening sweep of deferred items (limitation 4) and the PySCF/geomeTRIC version and writable-scratch preflight checks. Backend contract (strategy §2.3); SCF/TDA/TDDFT/SA-CASSCF energies, gradients, NACs, Hessian; ethylene validation |
 | P4 | `optimize` + `frequencies` stages | geomeTRIC; own harmonic analysis; Molden output |
 | P5 | `sampling` stage | Own Wigner sampler; compare with SHARC `wigner.py` |
 | P6 | `excitations` + `selection` stages | Spectrum and initial-state selection |

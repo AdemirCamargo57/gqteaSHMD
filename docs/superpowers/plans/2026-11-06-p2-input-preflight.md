@@ -47,7 +47,7 @@
   - the worker orphan window between Popen and on_start: P7b;
   - SIGKILL to the group after the leader exits: P3;
   - an unreadable `task.json`: P3;
-  - `.tmp` cleanup, a DONE stage directory deleted by hand, and `ensure()`/logging set up before the lock: no sub-project assigned.
+  - `.tmp` cleanup, a DONE stage directory deleted by hand, and `ensure()`/logging set up before the lock: P3 (hardening sweep).
 
 ## File Structure
 

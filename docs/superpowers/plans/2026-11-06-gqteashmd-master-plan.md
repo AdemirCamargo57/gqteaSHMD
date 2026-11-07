@@ -221,8 +221,8 @@ Task:   PENDING ─► RUNNING ─► DONE
 | Layer | When | Examples | Implemented in |
 |---|---|---|---|
 | Syntax and types | `load_config` | Unknown key, wrong type, value out of range | P1 (core sections), P2 (all sections) |
-| Cross-field rules | `load_config` (pydantic model validators) | Selected states exist in `electronic.states`; `n_trajectories ≥ 1`; `dt_fs < tmax_fs`; CASSCF needs `ncas`/`nelecas` | P2 |
-| Environment preflight | Start of `gqteashmd run`, before any stage | PySCF importable with a supported version; geomeTRIC present if `optimize` is enabled; **user-given hardware** (`resources.total_cores`, `resources.total_memory_mb`) bounds the task settings (`max_parallel × threads ≤ total_cores`, `max_parallel × memory ≤ total_memory_mb`; violation = `ConfigError`); the user-given values are compared with the detected cores/RAM and a **warning** (not an error) is printed if they exceed the machine (D17); free disk space; scratch directory writable; project directory not on `/mnt/c` | P2 |
+| Cross-field rules | `load_config` (pydantic model validators) | Selected states exist in `electronic.states`; `n_trajectories ≥ 1`; `dt_fs < tmax_fs`; CASSCF needs `ncas`/`nelecas` | P2 (resource fit rules); rules for the later sections arrive with their sections (P3 onward) |
+| Environment preflight | Start of `gqteashmd run`, before any stage | PySCF importable with a supported version; geomeTRIC present if `optimize` is enabled; **user-given hardware** (`resources.total_cores`, `resources.total_memory_mb`) bounds the task settings (`max_parallel × threads ≤ total_cores`, `max_parallel × memory ≤ total_memory_mb`; violation = `ConfigError`); the user-given values are compared with the detected cores/RAM and a **warning** (not an error) is printed if they exceed the machine (D17); free disk space; scratch directory writable; project directory not on `/mnt/c` | P2 (hardware fit and warning, free disk, project location, writable project location, required modules); P3 (PySCF version, geomeTRIC, writable scratch) |
 | Physics preflight | `prepare` stage | xyz syntax, known elements, charge/multiplicity consistent with the electron count | P1 |
 | Smoke calculation | First task of `optimize`/`frequencies` (P3/P4) | SCF converges at the start geometry with the requested method/basis | P3 |
 
@@ -433,7 +433,7 @@ Each sub-project produces working, tested software and gets its own detailed pla
 **Critical path (one developer):** P1 → P2 → P3 → P4 → P5 → P6 → (P7a) → P7b → P8 ≈ 9–12 months. With a second developer on P7a from month 2, about 7–9 months. ISC (strategy phase 6) and further backends (strategy phase 7) follow afterwards.
 
 **Milestones:**
-- **M1** (end of P2): `gqteashmd run` validates a full input file and runs `prepare`; CI green on Oracle Linux 9.
+- **M1** (end of P2): `gqteashmd run` validates the core input file (project, molecule, resources, execution, workflow) and runs `prepare`; CI green on Oracle Linux 9.
 - **M2** (end of P5): from one input, the program produces optimized geometry → frequencies → Wigner samples, matching SHARC `wigner.py` statistics.
 - **M3** (end of P6): the full front half of the workflow runs unattended, with a review pause before dynamics.
 - **M4** (end of P8): first complete unattended study (input → populations) on a small molecule, kill-and-resume tested.
@@ -479,15 +479,15 @@ Each sub-project produces working, tested software and gets its own detailed pla
 | O8 | Trajectory termination criteria (energy drift limit, stop after N fs in S0, S1/S0 gap rule for TDDFT) | Outcomes, cost | Drift > 0.5 eV → end; optional stop after 50 fs in S0 | P7b |
 | O9 | Data retention: chkfiles, per-step output frequency, disk budget per project | Disk use on the workstation | Keep only last-step chkfile; output every step | P7b |
 | O10 | Required analysis outputs (which observables, plots, fits) | Scope of P8 | Populations (classical + quantum), hop statistics, mono-exponential fit | P8 |
-| O11 | Notifications on completion or failure (email, chat)? | Unattended operation | None; log + exit code | P2 |
-| O12 | Unattended running: `nohup`/`tmux` vs `gqteashmd run --detach` vs systemd user service | Convenience, robustness to logout | ~~Resolved (P2):~~ documented `nohup`/`tmux`; no detach (USER_MANUAL §5.2). Revisit only if a need appears | P2 |
+| O11 | ~~Notifications on completion or failure (email, chat)?~~ **Resolved (P2): none; log + exit code** | Unattended operation | None; log + exit code | P2 |
+| O12 | ~~Unattended running: `nohup`/`tmux` vs `gqteashmd run --detach` vs systemd user service~~ **Resolved (P2): `nohup`/`tmux`, no detach** | Convenience, robustness to logout | Documented `nohup`/`tmux`; no detach (USER_MANUAL §5.2). Revisit only if a need appears | P2 |
 | O13 | ~~Program name, GitHub repository~~ **Resolved → D18/D15.** Still open: keep the repository public, or make it private until the first release? | Visibility of unreleased code | Your choice; the MIT licence is added in P1 Task 1 | P1 Task 12 |
 | O14 | ~~Copyright holder in the MIT licence~~ **Resolved:** "The gqteashmd developers" (user decision 2026-11-06) | | | |
-| O15 | Several molecules or parameter scans per input file? | Input design | No: one project per input | P2 |
+| O15 | ~~Several molecules or parameter scans per input file?~~ **Resolved (P2): no, one project per input file** | Input design | No: one project per input | P2 |
 | O16 | Extending finished dynamics (e.g. increasing `tmax_fs`) | Resume semantics | Allowed: `tmax_fs` excluded from the fingerprint and handled as an "extend" | P7b |
 | O17 | SHARC `input`-file importer (strategy §2.4) needed? | Validation convenience | Only inside `tools/sharc_compare/` | P9 |
 | O18 | PySCF version pin | Reproducibility | Latest conda-forge release at P3 start | P3 |
-| O19 | State-count convention (`singlets` includes S0?) | Input clarity | Yes, count includes S0 | P2 |
+| O19 | State-count convention (`singlets` includes S0?) | Input clarity | Yes, count includes S0 | P3 |
 | O20 | Behaviour when fewer eligible samples than `n_trajectories` | Unattended runs | Stop with a message (no silent reduction); option `allow_fewer = true` | P6 |
 
 ## 12. Workflow-specific risks

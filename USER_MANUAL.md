@@ -199,12 +199,23 @@ The template omits one key, `execution.poll_interval_s` (default 0.5). The table
 | `execution.max_attempts` | int | 2 | ≥ 1 | Attempts before a task counts as failed |
 | `execution.poll_interval_s` | float | 0.5 | > 0 | Controller polling interval (s) |
 | `execution.stop_grace_period_s` | float | 30.0 | ≥ 0 | Time between SIGTERM and SIGKILL on stop (s) |
-| `execution.min_free_disk_mb` | int | 1000 | ≥ 0 | `run` refuses to start if the disk holding the project has less free space (MB). `0` switches the check off |
+| `execution.min_free_disk_mb` | int | 1000 | ≥ 0 | `run` refuses to start if the disk holding the project has less free space (MB). `0` switches the check off (the disk is then not queried at all) |
 | `workflow.pause_after` | list of str | `[]` | stage names | Pause for review after these stages (§7.8) |
 
 **Hardware keys.** `total_cores` and `total_memory_mb` are required, so that the input file records which machine the settings were written for. The input is rejected if the settings do not fit inside them (see the rules below and §8.4). The program also detects the real machine; if your values exceed it, `run` only **warns** (§7.9).
 
-**Per-stage overrides.** A section `[resources.stages.<name>]` changes the resources for one stage, for example to give a single-task stage the whole machine:
+**Per-stage overrides.** A section `[resources.stages.<name>]` changes the resources for one stage. A runnable example for this version, which has only the `prepare` stage:
+
+```toml
+[resources]
+total_cores = 8
+total_memory_mb = 16000
+
+[resources.stages.prepare]         # prepare gets 2 threads; other keys use the [resources] values
+threads_per_task = 2
+```
+
+**From P4 on** (when the `frequencies` stage exists; today `validate` rejects this example), the same mechanism can give a single-task stage the whole machine:
 
 ```toml
 [resources]
@@ -219,7 +230,7 @@ max_parallel_tasks = 1
 threads_per_task = 32
 ```
 
-- **Merge rule:** a key you leave out of an override takes the global value from `[resources]`. In the example, `frequencies` uses `memory_mb_per_task = 4000`.
+- **Merge rule:** a key you leave out of an override takes the global value from `[resources]`. In the second example, `frequencies` uses `memory_mb_per_task = 4000`.
 - **Fit rule:** for the global settings **and for every override** (after merging), the input must satisfy $n_p n_t \le N_{\text{cores}}$ and $n_p m \le M_{\text{total}}$ (§8.4). Otherwise the input is rejected, naming `[resources]` or `[resources.stages.<name>]` and the numbers. Note that an override that sets only `max_parallel_tasks` is also checked against the global `threads_per_task`.
 - **Stage names:** an override for a stage that does not exist is an input error (`[resources.stages] names unknown stage(s): …`). The only stage in this version is `prepare`; the `frequencies` example above becomes valid when that stage exists (P4).
 
@@ -255,7 +266,7 @@ Until then, an input file that contains one of these sections is rejected as an 
 | Command | What it does |
 |---|---|
 | `gqteashmd init PATH [--force]` | Writes a commented template input file. Refuses to overwrite an existing file unless `--force` is given |
-| `gqteashmd validate INPUT` | Checks the input file and that the geometry is an existing regular file. Runs nothing, and does not run the preflight checks (§7.9) |
+| `gqteashmd validate INPUT` | Checks the input file, that the geometry is an existing regular file, and that `[resources.stages]` and `workflow.pause_after` name stages that exist. It does not read the XYZ contents (coordinates, elements, charge/multiplicity); `prepare` does. Runs nothing, and does not run the preflight checks (§7.9) |
 | `gqteashmd run INPUT` | Runs the preflight checks (§7.9), then runs or resumes every stage that is not yet done |
 | `gqteashmd run INPUT --rerun-from STAGE` | Moves the results of `STAGE` and all later stages to `.gqteashmd/superseded/`, then recomputes them |
 | `gqteashmd status INPUT` | Shows whether a controller is running, and per stage the status, the task counts (done/failed/pending/running) and the last message. It opens the progress database read-only and changes nothing, so it is safe at any time |
@@ -274,7 +285,7 @@ Scripts can rely on these:
 | 4 | A stage failed: too many failed tasks, or a failed check |
 | 5 | Stopped by the user, **or paused for review** (§7.8). In both cases run the same command again to continue |
 
-Errors are printed once, as `gqteashmd: error: <what happened, where, what to do>`, with no Python traceback. The error and, for internal errors, the traceback are also written to `logs/gqteashmd.log` (§6) when the project directory exists.
+Errors are printed once, as `gqteashmd: error: <what happened, where, what to do>`, with no Python traceback. Only errors raised during `gqteashmd run`, after logging is set up, also reach `logs/gqteashmd.log` (§6), with the traceback for internal errors. Load errors, preflight errors, and errors from `validate`, `status`, `init` and `stop` go to the console only.
 
 ### 5.2 Running unattended
 A run can take days. Start it so that it survives closing the terminal:
@@ -315,7 +326,7 @@ There is no built-in `--detach` option; `nohup`, `tmux` or `screen` is the suppo
 
 Later stages will add `01_optimize/`, `02_frequencies/` and so on, each with the same `tasks/` structure.
 
-**`provenance.json`** [IMPLEMENTED]. Every `gqteashmd run` that passes the preflight checks appends one record, so the file shows the software behind every run of the project. Open it with any text editor, or with `python -m json.tool .gqteashmd/provenance.json`.
+**`provenance.json`** [IMPLEMENTED]. Every `gqteashmd run` appends one record once the controller holds the project lock and has opened `state.db`, so the file shows the software behind every run of the project. A run that is later refused because a stage is stale (`StaleStageError`, §7.5) has a record; a run refused by the preflight checks, by the lock, or by a corrupt `state.db` has none. Open it with any text editor, or with `python -m json.tool .gqteashmd/provenance.json`.
 
 ```json
 {"schema_version": 1, "runs": [ { "started_at": "…", "gqteashmd": "…", "…": "…" } ]}
@@ -325,7 +336,7 @@ Later stages will add `01_optimize/`, `02_frequencies/` and so on, each with the
 |---|---|
 | `started_at` | Start of the run, UTC, ISO 8601 |
 | `gqteashmd` | Program version |
-| `git_commit` | Commit of the source tree the program runs from; `null` if it is not a git checkout or git is not available |
+| `git_commit` | Commit of the source tree the program runs from; `null` unless `gqteashmd` runs from a git checkout (an editable install, `pip install -e .`) and git is available |
 | `git_dirty` | `true` if that source tree has uncommitted changes; `null` if unknown |
 | `python` | Python version |
 | `platform` | Operating system and kernel |
@@ -428,17 +439,19 @@ pause_after = ["selection"]        # example; "selection" is a planned stage
 |---|---|---|
 | Project directory on a Windows drive in WSL (`/mnt/c/…`, any single letter) | `Project directory … is on a Windows drive mounted in WSL, where file locks and many small files are unreliable. Set project.directory to a local Linux disk, e.g. ~/gqteashmd-runs/<name>.` | Choose a directory on the Linux disk. `/mnt/data` and similar Linux disks are allowed |
 | Project directory inside a OneDrive folder (a path part named `OneDrive` or `OneDrive - …`, any case) | `Project directory … is on a OneDrive folder, where …` | Same |
-| Free disk space below `execution.min_free_disk_mb` | `Only N MB are free on the disk holding … ; at least M MB are required (execution.min_free_disk_mb).` | Free space, choose another disk, or lower the limit |
+| `project.directory` exists but is not a directory | `project.directory … exists but is not a directory.` | Choose another path or remove the file |
+| The project directory cannot be created or written (the nearest existing parent folder is not a directory or is not writable) | `Cannot create or write the project directory … (no write permission in <parent>).` | Choose a directory you may write to |
+| Free disk space below `execution.min_free_disk_mb` | `Only N MB are free on the disk holding …; at least M MB are required (execution.min_free_disk_mb).` | Free space, choose another disk, or lower the limit |
 | The free space cannot be determined | `Cannot determine free disk space for …` | Check that the path is on a readable disk |
 | An enabled stage needs a Python module that is not installed | `Stage '…' needs the Python module '…', which is not installed in this environment.` | Install the module in the active conda environment |
 
-The disk is the one that holds the project directory, or its nearest existing parent folder if the directory does not exist yet. The location check looks at the path **as written** (after `~` and relative paths are resolved); it does not follow symbolic links (§10).
+The disk is the one that holds the project directory, or its nearest existing parent folder if the directory does not exist yet. The location check looks at the path text. A relative path is resolved against the input file's directory with symbolic links followed, so it is judged by its target; an absolute path is taken as written, and a symbolic link in it is not followed (§10).
 
 **Warnings** (the run continues; they appear on the console and in `logs/gqteashmd.log`):
 
 ```text
-WARNING gqteashmd.cli: Preflight: resources.total_cores = 64 exceeds the 16 cores detected on this machine; tasks may run slower than expected.
-WARNING gqteashmd.cli: Preflight: resources.total_memory_mb = 16000 exceeds the 7754 MB of RAM detected on this machine; tasks may be killed for lack of memory.
+2026-11-06 21:03:44 WARNING gqteashmd.cli: Preflight: resources.total_cores = 64 exceeds the 16 cores detected on this machine; tasks may run slower than expected.
+2026-11-06 21:03:44 WARNING gqteashmd.cli: Preflight: resources.total_memory_mb = 16000 exceeds the 7754 MB of RAM detected on this machine; tasks may be killed for lack of memory.
 ```
 
 These two warnings appear when the values you entered exceed the cores or the RAM the program detects. The program does not stop, because it trusts the values you give, for example on a machine whose detection is wrong or that is shared.
@@ -541,7 +554,7 @@ $$
 | $N_{\text{cores}}$ | Cores you allow the program to use | `resources.total_cores` | — |
 | $M_{\text{total}}$ | RAM you allow the program to use | `resources.total_memory_mb` | MB |
 
-A fully loaded stage uses at most $n_p n_t$ cores and $n_p m$ megabytes. The input file is accepted only if
+A fully loaded stage runs $n_p$ tasks at once, with $n_t$ threads each, so it uses at most $n_p n_t$ cores. $n_p m$ is the memory *budget* that the rule checks: PySCF's `max_memory` is a soft target and real use can exceed it, so leave headroom. The input file is accepted only if
 
 $$
 n_p\, n_t \;\le\; N_{\text{cores}},
@@ -550,7 +563,14 @@ n_p\, m \;\le\; M_{\text{total}} .
 $$
 
 - **Where it applies:** to the global `[resources]` values **and** to each `[resources.stages.<name>]` override. For an override, $n_p$, $n_t$ and $m$ are the *merged* values: a key that the override leaves unset takes the global value (§4.2).
-- **What happens on a violation:** the input is rejected (exit code 2) with a message that names the section and the numbers, for example `[resources]: max_parallel_tasks × threads_per_task = 12 exceeds total_cores = 8`.
+- **What happens on a violation:** the input is rejected (exit code 2) with a message that names the section and the numbers, for example (the console shows the first line, then the second):
+
+  ```text
+  gqteashmd: error: Invalid input file /home/you/input.toml:
+    - resources: Value error, [resources]: max_parallel_tasks × threads_per_task = 3 × 2 = 6 exceeds total_cores = 4
+  ```
+
+  The memory rule reads `… max_parallel_tasks × memory_mb_per_task = 3 × 2000 = 6000 MB exceeds total_memory_mb = 4000`.
 - **Hardware detection:** the program also detects the cores and RAM of the machine. If $N_{\text{cores}}$ or $M_{\text{total}}$ is larger than the detected values, it only **warns** (§7.9). The inequalities above are checked against the values you wrote, not against the detected hardware.
 - **Choosing the values:** oversubscribing cores slows every task, and exceeding RAM gets tasks killed by the operating system. Set $N_{\text{cores}}$ and $M_{\text{total}}$ to what you really want to give the program, leaving room for the operating system.
 
@@ -745,9 +765,9 @@ $$
 | `Charge … and multiplicity … are inconsistent with … electrons` | Parity rule in §8.2 | Correct `charge` or `multiplicity` |
 | `Another gqteashmd controller is running for this project (pid …` | A run is already active for this project (`pid unknown` if it cannot be read) | Use `status`, or `stop` first |
 | `Invalid input file …: - resources.total_cores: Field required` | A required hardware key is missing | Add `total_cores` and `total_memory_mb` to `[resources]` (§4.2) |
-| `[resources]: max_parallel_tasks × threads_per_task = … exceeds total_cores = …` (also `… × memory_mb_per_task = … MB exceeds total_memory_mb = …`, and the same for `[resources.stages.<name>]`) | The resource settings do not fit in the machine you described | Lower `max_parallel_tasks`, `threads_per_task` or `memory_mb_per_task`, or raise the totals (§8.4) |
-| `[resources.stages] names unknown stage(s): …; stages are: …` | A resource override for a stage that does not exist | Correct the stage name |
-| `workflow.pause_after names unknown stage(s): …; stages are: …` | A pause for a stage that does not exist | Correct the stage name |
+| `Invalid input file …:` followed by `  - resources: Value error, [resources]: max_parallel_tasks × threads_per_task = 3 × 2 = 6 exceeds total_cores = 4` (also `… × memory_mb_per_task = 3 × 2000 = 6000 MB exceeds total_memory_mb = 4000`, and the same for `[resources.stages.<name>]`) | The resource settings do not fit in the machine you described | Lower `max_parallel_tasks`, `threads_per_task` or `memory_mb_per_task`, or raise the totals (§8.4) |
+| `[resources.stages] names unknown stage(s): …; stages are: …` | A resource override for a stage that does not exist (also reported by `validate`) | Correct the stage name |
+| `workflow.pause_after names unknown stage(s): …; stages are: …` | A pause for a stage that does not exist (also reported by `validate`) | Correct the stage name |
 | `Cannot expand '~' in path …` | `~user` names a user that does not exist | Use a real user name or a full path |
 | `Invalid geometry file …: line N: coordinates must be finite numbers, got …` | `nan` or `inf` in the XYZ file (reported when `prepare` runs) | Correct the coordinates |
 | `Project directory … is on a Windows drive mounted in WSL …` / `… on a OneDrive folder …` | Preflight refusal (§7.9) | Use a local Linux disk |
@@ -755,7 +775,7 @@ $$
 | `Stage '…' needs the Python module '…', which is not installed` | Preflight: a missing module | Install it in the conda environment |
 | `Preflight: resources.total_cores = … exceeds the … cores detected` (also for memory) | **Warning**, not an error (§7.9) | Check that the values describe your machine |
 | `Paused after stage '…' as requested (workflow.pause_after)` | Not an error: exit code 5 (§7.8) | Review, then run the same command again |
-| `State database … is unreadable or corrupt: …` | `state.db` is damaged, is not a database, or is a directory. A message `… has schema version …` or `… unknown stage/task status …` means another program version wrote it | Move `.gqteashmd/state.db` aside to start the project over (finished results stay on disk), or use the matching version |
+| `State database … is unreadable or corrupt: …` | `state.db` is damaged, is not a database, or is a directory. A message `… has schema version …` or `… unknown stage/task status …` means another program version wrote it | Move the whole `.gqteashmd/` directory aside (it holds `state.db` with its `-wal`/`-shm` files) to start the project over; stage results will be recomputed. Or use the matching version |
 | `Stage '…' has results produced from different inputs` | The input changed after results existed | Run the suggested `--rerun-from` command (§7.5) |
 | `Stage '…' failed: k of n tasks did not succeed` | Task failures | Read the listed `worker.log` files, fix, run again |
 | `internal error: …` | A program bug | Report it with `logs/gqteashmd.log` and the task's `result.json` |
@@ -767,7 +787,6 @@ $$
 - **Feature scope:** only the `prepare` stage exists. No quantum chemistry is performed yet, so the hardware and per-stage resource settings, and `pause_after`, have little visible effect until the later stages arrive.
 - **Platform:** Linux only, with no batch-scheduler support. Runs are designed for a single workstation.
 - **Project-folder check:** the check for Windows drives and OneDrive (§7.9) looks at the text of the path. An absolute path that is a symbolic link into a Windows drive or a OneDrive folder is not detected.
-- **Provenance file:** `provenance.json` is written by `gqteashmd` itself. If it was damaged and contains bytes that are not valid UTF-8, the next run stops with an error. Move the file aside in that case. This is unlikely in normal use.
 - **No automated build checks yet:** the continuous-integration workflow has never run, because the repository has not been pushed to GitHub. The tests have only been run on the development machine.
 
 ## 11. Roadmap
