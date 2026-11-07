@@ -7,6 +7,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
+from gqteashmd.chem.electrons import count_electrons
 from gqteashmd.chem.elements import atomic_number
 from gqteashmd.chem.xyz import Geometry, format_xyz, parse_xyz
 from gqteashmd.errors import ConfigError, TaskError
@@ -56,14 +57,10 @@ class PrepareStage(Stage):
                 f"Invalid geometry file {molecule.geometry}: {exc}", retryable=False
             ) from exc
         numbers = [atomic_number(symbol) for symbol in geometry.symbols]
-        n_electrons = sum(numbers) - molecule.charge
-        unpaired = molecule.multiplicity - 1
-        if n_electrons <= 0 or unpaired > n_electrons or n_electrons % 2 != unpaired % 2:
-            raise TaskError(
-                f"Charge {molecule.charge} and multiplicity {molecule.multiplicity} are "
-                f"inconsistent with {n_electrons} electrons. Check [molecule] in the input file.",
-                retryable=False,
-            )
+        try:
+            n_electrons = count_electrons(numbers, molecule.charge, molecule.multiplicity)
+        except ValueError as exc:
+            raise TaskError(f"{exc} Check [molecule] in the input file.", retryable=False) from exc
         return {
             "symbols": list(geometry.symbols),
             "atomic_numbers": numbers,
