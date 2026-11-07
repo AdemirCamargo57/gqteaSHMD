@@ -16,6 +16,8 @@ from typing import IO, Any
 
 import numpy as np
 
+from gqteashmd.chem.electrons import count_electrons
+from gqteashmd.chem.elements import atomic_number
 from gqteashmd.config.schema import ElectronicSection
 from gqteashmd.core.states import StateLabel, states_from_counts
 from gqteashmd.electronic.base import ElectronicBackend, ElectronicResult, MoleculeSpec, Request
@@ -63,6 +65,12 @@ class PySCFBackend(ElectronicBackend):
                 "The PySCF backend supports closed-shell singlet molecules only "
                 "(molecule.multiplicity = 1)."
             )
+        try:
+            count_electrons(
+                [atomic_number(s) for s in molecule.symbols], molecule.charge, molecule.multiplicity
+            )
+        except ValueError as exc:
+            raise ConfigError(f"{exc} Check [molecule] in the input file.") from exc
         self._molecule = molecule
         self._settings = settings
         self._log_file = log_file
@@ -150,7 +158,7 @@ class PySCFBackend(ElectronicBackend):
                 )
         except RuntimeError as exc:  # pyscf BasisNotFoundError is a RuntimeError
             raise ElectronicStructureError(
-                f"PySCF cannot build basis '{self._settings.basis}': {exc}"
+                f"PySCF could not build the molecule with basis '{self._settings.basis}': {exc}"
             ) from exc
         return mol
 
@@ -169,10 +177,13 @@ class PySCFBackend(ElectronicBackend):
         return mf
 
     def _run_scf(self, mol: Any) -> tuple[Any, str]:
-        dm0 = self._previous_dm
-        if dm0 is not None and getattr(dm0, "shape", None) != (mol.nao, mol.nao):
-            dm0 = None
-        for name, shift, damp, second_order in _SCF_LADDER:
+        previous_dm = self._previous_dm
+        if previous_dm is not None and getattr(previous_dm, "shape", None) != (mol.nao, mol.nao):
+            previous_dm = None
+        for rung, (name, shift, damp, second_order) in enumerate(_SCF_LADDER):
+            # only the first rung uses the previous geometry's density: a stale guess is the
+            # likeliest reason rung 1 fails, so later rungs start from PySCF's default guess
+            dm0 = previous_dm if rung == 0 else None
             mf = self._make_scf(mol)
             mf.level_shift = shift
             mf.damp = damp
@@ -180,6 +191,8 @@ class PySCFBackend(ElectronicBackend):
                 mf = mf.newton()
             try:
                 mf.kernel(dm0=dm0)
+            # An exception (unlike non-convergence) signals a broken setup that another rung
+            # would not fix, so it aborts the ladder.
             except Exception as exc:  # PySCF raises many types; report them as SCF failures
                 raise ElectronicStructureError(
                     f"PySCF SCF failed ({name}): {type(exc).__name__}: {exc}"
@@ -226,7 +239,12 @@ class PySCFBackend(ElectronicBackend):
         mo0 = mf.mo_coeff
         if self._previous_mo is not None and self._previous_mol is not None:
             # orbitals of another geometry are not orthonormal here: project them first
-            mo0 = mcscf.project_init_guess(mc, self._previous_mo, self._previous_mol)
+            try:
+                mo0 = mcscf.project_init_guess(mc, self._previous_mo, self._previous_mol)
+            except Exception as exc:
+                raise ElectronicStructureError(
+                    f"Projecting the previous orbitals failed: {type(exc).__name__}: {exc}"
+                ) from exc
         try:
             mc.kernel(mo_coeff=mo0)
         except Exception as exc:
@@ -248,7 +266,12 @@ class PySCFBackend(ElectronicBackend):
         if request.gradients:
             solver = mc.nuc_grad_method()
             for label in sorted(request.gradients):
-                g = solver.kernel(state=label.index)
+                try:
+                    g = solver.kernel(state=label.index)
+                except Exception as exc:
+                    raise ElectronicStructureError(
+                        f"The SA-CASSCF gradient of {label} failed: {type(exc).__name__}: {exc}"
+                    ) from exc
                 if not getattr(solver, "converged", True):
                     raise ElectronicStructureError(
                         f"The SA-CASSCF gradient of {label} did not converge."
@@ -256,12 +279,19 @@ class PySCFBackend(ElectronicBackend):
                 gradients[label] = np.asarray(g, dtype=float)
         dipoles: dict[StateLabel, np.ndarray] = {}
         if request.transition_dipoles:
-            r_ints = mol.intor("int1e_r", comp=3)
-            mo_cas = mc.mo_coeff[:, mc.ncore : mc.ncore + mc.ncas]
-            for label in self._states[1:]:
-                t_mo = mc.fcisolver.trans_rdm1(mc.ci[0], mc.ci[label.index], mc.ncas, mc.nelecas)
-                t_ao = mo_cas @ t_mo @ mo_cas.T
-                dipoles[label] = -np.einsum("xij,ji->x", r_ints, t_ao)  # mu = -sum r gamma
+            try:
+                r_ints = mol.intor("int1e_r", comp=3)
+                mo_cas = mc.mo_coeff[:, mc.ncore : mc.ncore + mc.ncas]
+                for label in self._states[1:]:
+                    t_mo = mc.fcisolver.trans_rdm1(
+                        mc.ci[0], mc.ci[label.index], mc.ncas, mc.nelecas
+                    )
+                    t_ao = mo_cas @ t_mo @ mo_cas.T
+                    dipoles[label] = -np.einsum("xij,ji->x", r_ints, t_ao)  # mu = -sum r gamma
+            except Exception as exc:
+                raise ElectronicStructureError(
+                    f"The transition dipole calculation failed: {type(exc).__name__}: {exc}"
+                ) from exc
         self._previous_mo, self._previous_mol = mc.mo_coeff, mol
         return energies, gradients, dipoles, spins
 

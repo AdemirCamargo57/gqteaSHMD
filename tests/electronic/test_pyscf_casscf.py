@@ -88,6 +88,11 @@ def test_open_shell_molecule_is_refused(ethylene_symbols, make_settings):
         PySCFBackend(MoleculeSpec(tuple(ethylene_symbols), 0, 3), make_settings())
 
 
+def test_inconsistent_charge_is_a_config_error(ethylene_symbols, make_settings):
+    with pytest.raises(ConfigError, match="inconsistent with 15 electrons"):
+        PySCFBackend(MoleculeSpec(tuple(ethylene_symbols), 1, 1), make_settings())
+
+
 def test_previous_orbitals_are_projected(ethylene_symbols, ethylene_bohr, make_settings):
     settings = make_settings(basis="6-31g")
     moved = ethylene_bohr + np.random.default_rng(7).normal(scale=0.05, size=ethylene_bohr.shape)
