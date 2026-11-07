@@ -304,4 +304,51 @@ class PySCFBackend(ElectronicBackend):
         dict[StateLabel, np.ndarray],
         dict[StateLabel, float],
     ]:
-        raise NotImplementedError("TDA/TDDFT is implemented in Task 7")
+        from pyscf import tddft
+
+        method = self._settings.method.upper()
+        excited = self._states[1:]
+        energies: dict[StateLabel, float] = {self._states[0]: float(mf.e_tot)}
+        gradients: dict[StateLabel, np.ndarray] = {}
+        dipoles: dict[StateLabel, np.ndarray] = {}
+        td: Any = None
+        if excited:
+            td = tddft.TDA(mf) if self._settings.method == "tda" else tddft.TDDFT(mf)
+            td.nstates = len(excited)
+            td.conv_tol = self._settings.td_conv_tol
+            try:
+                td.kernel()
+            except Exception as exc:
+                raise ElectronicStructureError(
+                    f"{method} failed: {type(exc).__name__}: {exc}"
+                ) from exc
+            converged = np.atleast_1d(np.asarray(td.converged, dtype=bool))
+            if len(td.e) < len(excited) or not bool(converged.all()):
+                raise ElectronicStructureError(
+                    f"{method} did not converge for all {len(excited)} "
+                    f"excited states (td_conv_tol = {self._settings.td_conv_tol})."
+                )
+            for label, omega in zip(excited, td.e, strict=False):
+                energies[label] = float(mf.e_tot + omega)
+            if request.transition_dipoles:
+                try:
+                    mus = td.transition_dipole()
+                except Exception as exc:
+                    raise ElectronicStructureError(
+                        f"{method} transition dipole failed: {type(exc).__name__}: {exc}"
+                    ) from exc
+                for label, mu in zip(excited, mus, strict=False):
+                    dipoles[label] = np.asarray(mu, dtype=float)
+        for label in sorted(request.gradients):
+            try:
+                if label.index == 0:
+                    g = mf.nuc_grad_method().kernel()
+                else:
+                    g = td.nuc_grad_method().kernel(state=label.index)
+            except Exception as exc:
+                what = "SCF" if label.index == 0 else method
+                raise ElectronicStructureError(
+                    f"{what} gradient of {label} failed: {type(exc).__name__}: {exc}"
+                ) from exc
+            gradients[label] = np.asarray(g, dtype=float)
+        return energies, gradients, dipoles, {}
