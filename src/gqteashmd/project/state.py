@@ -117,7 +117,8 @@ class StateStore:
                 conn.close()
             raise ProjectError(
                 f"State database {db_path} is unreadable or corrupt: {exc}. "
-                "Move it aside to start the project over."
+                "Move the project's .gqteashmd directory aside (state.db with its -wal/-shm "
+                "files) to start the project over; stage results will be recomputed."
             ) from exc
         (version,) = row
         if version != SCHEMA_VERSION:

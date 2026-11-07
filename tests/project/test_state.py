@@ -1,3 +1,5 @@
+import sqlite3
+
 import pytest
 
 from gqteashmd.errors import ProjectError
@@ -89,9 +91,6 @@ def test_corrupt_database_is_a_project_error(tmp_path):
     db.write_bytes(b"this is definitely not a sqlite database" * 50)
     with pytest.raises(ProjectError, match="unreadable or corrupt"):
         StateStore(db)
-
-
-import sqlite3  # noqa: E402
 
 
 def test_directory_as_db_path_is_project_error(tmp_path):
