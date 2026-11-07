@@ -213,7 +213,7 @@ The `[electronic]` block is commented out in the template: it is optional for `r
 | `electronic.method` | str | — (required if `[electronic]` is present) | `"casscf"`, `"tda"`, `"tddft"` | Electronic-structure method (§8.6). `"tda"` and `"tddft"` are linear-response methods on a restricted SCF reference |
 | `electronic.basis` | str | — (required) | any PySCF basis name, e.g. `"6-31g*"`, `"def2-svp"` | Gaussian basis set. An unknown name fails at the first calculation (§9) |
 | `electronic.functional` | str | none | required for `tda`/`tddft`; **not allowed** for `casscf` | Exchange–correlation functional, e.g. `"b3lyp"`. `"hf"` selects Hartree–Fock: `tda` + `"hf"` is CIS, `tddft` + `"hf"` is TDHF (§8.6.3) |
-| `electronic.singlets` | int | — (required) | ≥ 1 | Number of singlet states **including S0**: `singlets = 2` gives S0 and S1 |
+| `electronic.singlets` | int | — (required) | ≥ 1; for `casscf` at most the number of singlet states of the active space (§4.2 rules) | Number of singlet states **including S0**: `singlets = 2` gives S0 and S1 |
 | `electronic.triplets` | int | 0 | must be 0 | Triplet states are **not supported yet** (planned together with intersystem crossing); any value above 0 is an input error |
 | `electronic.grid_level` | int | 3 | 0–9 | PySCF integration-grid level for DFT (`tda`/`tddft` with a functional other than `"hf"`). Use **≥ 5 for dynamics** (§8.6.4) |
 | `electronic.scf_conv_tol` | float | 1e-10 | > 0 | SCF energy convergence threshold (Eh) |
@@ -285,8 +285,9 @@ The rules, all checked when the input is loaded (`validate`, `run`, `single-poin
 
 - `method = "casscf"` needs an `[electronic.casscf]` table and does **not** accept `functional`. `method = "tda"` or `"tddft"` needs `functional` and does **not** accept `[electronic.casscf]`.
 - `nelecas` must be even and at most `2 × ncas`.
+- For `casscf`, `singlets` cannot exceed the number of singlet states of the active space, $N_0 = \binom{n+1}{N/2}\binom{n+1}{N/2+1}/(n+1)$ with $n$ = `ncas` and $N$ = `nelecas` (CAS(2,2): 3, CAS(4,4): 20, CAS(6,6): 175). Example: `singlets = 4` with CAS(2,2) is rejected: *electronic.singlets = 4 exceeds the 3 singlet states of CAS(2,2) (nelecas = 2, ncas = 2)*.
 - `triplets > 0` is rejected: *triplets are not supported yet*.
-- When `[electronic]` is present, `molecule.multiplicity` must be 1: *the PySCF backend supports closed-shell singlet molecules only*. A charge that is inconsistent with the electron count (§8.2) is also an input error.
+- When `[electronic]` is present, `molecule.multiplicity` must be 1: *the PySCF backend supports closed-shell singlet molecules only*. A charge that is inconsistent with the electron count (§8.2) is also an input error (exit code 2), but it is **not** found by `validate`, which does not read the geometry: `single-point` finds it when it builds the backend, and `run` finds it in the `prepare` stage.
 - **State labels** are `S0` (ground state), `S1`, `S2`, … (0-based, singlets); triplets will be `T1`, `T2`, … when they arrive. `singlets` counts S0, so `singlets = N` gives S0 … S(N−1).
 - Not implemented yet: density fitting, spin-flip or unrestricted references, ECP-specific options, a `scratch` directory key, MC-PDFT.
 
@@ -446,6 +447,8 @@ For the example above the JSON contains (shortened):
           "scf_energy_hartree": -78.00336573553878, "wall_time_s": 0.21}}
 ```
 
+The sign of `transition_dipole_au` in this example may differ from other runs, geometries or programs: the overall sign of a transition dipole is arbitrary (§8.6.5).
+
 **Exit codes of `single-point`:**
 
 | Code | When |
@@ -455,7 +458,7 @@ For the example above the JSON contains (shortened):
 | 4 | The calculation failed: unknown basis, SCF or CASSCF/TD non-convergence, a root that is not a singlet, an active space that does not fit, a failed gradient or dipole |
 | 1 | Internal error (a bug) |
 
-Errors are printed once as `gqteashmd: error: …` (§5.1). An electronic-structure failure is not retried: the same input would fail again (§9 lists the messages).
+Errors are printed once as `gqteashmd: error: …` (§5.1). An electronic-structure failure is not retried, because the same input would fail again, with one exception: a `MemoryError` or `OSError` raised inside PySCF (transient memory or file-system trouble) is a *retryable* task error, which `run` retries up to `execution.max_attempts` (§7.6). Every other failure is non-retryable (exit 4). §9 lists the messages.
 
 ---
 
@@ -789,7 +792,7 @@ $E_{\text{SCF}}$ is reported as `meta.scf_energy_hartree` (in $E_h$). The SCF is
 | Rung | Settings | Reported as `meta.scf` |
 |---|---|---|
 | 1 | PySCF defaults (DIIS); if the same backend object has already computed another geometry, the starting density is that geometry's converged density | `default` |
-| 2 | Level shift $\sigma = 0.2\,E_h$ (virtual-orbital energies raised by $\sigma$) and damping factor 0.5 (the new Fock matrix is mixed 1:1 with the previous one) | `level shift + damping` |
+| 2 | Level shift $\sigma = 0.2\,E_h$ (virtual-orbital energies raised by $\sigma$) and damping factor 0.5 (the new Fock matrix is mixed 1:1 with the previous one). PySCF damps only the cycles before DIIS starts, so DIIS is delayed to cycle 8: damping acts in the first cycles, DIIS finishes the convergence | `level shift + damping` |
 | 3 | Second-order (Newton) orbital optimization | `second-order` |
 
 Only rung 1 uses the previous geometry's density; rungs 2 and 3 start from PySCF's default guess, because a stale guess is the most likely reason rung 1 failed. If all three rungs fail, the calculation stops with *SCF did not converge (tried: …)* (exit code 4, not retried). An exception inside PySCF (as opposed to non-convergence) stops immediately, because another rung would not fix a broken setup.
@@ -817,7 +820,7 @@ $$
 
 The common orbital set gives smooth, balanced surfaces for S0 and S1, which is why SA-CASSCF is the recommended method for S1→S0 dynamics (§8.6.4). The reported $E_I$ are the individual state energies, not $E_{\mathrm{SA}}$. Convergence is controlled by `casscf.conv_tol` (change of $E_{\mathrm{SA}}$) and `casscf.conv_tol_grad` (orbital gradient).
 
-- **Singlet-only CI.** PySCF's default CI solver also returns triplet and quintet roots of the active space. The program uses the singlet-restricted solver, so all $N$ roots are singlets.
+- **Singlet-only CI.** PySCF's default CI solver also returns triplet and quintet roots of the active space. The program uses the singlet-restricted solver, which removes the triplets but **not higher spins**: in larger active spaces a quintet root ($S = 2$) can still appear among the lowest roots. That is why the spin check below exists.
 - **Spin check.** After convergence, the spin expectation value of every root is computed. A root is accepted only if $\lvert\langle S^2\rangle_I\rvert \le 10^{-3}$; otherwise the run stops (*CASSCF root S1 has <S^2> = …; it is not a singlet*). A singlet has $\langle S^2\rangle = S(S+1) = 0$. The value is stored as `spin_square`.
 - **Orbital reuse by projection.** A backend object that computes several geometries one after another (as the dynamics stage will) starts each CASSCF from the previous geometry's converged orbitals. Those orbitals belong to the old nuclear positions, so they are not orthonormal in the new basis; they are first projected onto the new geometry's atomic-orbital basis (PySCF `project_init_guess`) and re-orthonormalized. The first calculation of a backend object, and every calculation by a new object, starts from the SCF orbitals. The reuse changes the starting point, not the converged result.
 - **Active space.** The program stops with a message if the active electrons do not fit in the molecule, or if the basis has fewer orbitals than the core plus active orbitals require (§9).
@@ -891,12 +894,12 @@ $$
 **Linear response (TDA/TDDFT/CIS/TDHF).** With the amplitudes of §8.6.3 (spatial orbitals $i$ occupied, $a$ virtual)
 
 $$
-\boldsymbol\mu_{0k} = -\sqrt{2}\,\sum_{ia} \mathbf r_{ia}\,(X_{k,ia} + Y_{k,ia}) ,
+\boldsymbol\mu_{0k} = \sqrt{2}\,\sum_{ia} \mathbf r_{ia}\,(X_{k,ia} + Y_{k,ia}) ,
 $$
 
-where the factor $\sqrt2$ comes from the sum over the two spin functions in the closed-shell singlet, and $Y = 0$ for TDA, CIS. The amplitudes are normalized as $\sum_{ia}(X_{ia}^2 - Y_{ia}^2) = 1$.
+as returned by PySCF `td.transition_dipole()` (length gauge) and used without any change of sign. The factor $\sqrt2$ comes from the sum over the two spin functions in the closed-shell singlet, and $Y = 0$ for TDA, CIS. The amplitudes are normalized as $\sum_{ia}(X_{ia}^2 - Y_{ia}^2) = 1$.
 
-**The sign is arbitrary.** The CI vectors (and the response vectors) are defined only up to an overall sign, $\Psi_I \to -\Psi_I$, which flips $\boldsymbol\mu_{0I}$. Two programs, or two geometries, can therefore give opposite signs for the same physical state. Only $\lvert\boldsymbol\mu_{0I}\rvert$, $f_{0I}$ and quantities that are even in the sign are meaningful. The validation (§8.6.7) compares dipoles up to a global sign.
+**The sign is arbitrary.** The sign of the linear-response dipole, like that of the CASSCF one, is whatever PySCF returns and carries no meaning. The CI vectors (and the response vectors) are defined only up to an overall sign, $\Psi_I \to -\Psi_I$, which flips $\boldsymbol\mu_{0I}$. Two programs, or two geometries, can therefore give opposite signs for the same physical state. Only $\lvert\boldsymbol\mu_{0I}\rvert$, $f_{0I}$ and quantities that are even in the sign are meaningful. The validation (§8.6.7) compares dipoles up to a global sign.
 
 #### 8.6.6 Oscillator strength
 The dimensionless oscillator strength of the transition $S_0\to S_I$ (length gauge) is
@@ -913,13 +916,13 @@ where $\Delta E_{0I} = E_I - E_0$ is in $E_h$ and $\boldsymbol\mu_{0I}$ in $e\,a
 
 | Quantity | `gqteashmd` | SHARC 4.1 | Largest difference |
 |---|---|---|---|
-| $E_0$ (S0) | −78.04902446 $E_h$ | −78.04902443 $E_h$ | $1.4\times10^{-8}\,E_h$ (largest over both states) |
-| $E_1$ (S1) | −77.67250833 $E_h$ | −77.67250836 $E_h$ | |
+| $E_0$ (S0) | −78.04902442 $E_h$ | −78.04902443 $E_h$ | $1.4\times10^{-8}\,E_h$ (largest over both states) |
+| $E_1$ (S1) | −77.67250837 $E_h$ | −77.67250836 $E_h$ | |
 | Gradients of S0 and S1 | — | — | $1.4\times10^{-8}\,E_h/a_0$ |
-| Transition dipole $\boldsymbol\mu_{01}$ (≈ (−1.530, −0.054, 0) $e\,a_0$) | — | — | $4.5\times10^{-7}\,e\,a_0$, after one global sign flip |
+| Transition dipole $\boldsymbol\mu_{01}$ (≈ (+1.530, +0.054, 0) $e\,a_0$ here, (−1.530, −0.054, 0) in SHARC) | — | — | $4.5\times10^{-7}\,e\,a_0$, after one global sign flip |
 | $\langle S^2\rangle$ of both roots | < $10^{-6}$ | — | — |
 
-The sign of $\boldsymbol\mu_{01}$ in `gqteashmd` is opposite to SHARC's, which is allowed (§8.6.5). The automated tests use looser tolerances than the measured differences: $10^{-6}\,E_h$ for energies, $10^{-5}\,E_h/a_0$ for gradients and $10^{-4}\,e\,a_0$ for the dipole (up to sign).
+The numbers in the `gqteashmd` column were obtained with the program itself at these settings (`method = "casscf"`, `basis = "6-31g*"`, `singlets = 2`, CAS(2,2), `tests/data/ethylene.xyz`). The sign of $\boldsymbol\mu_{01}$ in `gqteashmd` is opposite to SHARC's, which is allowed (§8.6.5). The automated tests use looser tolerances than the measured differences: $10^{-6}\,E_h$ for energies, $10^{-5}\,E_h/a_0$ for gradients and $10^{-4}\,e\,a_0$ for the dipole (up to sign).
 
 **Against finite differences** (slow tests; central differences with step $h = 10^{-4}$ bohr on each Cartesian component, a fresh backend for every displaced geometry so that no orbital reuse can bias the reference):
 
@@ -1099,11 +1102,12 @@ $$
 | `Stage '…' failed: k of n tasks did not succeed` | Task failures | Read the listed `worker.log` files, fix, run again |
 | `This calculation needs an [electronic] section in the input file (method, basis, singlets, ...).` | `single-point` without `[electronic]` (exit 2) | Add the section (§4.2) |
 | `Invalid input file …:` with `electronic.casscf` / `electronic.functional` / `electronic.triplets` text (for example `method = 'casscf' needs an [electronic.casscf] table with ncas and nelecas`, `electronic.functional is required for method = 'tda' (use 'hf' for CIS/TDHF)`, `electronic.casscf.nelecas must be even for singlet states`, `electronic.triplets > 0 is not supported yet`) | Inconsistent `[electronic]` keys (§4.2) | Correct the keys |
+| `electronic.singlets = … exceeds the … singlet states of CAS(…) (nelecas = …, ncas = …)` | More singlet states requested than the active space has (exit 2) | Lower `singlets` or enlarge the active space |
 | `the PySCF backend supports closed-shell singlet molecules only (molecule.multiplicity = 1)` | An `[electronic]` section together with a multiplicity other than 1 (exit 2) | Use a closed-shell singlet molecule |
 | `Charge … and multiplicity … are inconsistent with … electrons. Check [molecule] in the input file.` | Same parity rule as §8.2, found by the electronic-structure layer (exit 2) | Correct `charge` or `multiplicity` |
 | `PySCF is not installed in this environment …` / `PySCF … is too old; gqteashmd needs PySCF >= 2.6.0.` | Missing or old PySCF (exit 2) | Install or update PySCF in the conda environment |
 | `PySCF could not build the molecule with basis '…'` | Unknown basis set name or a basis that has no entry for an element (exit 4) | Check `electronic.basis` |
-| `SCF did not converge (tried: default, level shift + damping, second-order; …)` / `PySCF SCF failed (…)` | The SCF ladder (§8.6.1) is exhausted, or PySCF raised an error (exit 4) | Check the geometry, charge and basis; raise `scf_max_cycle`; read the `--log` file |
+| `SCF did not converge (tried: default, level shift + damping, second-order; …)` / `PySCF SCF (…) failed: …` | The SCF ladder (§8.6.1) is exhausted, or PySCF raised an error (exit 4; retried only for `MemoryError`/`OSError`) | Check the geometry, charge and basis; raise `scf_max_cycle`; read the `--log` file |
 | `SA-CASSCF did not converge (conv_tol = …, conv_tol_grad = …)` / `CASSCF failed: …` | The active space or the starting orbitals are unsuitable (exit 4) | Choose another active space; loosen `casscf.conv_tol_grad` slightly |
 | `CASSCF root S1 has <S^2> = …; it is not a singlet.` | A root of the active space is not a singlet (exit 4) | Check the active space and the number of states |
 | `The CASSCF active space (… electrons) does not fit the molecule's … electrons.` / `The CASSCF active space needs … orbitals, but the basis '…' has only …` | `ncas`/`nelecas` do not fit the molecule or the basis (exit 4) | Reduce the active space or use a larger basis |

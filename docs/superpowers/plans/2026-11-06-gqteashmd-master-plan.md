@@ -93,7 +93,8 @@ src/gqteashmd/
 ├── orchestrator.py           # P1
 ├── worker.py                 # P1: `python -m gqteashmd.worker task.json`
 ├── config/                   # P1 core, P2 complete schema
-│   ├── schema.py  loader.py  labels.py (state labels "S1", "T2")
+│   ├── schema.py  loader.py
+├── core/                     # P3a: units.py, states.py (state labels "S1", "T2")
 ├── project/                  # P1
 │   ├── layout.py  lock.py  state.py  provenance.py (P2)
 ├── execution/                # P1
@@ -106,9 +107,9 @@ src/gqteashmd/
 │   ├── excitations.py  selection.py                # P6
 │   ├── dynamics.py                                 # P7b
 │   └── analysis.py                                 # P8
-├── chem/        elements.py  xyz.py  masses.py (P4)  molden.py (P4)
+├── chem/        elements.py  xyz.py  electrons.py (P3a)  masses.py (P4)  molden.py (P4)
 ├── vib/         harmonic.py (P4)  wigner.py (P5)
-├── electronic/  base.py  pyscf_backend/ (P3)
+├── electronic/  base.py  properties.py  pyscf_backend.py  factory.py (P3a)
 ├── dynamics/    (P7a/P7b; see strategy §2.2 for the inner layout)
 ├── artifacts/   (one module per artifact type, from P4 on)
 ├── testing/     fake_stages.py (P1; test-only helpers shipped for subprocess tests)
@@ -222,8 +223,8 @@ Task:   PENDING ─► RUNNING ─► DONE
 |---|---|---|---|
 | Syntax and types | `load_config` | Unknown key, wrong type, value out of range | P1 (core sections), P2 (all sections) |
 | Cross-field rules | `load_config` (pydantic model validators) | Selected states exist in `electronic.states`; `n_trajectories ≥ 1`; `dt_fs < tmax_fs`; CASSCF needs `ncas`/`nelecas` | P2 (resource fit rules); rules for the later sections arrive with their sections (P3 onward) |
-| Environment preflight | Start of `gqteashmd run`, before any stage | PySCF importable with a supported version; geomeTRIC present if `optimize` is enabled; **user-given hardware** (`resources.total_cores`, `resources.total_memory_mb`) bounds the task settings (`max_parallel × threads ≤ total_cores`, `max_parallel × memory ≤ total_memory_mb`; violation = `ConfigError`); the user-given values are compared with the detected cores/RAM and a **warning** (not an error) is printed if they exceed the machine (D17); free disk space; scratch directory writable; project directory not on `/mnt/c` | P2 (hardware fit and warning, free disk, project location, writable project location, required modules); P3 (PySCF version, geomeTRIC, writable scratch) |
-| Physics preflight | `prepare` stage | xyz syntax, known elements, charge/multiplicity consistent with the electron count | P1 |
+| Environment preflight | Start of `gqteashmd run`, before any stage | PySCF importable with a supported version; geomeTRIC present if `optimize` is enabled; **user-given hardware** (`resources.total_cores`, `resources.total_memory_mb`) bounds the task settings (`max_parallel × threads ≤ total_cores`, `max_parallel × memory ≤ total_memory_mb`; violation = `ConfigError`); the user-given values are compared with the detected cores/RAM and a **warning** (not an error) is printed if they exceed the machine (D17); free disk space; scratch directory writable; project directory not on `/mnt/c` | P2 (hardware fit and warning, free disk, project location, writable project location, required modules); P3a (PySCF version, checked when the backend is built); the preflight check for PySCF, geomeTRIC and a writable scratch directory is deferred to the first stage that requires pyscf (P4) |
+| Physics preflight | `prepare` stage | xyz syntax, known elements, charge/multiplicity consistent with the electron count (`prepare`; `single-point` does the same check when it builds the backend, `validate` does not) | P1 |
 | Smoke calculation | First task of `optimize`/`frequencies` (P3/P4) | SCF converges at the start geometry with the requested method/basis | P3 |
 
 ### 4.3 Proposed complete input file
@@ -246,7 +247,7 @@ multiplicity = 1
 [electronic]                         # P3a (density_fitting is not implemented yet)
 method = "tda"                       # "tda" | "tddft" | "casscf"   (mc-pdft later)
 basis = "def2-svp"
-functional = "b3lyp"                 # ignored for casscf
+functional = "b3lyp"                 # rejected for casscf (ConfigError)
 density_fitting = true
 grid_level = 3
 singlets = 4                         # number of singlet states INCLUDING S0 (O19, resolved)
@@ -299,7 +300,7 @@ total_memory_mb = 128000             # REQUIRED (P2)
 max_parallel_tasks = 8
 threads_per_task = 4
 memory_mb_per_task = 4000
-scratch = "/scratch/ajc"             # P3 (not in the P2 schema: added with the PySCF layer)
+scratch = "/scratch/ajc"             # P3b (not in the schema yet)
 [resources.stages.frequencies]
 max_parallel_tasks = 1
 threads_per_task = 32
@@ -361,7 +362,7 @@ pause_after = ["selection"]          # review spectrum before dynamics
   2. level shift + damping;
   3. fresh atomic guess + second-order solver.
 
-  TDDFT/CASSCF have their own ladders (more roots, a different initial guess). Each rung is logged.
+  TDDFT/CASSCF have their own ladders (more roots, a different initial guess), planned for P3b. In P3a only the SCF has a ladder, and only the converged rung is recorded in the result meta (`meta.scf`).
 - **Fail early.** All config and environment checks run before the first expensive calculation.
 - **Never delete results automatically.** Superseded results are moved; cleaning up is an explicit user action.
 - **Logs.** The controller writes `logs/gqteashmd.log` (INFO to console, DEBUG to file). Each task has `worker.log` (stdout/stderr) plus a backend log (e.g. `pyscf.log`) in its task directory.
@@ -422,7 +423,7 @@ Each sub-project produces working, tested software and gets its own detailed pla
 | **P1** | **Foundation & orchestrator** (detailed plan exists) | Repo, environment, CI, errors, config core, project layout, state store, stage contract, worker, local executor, orchestrator (resume/retry/stop/stale), CLI, `prepare` stage | — | 0 | 3–4 wk |
 | P2 | Input schema & preflight — **DONE** (branch `feat/p2-input-preflight`, not yet merged) | Delivered: required `total_cores` / `total_memory_mb` with the fit rules (`n_p·n_t ≤ total_cores`, `n_p·m ≤ total_memory_mb`, globally and per stage) and a detection **warning** (D17); `[resources.stages.<name>]` overrides with one executor per stage; `execution.min_free_disk_mb`; preflight before the project directory is touched (Windows drive / OneDrive refusal, free disk, required modules); `.gqteashmd/provenance.json`; `[workflow] pause_after` (exit 5); once-only error output with `FILE_ONLY` logging; state-db failures as `ProjectError` and read-only `status`; non-finite coordinates, `~` expansion, `.`/`..` name checks; lock retry; mypy in CI; the `gqteashmd init` template for the implemented sections. **Scope ruling:** the later input sections (`[electronic]`, `[optimize]`, `[frequencies]`, `[sampling]`, `[excitations]`, `[selection]`, `[dynamics]`, `[analysis]`) and state labels are added by the sub-project that consumes them (P3–P8), because their keys depend on open items O3, O4, O8 and O19. The remaining deferred P1 findings stay in the ledgers with an owner (see the P2 plan, "Scope rulings") | P1 | 0 | 2 wk |
 | **P3a** | PySCF electronic-structure layer — **DONE** (branch `feat/p3a-pyscf-backend`, not yet merged) | Delivered: the `[electronic]` / `[electronic.casscf]` input; `core/` (units, state labels); the backend contract and `PySCFBackend` (RHF/RKS, SA-CASSCF with a singlet-only CI solver and an ⟨S²⟩ guard, TDA, TDDFT, CIS, TDHF); energies, analytic gradients and S0→state transition dipoles; the SCF retry ladder; orbital reuse by projection; threads/memory; `gqteashmd single-point`; ethylene validation against SHARC 4.1 (`tools/sharc_compare/`, `pytest -m sharc`) and against finite differences. **Not delivered, moved:** NACs, wavefunction overlaps, phase tracking, scratch/chkfile policy and TDDFT/CASSCF retry ladders to P3b; the Hessian to P4 | P1 (P2 for config) | 3 | 5–6 wk |
-| P3b | Couplings for dynamics | Nonadiabatic couplings (CASSCF) and wavefunction overlaps with phase tracking for TDA/TDDFT; scratch directory and chkfile policy; CASSCF/TDDFT retry ladders. Needed by P7b, not by P4–P6 | P3a | 3 | 3–4 wk |
+| P3b | Couplings for dynamics | Nonadiabatic couplings (CASSCF) and wavefunction overlaps with phase tracking for TDA/TDDFT; the rest of the strategy §2.3 backend contract: `capabilities`, `compute_more` (an extra gradient at the same geometry after a hop) and explicit, serialisable reference-wavefunction state (`save_state`/`load_state`, or a state object in/out of `compute`) so that restarts are reproducible and `run_task` stays idempotent; scratch directory and chkfile policy; CASSCF/TDDFT retry ladders. Needed by P7b, not by P4–P6 | P3a | 3 | 3–4 wk |
 | P4 | `optimize` + `frequencies` stages | geomeTRIC driver; **PySCF Hessian (analytic + finite-difference gradient tasks; moved here from P3)**; own harmonic analysis (mass weighting, Eckart projection, frequencies, normal modes); imaginary-mode policy; Molden writer; `frequencies.h5` | P3 | 5 | 3 wk |
 | P5 | `sampling` stage | Own Wigner sampler (T = 0, thermal option), velocities, momentum removal, `samples.h5`; SHARC `wigner.py` distribution comparison | P4 | 5 | 2–3 wk |
 | P6 | `excitations` + `selection` stages | Parallel single points, spectrum, selection modes, `trajectories.json`, review report for `pause_after`; SHARC excite comparison | P3, P5 | 5 | 3–4 wk |

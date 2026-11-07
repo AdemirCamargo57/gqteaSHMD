@@ -35,8 +35,8 @@ The user writes one TOML input file and runs `gqteashmd run input.toml`. The pro
 - Conda env `gqteashmd-dev` (Miniforge in WSL), created from `environment.yml`. The package is installed editable with `pip install -e . --no-deps`. Python 3.12.
 - Runtime dependencies (`pyproject.toml`): `pydantic>=2.6`, `numpy>=1.26`, `pyscf>=2.6`. `environment.yml` pins `pyscf=2.14.*` (O18). SciPy, h5py and geomeTRIC are installed for P4+ and not imported yet.
 - Tests (markers `slow`, `sharc`):
-  - `pytest -m "not slow" -W error`: 241 passed, 1 skipped (live SHARC), 4 deselected. Measured wall time **about 5-6 min** on `/mnt/c` (about 1 min before P3a; the slowdown appeared from P3a Task 1 on, so it is the environment, not the new tests).
-  - The 4 deselected slow tests are the finite-difference gradient checks (about 6 min together). The kill/resume tests from P1 are also `slow`.
+  - `pytest -m "not slow" -W error`: 260 passed, 1 skipped (live SHARC), 4 deselected. Measured wall time **about 5-6 min** on `/mnt/c` (about 1 min before P3a; the slowdown appeared from P3a Task 1 on, so it is the environment, not the new tests).
+  - The 4 deselected slow tests are 2 finite-difference gradient checks (about 6 min together) and 2 kill/resume tests from P1.
   - The tests start real subprocesses, so they need Linux.
   - Finite-difference tests build a **fresh backend for every displaced geometry**, so orbital reuse cannot bias the reference.
 - Lint: `ruff format . && ruff check .`. The line length is 100, with rules E, F, W, I, B, UP and SIM. Markdown is excluded (`extend-exclude`), because ruff ≥0.17 would rewrite code blocks in the plans.
@@ -63,10 +63,10 @@ tools/sharc_compare/   executes SHARC 4.1 as a black box (never imported by gqte
 - **`electronic/`** (P3a): `base.py` (`MoleculeSpec`, `Request(coords_bohr, gradients, transition_dipoles)`, `ElectronicResult` with `to_json()`, `ElectronicBackend`), `properties.py` (oscillator strength `f = 2/3 dE |mu|^2`), `factory.py` (`make_backend`), `pyscf_backend.py` (`PySCFBackend(molecule, settings, *, log_file, threads, memory_mb)`, `require_pyscf`).
   - **PySCF is imported lazily, and only in `electronic/pyscf_backend.py`** (inside functions), so the rest of the package imports without it.
   - SCF ladder: default, then level shift 0.2 Eh + damping 0.5, then second-order. Only rung 1 starts from the previous geometry's density.
-  - SA-CASSCF uses a **singlet-only CI solver** (`fci.solver(mol, singlet=True)`) with equal weights `1/N`, and a **spin guard**: `|<S^2>| > 1e-3` for any root is an error.
+  - SA-CASSCF uses a **singlet-only CI solver** (`fci.solver(mol, singlet=True)`) with equal weights `1/N`, and a **spin guard**: `|<S^2>| > 1e-3` for any root is an error. The solver excludes triplets but not higher spins (quintets can appear in larger active spaces), which is why the guard exists. SCF ladder rung 2 sets `diis_start_cycle = 8`, because PySCF damps only before DIIS starts.
   - **Orbitals are reused between calls of one backend object only via `mcscf.project_init_guess`.** Never pass old MOs directly: they are not orthonormal at a new geometry.
-  - Transition dipoles: CASSCF `-sum r_pq gamma^{0I}_pq` (active orbitals, `trans_rdm1`); linear response via PySCF `transition_dipole()`. Their overall sign is arbitrary, so compare up to sign.
-  - **Error mapping:** user input errors are `ConfigError` (exit 2: missing PySCF or version < 2.6, multiplicity != 1, charge/multiplicity vs electron count, missing `[electronic]`). **Every PySCF call that can raise is wrapped into `ElectronicStructureError`** (a non-retryable `TaskError`, exit 4: unknown basis, SCF/CASSCF/TD non-convergence, spin, active space, gradient/dipole failures). Never let a raw PySCF exception escape.
+  - Transition dipoles: CASSCF `-sum r_pq gamma^{0I}_pq` (active orbitals, `trans_rdm1`); linear response as returned by PySCF `td.transition_dipole()` (length gauge, no sign change). Their overall sign is arbitrary, so compare up to sign.
+  - **Error mapping:** user input errors are `ConfigError` (exit 2: missing PySCF or version < 2.6, multiplicity != 1, charge/multiplicity vs electron count, missing `[electronic]`). The PySCF calls that run SCF, CASSCF, TD, gradients, dipoles and orbital projection are wrapped by `_wrap_failure` into `ElectronicStructureError` (a `TaskError`, exit 4: unknown basis, SCF/CASSCF/TD non-convergence, spin, active space, gradient/dipole failures). It is non-retryable, except that `MemoryError` and `OSError` raised inside PySCF give `retryable=True` (transient I/O and out-of-memory are retried, spec §6.1). Do not let a raw PySCF exception escape from those steps. Config-level `singlets` is checked against the CAS singlet space (Weyl count) when the input is loaded.
   - Not implemented: NACs, wavefunction overlaps, phase tracking, Hessian, triplets, open-shell, density fitting, scratch/chkfile policy.
 - **Stage contract** (`stages/base.py`):
   - `plan(ctx)` runs in the controller and returns `TaskSpec` objects deterministically.
@@ -121,7 +121,7 @@ tools/sharc_compare/   executes SHARC 4.1 as a black box (never imported by gqte
 ## Current status (2026-11-07)
 - **P1 — foundation & orchestrator: DONE**, merged into `main`.
 - **P2 — input schema & preflight: DONE**, merged into `main`. `main` is on GitHub and CI passed on 2026-11-07.
-- **P3a — PySCF electronic-structure layer: DONE on branch `feat/p3a-pyscf-backend`, NOT merged** (the owner decides). `pytest -m "not slow" -W error`: 241 passed, 1 skipped, 4 deselected (5-6 min). The 4 slow FD tests and the live SHARC test pass. ruff and mypy are clean.
+- **P3a — PySCF electronic-structure layer: DONE on branch `feat/p3a-pyscf-backend`, NOT merged** (the owner decides). `pytest -m "not slow" -W error`: 260 passed, 1 skipped, 4 deselected (5-6 min). The 4 slow FD tests and the live SHARC test pass. ruff and mypy are clean.
 - **Implemented features:**
   - the CLI commands `init`, `validate`, `run [--rerun-from]`, `status`, `stop` and `single-point`;
   - the input sections `[project]`, `[molecule]`, `[resources]` (with per-stage overrides), `[execution]`, `[workflow]` and `[electronic]` / `[electronic.casscf]`;
@@ -141,7 +141,7 @@ tools/sharc_compare/   executes SHARC 4.1 as a black box (never imported by gqte
 | ID | Sub-project | Notes |
 |---|---|---|
 | P3a | PySCF electronic-structure layer | **DONE** on `feat/p3a-pyscf-backend` (not merged); see Status |
-| P3b | Couplings for dynamics | NACs (CASSCF), wavefunction overlaps and phase tracking (TDA/TDDFT), scratch/chkfile policy, CASSCF/TDDFT retry ladders, the hardening sweep (limitation 4) |
+| P3b | Couplings for dynamics | NACs (CASSCF), wavefunction overlaps and phase tracking (TDA/TDDFT), the rest of the strategy §2.3 contract (`capabilities`; `compute_more`, an extra gradient at the same geometry after a hop; explicit serialisable reference-wavefunction state, `save_state`/`load_state` or a state object in/out of `compute`, so restarts are reproducible and `run_task` stays idempotent), scratch/chkfile policy, CASSCF/TDDFT retry ladders, the hardening sweep (limitation 4) |
 | P4 | `optimize` + `frequencies` stages | geomeTRIC; **PySCF Hessian (moved here from P3)**; own harmonic analysis; Molden output; stages declare `required_modules=("pyscf",)` |
 | P5 | `sampling` stage | Own Wigner sampler; compare with SHARC `wigner.py` |
 | P6 | `excitations` + `selection` stages | Spectrum and initial-state selection |
