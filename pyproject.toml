@@ -25,6 +25,7 @@ testpaths = ["tests"]
 addopts = "-ra --import-mode=importlib -p no:cacheprovider"
 markers = [
     "slow: long-running tests (deselect with -m 'not slow')",
+    "sharc: runs SHARC 4.1 as a black box (needs SHARC_HOME and SHARC_PYTHON)",
 ]
 
 [tool.ruff]
