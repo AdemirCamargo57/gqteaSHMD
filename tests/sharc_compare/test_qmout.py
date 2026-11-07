@@ -1,6 +1,8 @@
 import importlib.util
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[2]
 spec = importlib.util.spec_from_file_location(
     "qmout", ROOT / "tools" / "sharc_compare" / "qmout.py"
@@ -48,3 +50,22 @@ def test_parse_qm_out():
     assert data["hamiltonian"][1][1].real == -77.67250836
     assert [m[0][1] for m in data["dipole"]] == [-1.529760771, -0.05399139466, -2.380718969e-07]
     assert len(data["gradients"]) == 2 and data["gradients"][1][0][0] == 0.1266703636
+
+
+def test_truncated_gradient_block_names_the_block():
+    cut = SAMPLE[: SAMPLE.index("2 3 ! 1 2 0.0") + len("2 3 ! 1 2 0.0\n")]
+    with pytest.raises(ValueError, match=r"QM\.out: malformed 'gradients' block near line \d+"):
+        qmout.parse_qm_out(cut)
+
+
+def test_garbled_number_names_the_block():
+    bad = SAMPLE.replace("-7.804902443E+001", "not-a-number", 1)
+    with pytest.raises(ValueError, match=r"malformed 'hamiltonian' block near line 8"):
+        qmout.parse_qm_out(bad)
+
+
+def test_missing_block_is_named():
+    start = SAMPLE.index("! 2 Dipole")
+    end = SAMPLE.index("! 3 Gradient")
+    with pytest.raises(ValueError, match="'dipole' block is missing"):
+        qmout.parse_qm_out(SAMPLE[:start] + SAMPLE[end:])

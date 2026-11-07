@@ -48,6 +48,8 @@ def run(args: argparse.Namespace) -> dict:
         home = Path(args.sharc_home)
         env = dict(os.environ)
         env["SHARC"] = str(home / "bin")
+        # PYTHONPATH is deliberately replaced, not extended: the child (SHARC's own conda
+        # environment) must not see gqteashmd or this environment's packages.
         env["PYTHONPATH"] = f"{home / 'lib'}:{home / 'pysharc'}"
         proc = subprocess.run(
             [args.python, str(home / "bin" / "SHARC_PYSCF.py"), "QM.in"],
@@ -59,7 +61,13 @@ def run(args: argparse.Namespace) -> dict:
         )
         if proc.returncode != 0:
             raise SystemExit(f"SHARC_PYSCF.py failed ({proc.returncode}):\n{proc.stderr[-2000:]}")
-        data = parse_qm_out((work / "QM.out").read_text())
+        qm_out = work / "QM.out"
+        if not qm_out.is_file():
+            raise SystemExit(
+                "SHARC_PYSCF.py exited with status 0 but wrote no QM.out:\n"
+                f"{(proc.stderr or proc.stdout)[-2000:]}"
+            )
+        data = parse_qm_out(qm_out.read_text())
     n = args.roots
     return {
         "schema_version": 1,
