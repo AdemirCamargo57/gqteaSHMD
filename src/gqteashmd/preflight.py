@@ -81,18 +81,28 @@ def run_preflight(
             f"disk, e.g. ~/gqteashmd-runs/{config.project.name}."
         )
 
-    try:
-        free_mb = shutil.disk_usage(_nearest_existing(project_dir)).free // (1024 * 1024)
-    except OSError as exc:
+    if project_dir.exists() and not project_dir.is_dir():
+        raise ConfigError(f"project.directory {project_dir} exists but is not a directory.")
+    parent = _nearest_existing(project_dir)
+    if not parent.is_dir() or not os.access(parent, os.W_OK | os.X_OK):
         raise ConfigError(
-            f"Cannot determine free disk space for {project_dir}: {exc.strerror or exc}"
-        ) from exc
-    minimum = config.execution.min_free_disk_mb
-    if free_mb < minimum:
-        raise ConfigError(
-            f"Only {free_mb} MB are free on the disk holding {project_dir}; at least {minimum} MB "
-            "are required (execution.min_free_disk_mb)."
+            f"Cannot create or write the project directory {project_dir} "
+            f"(no write permission in {parent})."
         )
+
+    minimum = config.execution.min_free_disk_mb
+    if minimum > 0:
+        try:
+            free_mb = shutil.disk_usage(parent).free // (1024 * 1024)
+        except OSError as exc:
+            raise ConfigError(
+                f"Cannot determine free disk space for {project_dir}: {exc.strerror or exc}"
+            ) from exc
+        if free_mb < minimum:
+            raise ConfigError(
+                f"Only {free_mb} MB are free on the disk holding {project_dir}; at least "
+                f"{minimum} MB are required (execution.min_free_disk_mb)."
+            )
 
     res = config.resources
     if machine.cores is not None and res.total_cores > machine.cores:

@@ -19,7 +19,7 @@ from gqteashmd.orchestrator import Orchestrator
 from gqteashmd.project.layout import ProjectLayout
 from gqteashmd.project.lock import locked_by
 from gqteashmd.project.state import StateStore, TaskStatus
-from gqteashmd.stages.pipeline import DEFAULT_PIPELINE, import_pipeline
+from gqteashmd.stages.pipeline import DEFAULT_PIPELINE, check_stage_names, import_pipeline
 
 EXIT_STOPPED = 5
 
@@ -74,6 +74,7 @@ def _cmd_validate(args: argparse.Namespace) -> int:
     cfg = loaded.config
     if not cfg.molecule.geometry.is_file():
         raise ConfigError(f"Geometry file not found or not a regular file: {cfg.molecule.geometry}")
+    check_stage_names(cfg, [s.name for s in import_pipeline(args.pipeline)(cfg)])
     print(f"Input file {loaded.source} is valid.")
     print(f"  project directory: {cfg.project.directory}")
     print(f"  geometry:          {cfg.molecule.geometry}")
@@ -84,8 +85,13 @@ def _cmd_run(args: argparse.Namespace) -> int:
     loaded = load_config(args.input)
     orchestrator = Orchestrator(loaded, pipeline_ref=args.pipeline, rerun_from=args.rerun_from)
     warnings = orchestrator.preflight()
-    orchestrator.layout.ensure()
-    configure_logging(orchestrator.layout.logs_dir / "gqteashmd.log")
+    try:
+        orchestrator.layout.ensure()
+        configure_logging(orchestrator.layout.logs_dir / "gqteashmd.log")
+    except OSError as exc:
+        raise ConfigError(
+            f"Cannot create project directory {orchestrator.layout.root}: {exc.strerror or exc}"
+        ) from exc
     logger = logging.getLogger("gqteashmd.cli")
     for message in warnings:
         logger.warning("Preflight: %s", message)
@@ -175,6 +181,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_validate = sub.add_parser("validate", help="check an input file without running anything")
     p_validate.add_argument("input", type=Path)
+    p_validate.add_argument("--pipeline", default=DEFAULT_PIPELINE, help=argparse.SUPPRESS)
     p_validate.set_defaults(func=_cmd_validate)
 
     p_run = sub.add_parser("run", help="run (or resume) the workflow")

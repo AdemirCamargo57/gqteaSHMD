@@ -206,3 +206,34 @@ def test_pause_returns_exit_5_with_message(tmp_path, write_input, monkeypatch, c
     path = write_input(tmp_path, execution=FAST, extra='[workflow]\npause_after = ["sampling"]')
     assert main(["run", str(path), "--pipeline", FAKE]) == EXIT_STOPPED
     assert "Paused after stage 'sampling'" in capsys.readouterr().out
+
+
+def test_validate_rejects_unknown_override_stage(tmp_path, write_input, capsys):
+    path = write_input(tmp_path, resources="[resources.stages.nosuch]\nthreads_per_task = 1")
+    assert main(["validate", str(path), "--pipeline", FAKE]) == 2
+    assert "[resources.stages] names unknown stage(s): nosuch" in capsys.readouterr().err
+
+
+def test_validate_rejects_unknown_pause_stage(tmp_path, write_input, capsys):
+    path = write_input(tmp_path, extra='[workflow]\npause_after = ["nosuch"]')
+    assert main(["validate", str(path), "--pipeline", FAKE]) == 2
+    assert "workflow.pause_after names unknown stage(s): nosuch" in capsys.readouterr().err
+
+
+def test_run_with_project_directory_that_is_a_file_exits_2(tmp_path, write_input, capsys):
+    path = write_input(tmp_path)
+    (tmp_path / "run").write_text("in the way")
+    assert main(["run", str(path), "--pipeline", FAKE]) == 2
+    assert "not a directory" in capsys.readouterr().err
+
+
+def test_run_backstop_turns_os_error_into_config_error(tmp_path, write_input, monkeypatch, capsys):
+    from gqteashmd.project.layout import ProjectLayout
+
+    def fail(self):
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(ProjectLayout, "ensure", fail)
+    path = write_input(tmp_path)
+    assert main(["run", str(path), "--pipeline", FAKE]) == 2
+    assert "Cannot create project directory" in capsys.readouterr().err

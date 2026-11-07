@@ -21,7 +21,12 @@ from gqteashmd.project.lock import ProjectLock
 from gqteashmd.project.provenance import append_provenance, collect_provenance
 from gqteashmd.project.state import StageStatus, StateStore, TaskRecord, TaskStatus
 from gqteashmd.stages.base import Stage, StageContext, TaskSpec
-from gqteashmd.stages.pipeline import DEFAULT_PIPELINE, import_pipeline, validate_pipeline
+from gqteashmd.stages.pipeline import (
+    DEFAULT_PIPELINE,
+    check_stage_names,
+    import_pipeline,
+    validate_pipeline,
+)
 from gqteashmd.worker import RESULT_FILE, TASK_FILE, read_result, write_task_file
 
 log = logging.getLogger("gqteashmd.orchestrator")
@@ -62,18 +67,7 @@ class Orchestrator:
                 f"Unknown stage {rerun_from!r} for --rerun-from; stages are: {', '.join(names)}"
             )
         self.rerun_from = rerun_from
-        unknown = sorted(set(self.config.resources.stages) - set(names))
-        if unknown:
-            raise ConfigError(
-                f"[resources.stages] names unknown stage(s): {', '.join(unknown)}; "
-                f"stages are: {', '.join(names)}"
-            )
-        unknown_pauses = sorted(set(self.config.workflow.pause_after) - set(names))
-        if unknown_pauses:
-            raise ConfigError(
-                f"workflow.pause_after names unknown stage(s): {', '.join(unknown_pauses)}; "
-                f"stages are: {', '.join(names)}"
-            )
+        check_stage_names(self.config, names)
         self.layout = ProjectLayout(self.config.project.directory)
         self._preflight_warnings: list[str] | None = None
 

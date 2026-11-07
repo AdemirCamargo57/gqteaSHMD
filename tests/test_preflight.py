@@ -1,4 +1,6 @@
 import json
+import os
+import shutil
 from pathlib import Path
 
 import pytest
@@ -54,7 +56,11 @@ def test_windows_or_onedrive_project_directory_is_refused(tmp_path, write_input,
     "directory",
     ["/mnt/data/run", "/mnt/nvme0/run", "/home/x/onedrive-backup/run", "/home/x/run"],
 )
-def test_ordinary_linux_project_directory_is_accepted(tmp_path, write_input, directory):
+def test_ordinary_linux_project_directory_is_accepted(
+    tmp_path, write_input, directory, monkeypatch
+):
+    # The directories are fictitious: this test is about the location rule, not permissions.
+    monkeypatch.setattr(os, "access", lambda *_a, **_k: True)
     cfg = _with_directory(load_config(write_input(tmp_path)).config, Path(directory))
     assert run_preflight(cfg, [PrepareStage()], machine=MachineInfo(None, None)) == []
 
@@ -75,3 +81,40 @@ def test_missing_module_is_refused_before_the_project_is_created(
     with pytest.raises(ConfigError, match="no_such_module_xyz"):
         orchestrator.run()
     assert not (tmp_path / "run").exists()
+
+
+def test_project_directory_that_is_a_file_is_a_config_error(tmp_path, write_input):
+    blocker = tmp_path / "blocker"
+    blocker.write_text("x")
+    cfg = _with_directory(load_config(write_input(tmp_path)).config, blocker)
+    with pytest.raises(ConfigError, match="not a directory"):
+        run_preflight(cfg, [PrepareStage()], machine=MachineInfo(None, None))
+
+
+def test_project_directory_below_a_file_is_a_config_error(tmp_path, write_input):
+    blocker = tmp_path / "blocker"
+    blocker.write_text("x")
+    cfg = _with_directory(load_config(write_input(tmp_path)).config, blocker / "run")
+    with pytest.raises(ConfigError, match="Cannot create or write"):
+        run_preflight(cfg, [PrepareStage()], machine=MachineInfo(None, None))
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores directory permissions")
+def test_read_only_parent_is_a_config_error(tmp_path, write_input):
+    cfg = _with_directory(load_config(write_input(tmp_path)).config, tmp_path / "ro" / "run")
+    (tmp_path / "ro").mkdir()
+    (tmp_path / "ro").chmod(0o555)
+    try:
+        with pytest.raises(ConfigError, match="no write permission"):
+            run_preflight(cfg, [PrepareStage()], machine=MachineInfo(None, None))
+    finally:
+        (tmp_path / "ro").chmod(0o755)
+
+
+def test_zero_minimum_disk_skips_the_disk_query(tmp_path, write_input, monkeypatch):
+    def boom(_path):
+        raise OSError("no disk query")
+
+    monkeypatch.setattr(shutil, "disk_usage", boom)
+    cfg = load_config(write_input(tmp_path, execution="min_free_disk_mb = 0")).config
+    assert run_preflight(cfg, [PrepareStage()], machine=MachineInfo(None, None)) == []

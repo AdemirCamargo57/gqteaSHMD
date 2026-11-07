@@ -6,7 +6,7 @@ import importlib
 from collections.abc import Callable, Sequence
 
 from gqteashmd.config.schema import ShmdConfig
-from gqteashmd.errors import ProjectError
+from gqteashmd.errors import ConfigError, ProjectError
 from gqteashmd.stages.base import Stage, is_safe_name
 
 PipelineFactory = Callable[[ShmdConfig], list[Stage]]
@@ -26,6 +26,23 @@ def import_pipeline(ref: str) -> PipelineFactory:
         return factory
     except AttributeError as exc:
         raise ProjectError(f"Module {module_name!r} has no attribute {attribute!r}") from exc
+
+
+def check_stage_names(config: ShmdConfig, stage_names: Sequence[str]) -> None:
+    """Raise ConfigError if the input file names a stage the pipeline does not have."""
+    names = list(stage_names)
+    unknown = sorted(set(config.resources.stages) - set(names))
+    if unknown:
+        raise ConfigError(
+            f"[resources.stages] names unknown stage(s): {', '.join(unknown)}; "
+            f"stages are: {', '.join(names)}"
+        )
+    unknown_pauses = sorted(set(config.workflow.pause_after) - set(names))
+    if unknown_pauses:
+        raise ConfigError(
+            f"workflow.pause_after names unknown stage(s): {', '.join(unknown_pauses)}; "
+            f"stages are: {', '.join(names)}"
+        )
 
 
 def validate_pipeline(stages: Sequence[Stage]) -> None:
