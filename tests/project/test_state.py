@@ -106,7 +106,7 @@ def test_readonly_open_reads_and_refuses_writes(tmp_path):
         s.set_stage("prepare", StageStatus.DONE, fingerprint="f")
     with StateStore(db, readonly=True) as ro:
         assert ro.get_stage("prepare").status == StageStatus.DONE
-        with pytest.raises(sqlite3.OperationalError):
+        with pytest.raises(ProjectError, match="readonly database"):
             ro.set_stage("prepare", StageStatus.FAILED)
 
 
@@ -130,3 +130,47 @@ def test_unknown_status_is_project_error(tmp_path):
             s.get_stage("prepare")
         with pytest.raises(ProjectError, match="unknown task status 'weird'"):
             s.get_tasks("prepare")
+
+
+def test_unknown_stored_status_is_a_project_error(tmp_path):
+    db = tmp_path / "state.db"
+    with StateStore(db) as s:
+        s.set_stage("prepare", StageStatus.DONE, fingerprint="x")
+    conn = sqlite3.connect(db)
+    conn.execute("UPDATE stages SET status = 'from-the-future'")
+    conn.commit()
+    conn.close()
+    with StateStore(db) as s, pytest.raises(ProjectError, match="unknown stage status"):
+        s.get_stage("prepare")
+
+
+def test_use_after_close_is_a_project_error(tmp_path):
+    s = StateStore(tmp_path / "state.db")
+    s.close()
+    with pytest.raises(ProjectError, match="state database"):
+        s.get_stage("prepare")
+
+
+def test_query_time_sqlite_errors_become_project_errors(tmp_path, monkeypatch):
+    s = StateStore(tmp_path / "state.db")
+
+    class Broken:
+        def execute(self, *args, **kwargs):
+            raise sqlite3.OperationalError("disk I/O error")
+
+        def executemany(self, *args, **kwargs):
+            raise sqlite3.OperationalError("disk I/O error")
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(s, "_conn", Broken())
+    for call in (
+        lambda: s.get_stage("prepare"),
+        lambda: s.set_stage("prepare", StageStatus.RUNNING),
+        lambda: s.upsert_tasks("prepare", ["t0"]),
+        lambda: s.get_tasks("prepare"),
+        lambda: s.task_counts("prepare"),
+    ):
+        with pytest.raises(ProjectError, match="disk I/O error"):
+            call()

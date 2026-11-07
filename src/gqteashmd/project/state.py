@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import contextlib
+import functools
 import sqlite3
-from collections.abc import Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -94,8 +95,27 @@ def _task_status(value: str) -> TaskStatus:
         ) from exc
 
 
+def _guarded[**P, R](method: Callable[P, R]) -> Callable[P, R]:
+    """Turn sqlite failures at query time into ProjectError (exit 3) with advice."""
+
+    @functools.wraps(method)
+    def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
+        try:
+            return method(*args, **kwargs)
+        except sqlite3.Error as exc:
+            store = args[0]
+            raise ProjectError(
+                f"The state database {getattr(store, '_path', '?')} failed during "
+                f"{method.__name__}: {exc}. Check free disk space and that no other program "
+                "has the database open, then run the same command again."
+            ) from exc
+
+    return wrapper
+
+
 class StateStore:
     def __init__(self, db_path: Path, *, readonly: bool = False) -> None:
+        self._path = Path(db_path)
         conn: sqlite3.Connection | None = None
         try:
             if readonly:
@@ -150,6 +170,7 @@ class StateStore:
             raise
 
     # ---- stages -----------------------------------------------------------------
+    @_guarded
     def get_stage(self, name: str) -> StageRecord | None:
         row = self._conn.execute(
             "SELECT name, status, fingerprint, message FROM stages WHERE name = ?", (name,)
@@ -158,6 +179,7 @@ class StateStore:
             return None
         return StageRecord(row[0], _stage_status(row[1]), row[2], row[3])
 
+    @_guarded
     def set_stage(
         self,
         name: str,
@@ -179,12 +201,14 @@ class StateStore:
             (name, status.value, fingerprint, message, _now()),
         )
 
+    @_guarded
     def reset_stage(self, name: str) -> None:
         with self._transaction():
             self._conn.execute("DELETE FROM tasks WHERE stage = ?", (name,))
             self._conn.execute("DELETE FROM stages WHERE name = ?", (name,))
 
     # ---- tasks ------------------------------------------------------------------
+    @_guarded
     def upsert_tasks(self, stage: str, task_ids: Iterable[str]) -> None:
         now = _now()
         with self._transaction():
@@ -194,6 +218,7 @@ class StateStore:
                 [(stage, task_id, TaskStatus.PENDING.value, now) for task_id in task_ids],
             )
 
+    @_guarded
     def get_tasks(self, stage: str) -> list[TaskRecord]:
         rows = self._conn.execute(
             "SELECT stage, task_id, status, attempts, pid, message FROM tasks "
@@ -202,6 +227,7 @@ class StateStore:
         ).fetchall()
         return [TaskRecord(r[0], r[1], _task_status(r[2]), r[3], r[4], r[5]) for r in rows]
 
+    @_guarded
     def get_task(self, stage: str, task_id: str) -> TaskRecord:
         row = self._conn.execute(
             "SELECT stage, task_id, status, attempts, pid, message FROM tasks "
@@ -212,6 +238,7 @@ class StateStore:
             raise ProjectError(f"Unknown task {stage}/{task_id} in state database")
         return TaskRecord(row[0], row[1], _task_status(row[2]), row[3], row[4], row[5])
 
+    @_guarded
     def set_task(
         self,
         stage: str,
@@ -231,6 +258,7 @@ class StateStore:
         if cursor.rowcount == 0:
             raise ProjectError(f"Unknown task {stage}/{task_id} in state database")
 
+    @_guarded
     def requeue_failed(self, stage: str) -> int:
         cursor = self._conn.execute(
             "UPDATE tasks SET status = ?, attempts = 0, updated_at = ? "
@@ -239,6 +267,7 @@ class StateStore:
         )
         return cursor.rowcount
 
+    @_guarded
     def task_counts(self, stage: str) -> dict[TaskStatus, int]:
         counts = {status: 0 for status in TaskStatus}
         for status, count in self._conn.execute(
