@@ -85,7 +85,31 @@ def _compare(name, ours, theirs, report):
     return abs(ours.mean() - theirs.mean()) / se, p, abs(z_std)
 
 
-@pytest.mark.parametrize(("temperature_K", "sharc_args"), [(0.0, ()), (1000.0, ("-t", "1000"))])
+SHARC_THERMAL_DIFFERENCE = (
+    "SHARC 4.1 wigner.py -t is not the exact thermal Wigner function: at 3000 K (coth factor 2.09 "
+    "for the bend, 1.32 and 1.28 for the stretches) its normal-coordinate variances are 1-8 % "
+    "below c/(2 omega) and slightly heavy-tailed (kurtosis 3.04-3.12; measured by projecting "
+    "10000 of its samples onto our modes, seeds 11 and 12), while at T = 0 they match exactly. "
+    "Measured here: HOH angle KS p 7e-4, std ratio 1.042 (+2.5 SE). Ours follows the exact "
+    "Gaussian (unit tests; the stage's Gamma check). At 1000 K (coth 1.004-1.09) the difference "
+    "is below the resolution of 2000 samples."
+)
+
+
+# 3000 K is the discriminating thermal case for water: there the comparison fails because of the
+# documented difference above (deterministic seeds, so the expected failure is strict).
+@pytest.mark.parametrize(
+    ("temperature_K", "sharc_args"),
+    [
+        (0.0, ()),
+        (1000.0, ("-t", "1000")),
+        pytest.param(
+            3000.0,
+            ("-t", "3000"),
+            marks=pytest.mark.xfail(strict=True, reason=SHARC_THERMAL_DIFFERENCE),
+        ),
+    ],
+)
 def test_wigner_statistics_match_sharc(tmp_path, temperature_K, sharc_args):
     run_wigner = _load("run_wigner")
     initconds = _load("initconds")
