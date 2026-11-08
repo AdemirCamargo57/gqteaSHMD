@@ -10,7 +10,7 @@ from scipy.stats import ks_2samp
 
 from gqteashmd.chem.masses import isotope_mass
 from gqteashmd.config.schema import ElectronicSection
-from gqteashmd.core.units import ANGSTROM_TO_BOHR, DALTON_IN_ME
+from gqteashmd.core.units import ANGSTROM_TO_BOHR, DALTON_IN_ME, HARTREE_IN_CM1
 from gqteashmd.electronic.base import MoleculeSpec
 from gqteashmd.electronic.pyscf_backend import PySCFBackend
 from gqteashmd.vib.harmonic import harmonic_analysis
@@ -62,18 +62,31 @@ def _angular_momentum(masses_me, positions, velocities):
     return np.linalg.norm((m * np.cross(r, velocities)).sum(axis=1), axis=1)
 
 
+def _std_se(x):
+    """Standard error of the sample standard deviation from the fourth moment."""
+    var = x.var(ddof=1)
+    m4 = np.mean((x - x.mean()) ** 4)
+    return np.sqrt((m4 - var**2) / (4.0 * x.size * var))
+
+
 def _compare(name, ours, theirs, report):
+    """Return (mean z, KS p, std z): differences in standard errors and the KS p-value."""
     se = np.sqrt(ours.var(ddof=1) / ours.size + theirs.var(ddof=1) / theirs.size)
     p = ks_2samp(ours, theirs).pvalue
+    s_ours, s_sharc = ours.std(ddof=1), theirs.std(ddof=1)
+    se_std = np.hypot(_std_se(ours), _std_se(theirs))
+    z_std = (s_ours - s_sharc) / se_std
     report.append(
-        f"{name:10s} ours mean {ours.mean():.6f} std {ours.std(ddof=1):.6f} | "
-        f"SHARC mean {theirs.mean():.6f} std {theirs.std(ddof=1):.6f} | "
-        f"diff/SE {(ours.mean() - theirs.mean()) / se:+.2f} | KS p {p:.4f}"
+        f"{name:10s} ours mean {ours.mean():.6f} std {s_ours:.6f} | "
+        f"SHARC mean {theirs.mean():.6f} std {s_sharc:.6f} | "
+        f"diff/SE {(ours.mean() - theirs.mean()) / se:+.2f} | KS p {p:.4f} | "
+        f"std ratio {s_ours / s_sharc:.4f} std diff/SE {z_std:+.2f}"
     )
-    return abs(ours.mean() - theirs.mean()) / se, p
+    return abs(ours.mean() - theirs.mean()) / se, p, abs(z_std)
 
 
-def test_wigner_statistics_match_sharc(tmp_path):
+@pytest.mark.parametrize(("temperature_K", "sharc_args"), [(0.0, ()), (1000.0, ("-t", "1000"))])
+def test_wigner_statistics_match_sharc(tmp_path, temperature_K, sharc_args):
     run_wigner = _load("run_wigner")
     initconds = _load("initconds")
 
@@ -101,7 +114,7 @@ def test_wigner_statistics_match_sharc(tmp_path):
         molden,
         2000,
         tmp_path / "sharc",
-        extra_args=("-r", "7"),
+        extra_args=("-r", "7", *sharc_args),
     )
     path = next(p for p in created if p.name == "initconds")
     sharc = initconds.parse_initconds(path.read_text())
@@ -112,7 +125,7 @@ def test_wigner_statistics_match_sharc(tmp_path):
         analysis.frequencies_cm1,
         analysis.modes_mass_weighted,
         n_samples=20000,
-        temperature_K=0.0,
+        temperature_K=temperature_K,
         low_frequency_cutoff_cm1=10.0,
         rng=np.random.default_rng(1),
     )
@@ -123,7 +136,17 @@ def test_wigner_statistics_match_sharc(tmp_path):
     report.append(
         f"Eharm SHARC {sharc['eharm_hartree']:.10f} ours {ours.expected_mean_energy_hartree:.10f}"
     )
-    assert sharc["eharm_hartree"] == pytest.approx(ours.expected_mean_energy_hartree, abs=1e-8)
+    report.append(f"SHARC header Temp {sharc['temperature_K']}")
+    # Measured: SHARC's `Eharm` header is the zero-point energy sum(omega)/2 at every
+    # temperature (at 1000 K it still equals our T = 0 value), so it is not the thermal mean.
+    zero_point = (
+        0.5 * np.sum(analysis.frequencies_cm1[analysis.frequencies_cm1 > 10.0]) / (HARTREE_IN_CM1)
+    )
+    assert sharc["eharm_hartree"] == pytest.approx(zero_point, abs=1e-8)
+    if temperature_K == 0.0:
+        assert sharc["eharm_hartree"] == pytest.approx(ours.expected_mean_energy_hartree, abs=1e-8)
+    else:
+        assert ours.expected_mean_energy_hartree > zero_point
 
     masses_me = masses * DALTON_IN_ME
     # Parser/unit check. SHARC's printed velocities have no net momentum or rotation, and its
@@ -154,9 +177,10 @@ def test_wigner_statistics_match_sharc(tmp_path):
     print("\n" + "\n".join(report))
 
     assert np.min(line - own) > -1e-6, "SHARC printed velocities carry more energy than its Ekin"
-    for name, z, p in checks:
+    for name, z, p, z_std in checks:
         assert z < 4.0, f"{name}: means differ by {z:.2f} standard errors"
         assert p > 1e-3, f"{name}: KS p-value {p:.2e}"
+        assert z_std <= 4.0, f"{name}: standard deviations differ by {z_std:.2f} standard errors"
     assert l_ours.max() < 1e-3
     assert l_sharc.max() < 1e-3
     assert p_ours.max() < 1e-8
