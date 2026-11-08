@@ -349,6 +349,42 @@ def test_a_done_stage_whose_directory_was_deleted_is_recomputed(project, behavio
     assert "is missing; recomputing" in caplog.text
 
 
+def test_a_refused_run_changes_nothing(project, behaviour):
+    """Disabling a completed optional stage is refused before any file or record is written."""
+    assert _run(project).completed == ALL
+    config_json = _run_dir(project) / ".gqteashmd" / "config.json"
+    snapshot = config_json.read_bytes()
+    with _state(project) as state:
+        before = {n: state.get_stage(n) for n in ALL}
+    behaviour(skip_optimize=True)
+    with pytest.raises(StaleStageError):
+        _run(project)
+    assert config_json.read_bytes() == snapshot
+    with _state(project) as state:
+        assert state.get_stage("optimize").status == StageStatus.DONE
+        assert {n: state.get_stage(n) for n in ALL} == before
+
+
+def test_a_pending_stage_with_done_tasks_and_a_deleted_directory_is_recomputed(
+    project, behaviour, caplog
+):
+    import shutil
+
+    behaviour(sleep=0.3)
+    marker = _run_dir(project) / "03_sampling" / "tasks" / "t000" / "result.json"
+    orch = Orchestrator(load_config(project), pipeline_ref=FAKE)
+    assert orch.run(should_stop=marker.exists).stopped is True
+    with _state(project) as state:
+        assert state.get_stage("sampling").status == StageStatus.PENDING
+        assert state.task_counts("sampling")[TaskStatus.DONE] >= 1
+    shutil.rmtree(_run_dir(project) / "03_sampling")
+    behaviour()
+    with caplog.at_level("WARNING", logger="gqteashmd.orchestrator"):
+        summary = _run(project)
+    assert "sampling" in summary.completed
+    assert "is missing; recomputing" in caplog.text
+
+
 def test_two_runs_in_one_session_append_one_provenance_record(project, behaviour):
     orch = Orchestrator(load_config(project), pipeline_ref=FAKE)
     with orch.session():

@@ -70,6 +70,12 @@ class Stage(ABC):
         return True
 
     def fingerprint_inputs(self, ctx: StageContext) -> dict[str, Any]:
+        """Inputs that decide whether stored results are still valid.
+
+        Must not read upstream artifacts: the controller also calls this before any stage
+        has run, with an empty ``ctx.upstream``. Depend on upstream results through
+        ``depends_on`` (their fingerprints are included automatically).
+        """
         return section_fingerprint(ctx.config, self.config_sections)
 
     @abstractmethod

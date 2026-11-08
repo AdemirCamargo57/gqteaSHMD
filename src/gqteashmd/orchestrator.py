@@ -126,13 +126,14 @@ class Orchestrator:
             for message in warnings:
                 log.warning("Preflight: %s", message)
         with self.session(), StateStore(self.layout.state_db) as state:
-            write_snapshot(self.loaded, self.layout.config_snapshot)
             if self._provenance is not None:
                 append_provenance(self.layout.provenance_file, self._provenance)
                 self._provenance = None  # one record per session, however many run() calls
                 self._provenance_recorded = True
             elif not self._provenance_recorded:
                 raise ProjectError("Internal error: no provenance record for this session.")
+            self._check_up_to_date(state)
+            write_snapshot(self.loaded, self.layout.config_snapshot)
             if self.rerun_from is not None:
                 self._reset_from(state, self.rerun_from)
                 self.rerun_from = None
@@ -160,35 +161,24 @@ class Orchestrator:
                 summary.skipped.append(stage.name)
                 log.info("Stage %s: skipped (disabled in the input file)", stage.name)
                 continue
-            try:
-                fp = _fingerprint(
-                    {
-                        "stage": stage.name,
-                        "version": stage.version,
-                        "inputs": stage.fingerprint_inputs(ctx),
-                        "upstream": {d: fingerprints[d] for d in stage.depends_on},
-                    }
-                )
-            except TypeError as exc:
-                raise ProjectError(
-                    f"Stage {stage.name!r}: fingerprint inputs are not JSON-serializable: {exc}"
-                ) from exc
+            fp = self._stage_fingerprint(stage, ctx, fingerprints)
             fingerprints[stage.name] = fp
             record = state.get_stage(stage.name)
             if record is not None and record.fingerprint != fp:
-                has_finished_tasks = state.task_counts(stage.name)[TaskStatus.DONE] > 0
-                if has_finished_tasks or record.status in (StageStatus.DONE, StageStatus.RUNNING):
-                    source = shlex.quote(str(self.loaded.source))
-                    raise StaleStageError(
-                        f"Stage '{stage.name}' has results produced from different inputs "
-                        "(the input file or an earlier stage changed). Run "
-                        f"`gqteashmd run {source} --rerun-from {stage.name}` "
-                        "to move the old results aside and recompute from this stage onward."
-                    )
+                if self._has_results(state, stage, record):
+                    raise self._stale_error(stage)
                 log.info("Stage %s: inputs changed since last attempt; starting over", stage.name)
                 self._reset_stage(state, index, stage)
                 record = None
-            if record is not None and record.status == StageStatus.DONE and not stage_dir.exists():
+            if (
+                record is not None
+                and record.status != StageStatus.SKIPPED
+                and not stage_dir.exists()
+                and (
+                    record.status == StageStatus.DONE
+                    or state.task_counts(stage.name)[TaskStatus.DONE] > 0
+                )
+            ):
                 log.warning(
                     "Stage %s: results directory %s is missing; recomputing", stage.name, stage_dir
                 )
@@ -221,6 +211,70 @@ class Orchestrator:
                 )
                 break
         return summary
+
+    def _stage_fingerprint(
+        self, stage: Stage, ctx: StageContext, fingerprints: Mapping[str, str]
+    ) -> str:
+        try:
+            return _fingerprint(
+                {
+                    "stage": stage.name,
+                    "version": stage.version,
+                    "inputs": stage.fingerprint_inputs(ctx),
+                    "upstream": {d: fingerprints[d] for d in stage.depends_on},
+                }
+            )
+        except TypeError as exc:
+            raise ProjectError(
+                f"Stage {stage.name!r}: fingerprint inputs are not JSON-serializable: {exc}"
+            ) from exc
+
+    def _stale_error(self, stage: Stage) -> StaleStageError:
+        source = shlex.quote(str(self.loaded.source))
+        return StaleStageError(
+            f"Stage '{stage.name}' has results produced from different inputs "
+            "(the input file or an earlier stage changed). Run "
+            f"`gqteashmd run {source} --rerun-from {stage.name}` "
+            "to move the old results aside and recompute from this stage onward."
+        )
+
+    @staticmethod
+    def _has_results(state: StateStore, stage: Stage, record: Any) -> bool:
+        if state.task_counts(stage.name)[TaskStatus.DONE] > 0:
+            return True
+        return bool(record.status in (StageStatus.DONE, StageStatus.RUNNING))
+
+    def _check_up_to_date(self, state: StateStore) -> None:
+        """Refuse a stale run before anything in the project is changed."""
+        names = [s.name for s in self.stages]
+        exempt = set(names[names.index(self.rerun_from) :]) if self.rerun_from else set()
+        fingerprints: dict[str, str] = {}
+        for index, stage in enumerate(self.stages):
+            if not stage.enabled(self.config):
+                fingerprints[stage.name] = SKIPPED_FINGERPRINT
+                record = state.get_stage(stage.name)
+                if (
+                    stage.name not in exempt
+                    and record is not None
+                    and record.fingerprint != SKIPPED_FINGERPRINT
+                    and self._has_results(state, stage, record)
+                ):
+                    raise self._stale_error(stage)
+                continue
+            ctx = StageContext(
+                self.config, self.layout, self.layout.stage_dir(index, stage.name), {}
+            )
+            fp = self._stage_fingerprint(stage, ctx, fingerprints)
+            fingerprints[stage.name] = fp
+            if stage.name in exempt:
+                continue
+            record = state.get_stage(stage.name)
+            if (
+                record is not None
+                and record.fingerprint != fp
+                and self._has_results(state, stage, record)
+            ):
+                raise self._stale_error(stage)
 
     def _reset_from(self, state: StateStore, name: str) -> None:
         start = [s.name for s in self.stages].index(name)
