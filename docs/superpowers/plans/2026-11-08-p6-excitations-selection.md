@@ -1,5 +1,7 @@
 # P6: `excitations` + `selection` Stages Implementation Plan
 
+> **Erratum (P6 final fix wave, 2026-11-08).** The constants in Facts §5 and in the Task 2 test below are wrong. The correct values (implemented in `excite/spectrum.py` and verified by hand) are: the cross-section prefactor 2π²/c is **0.144044** Eh·a0² (not 0.144049), i.e. **1.09761** eV·Å² (not 1.097633), and ε/σ = 10⁻¹⁶ N_A/(1000 ln 10) = **26153.8** M⁻¹cm⁻¹Å⁻² (not 26153.0). The plan's planned bright rule f/f_max was also replaced by the owner decision of Task 7b (`weighting = "f_over_dE2"` default, `"f"` optional); the f/ΔE² exponents were then measured against SHARC (ΔE exponent −1.989 ± 0.050, f exponent 0.993 ± 0.028). The plan below is kept as the historical record.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Two new stages.
