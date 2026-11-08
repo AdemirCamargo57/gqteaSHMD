@@ -1,3 +1,5 @@
+import multiprocessing
+
 import numpy as np
 import pytest
 
@@ -48,19 +50,20 @@ def test_branching_probabilities():
     assert Branching().probabilities()["reflected_lower"] == 0.0
 
 
-def _run(seed, n=50):
+def _run(seed, n=50, workers=1, initial_state=0):
     return run_model_ensemble(
         TullySimpleAvoidedCrossing(),
         n_trajectories=n,
         x0=-10.0,
         k=30.0,
         sigma=20 / 30,
-        initial_state=0,
+        initial_state=initial_state,
         options=DynamicsOptions(dt_au=1.0, energy_drift_limit_au=0.0184),
         seed=seed,
         x_exit=10.0,
         max_steps=5000,
         sampling="wigner",
+        workers=workers,
     )
 
 
@@ -70,3 +73,23 @@ def test_sac_ensemble_probabilities_sum_to_one_and_are_deterministic():
     assert a.n_finished == 12 and a.unfinished == 0 and a.energy_drift == 0
     assert sum(a.probabilities().values()) == pytest.approx(1.0)
     assert a.reflected_lower == 0 and a.reflected_upper == 0  # E >> barrier-free regime
+
+
+def test_counts_do_not_depend_on_the_number_of_workers():
+    serial = _run(5, 9)
+    assert _run(5, 9, workers=2) == serial
+    assert _run(5, 9, workers=4) == serial  # more chunks than trajectories per worker
+    assert serial.n_trajectories == 9 and serial.n_finished == 9
+    assert multiprocessing.active_children() == []
+
+
+@pytest.mark.parametrize("workers", [0, -1, 1.5, True, "2"])
+def test_invalid_workers_is_an_error(workers):
+    with pytest.raises(ValueError, match="workers"):
+        _run(1, 2, workers=workers)
+
+
+def test_a_worker_error_reaches_the_caller_and_no_worker_is_left():
+    with pytest.raises(ValueError, match="active"):
+        _run(1, 4, workers=2, initial_state=5)
+    assert multiprocessing.active_children() == []

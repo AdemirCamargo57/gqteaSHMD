@@ -125,3 +125,63 @@ def test_landau_zener(u):
     leave = 1.0 - abs(c[0]) ** 2
     expected = np.exp(-np.pi * gamma**2 / (u * alpha))
     assert abs(leave - expected) < 1e-3, (leave, expected)
+
+
+def _propagate_loop(c, e0, e1, nac0, nac1, v0, v1, dt, nsubsteps):
+    """Straightforward reference: one substep at a time (the pre-vectorization code)."""
+    c = np.asarray(c, dtype=complex)
+    n = c.shape[0]
+    delta = dt / nsubsteps
+    p = np.eye(n, dtype=complex)
+    current = c.copy()
+    starts = []
+    for m in range(1, nsubsteps + 1):
+        s = (m - 0.5) / nsubsteps
+        e = (1 - s) * e0 + s * e1
+        t = coupling_matrix((1 - s) * nac0 + s * nac1, (1 - s) * v0 + s * v1)
+        w, u = np.linalg.eigh(np.diag(e).astype(complex) - 1j * t)
+        p_m = (u * np.exp(-1j * w * delta)) @ u.conj().T
+        starts.append(current.copy())
+        current = p_m @ current
+        p = p_m @ p
+    return current, p, starts
+
+
+@pytest.mark.parametrize("ns", [1, 2, 7, 25])
+@pytest.mark.parametrize("seed", [0, 1, 2])
+def test_vectorized_propagate_matches_the_loop_reference(ns, seed):
+    rng = np.random.default_rng(100 + seed)
+    e0, nac0, v0, c = _rand_setup(rng, n=3, f=2)
+    e1, nac1, v1, _ = _rand_setup(rng, n=3, f=2)
+    c2, p, starts = propagate(c, e0, e1, nac0, nac1, v0, v1, 0.7, ns)
+    c2_ref, p_ref, starts_ref = _propagate_loop(c, e0, e1, nac0, nac1, v0, v1, 0.7, ns)
+    assert np.max(np.abs(c2 - c2_ref)) <= 1e-13
+    assert np.max(np.abs(p - p_ref)) <= 1e-13
+    assert starts.shape == (ns, 3)
+    assert np.max(np.abs(starts - np.array(starts_ref))) <= 1e-13
+
+
+def test_vectorized_propagate_matches_the_loop_on_the_sac_model():
+    from gqteashmd.dynamics.models import TullySimpleAvoidedCrossing
+
+    model = TullySimpleAvoidedCrossing()
+    s0 = model.evaluate(np.array([-0.2]), None)
+    s1 = model.evaluate(np.array([-0.19]), s0)
+    v0, v1 = np.array([0.01]), np.array([0.0101])
+    c = np.array([0.6, 0.8j])
+    got = propagate(c, s0.energies, s1.energies, s0.nacs, s1.nacs, v0, v1, 1.0, 25)
+    ref = _propagate_loop(c, s0.energies, s1.energies, s0.nacs, s1.nacs, v0, v1, 1.0, 25)
+    for a, b in zip(got, ref, strict=True):
+        assert np.max(np.abs(np.asarray(a) - np.array(b))) <= 1e-13
+
+
+def test_non_hermitian_input_is_hermitized():
+    """A slightly non-antisymmetric d (rounding in a model) gives the Hermitian-part result."""
+    rng = np.random.default_rng(7)
+    e, nac, v, c = _rand_setup(rng, n=3, f=2)
+    skew = nac + 1e-9 * rng.normal(size=nac.shape)
+    _, p, _ = propagate(c, e, e, skew, skew, v, v, 0.5, 3)
+    anti = 0.5 * (skew - skew.transpose(1, 0, 2))
+    _, p_ref, _ = propagate(c, e, e, anti, anti, v, v, 0.5, 3)
+    assert np.allclose(p.conj().T @ p, np.eye(3), atol=1e-12)
+    assert np.max(np.abs(p - p_ref)) <= 1e-13

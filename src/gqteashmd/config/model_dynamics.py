@@ -93,6 +93,7 @@ class EnsembleSection(_Section):
     seed: int = Field(default=12345, ge=0)
     x_exit: float = Field(default=10.0, gt=0)
     max_steps: int = Field(default=200000, ge=1)
+    workers: int = Field(default=1, ge=1)  # worker processes; the counts do not depend on it
 
 
 class ModelDynamicsInput(_Section):

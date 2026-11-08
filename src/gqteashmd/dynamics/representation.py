@@ -21,9 +21,15 @@ def diagonal_basis(
     The columns of U are ordered by maximum overlap with ``previous_u`` (the identity when
     absent) and each column's phase is fixed so that its overlap with the reference is real
     and positive. ``NotImplementedError`` if U is not diagonal up to phases.
+
+    Fast path: an exactly diagonal H with no reference (the adiabatic models of P7a-1, every
+    step) gives (real diagonal, identity) without a diagonalisation, which is the exact answer
+    of the general path.
     """
     h = np.asarray(hamiltonian, dtype=complex)
     n = h.shape[0]
+    if previous_u is None and np.count_nonzero(h) == np.count_nonzero(np.diagonal(h)):
+        return np.diagonal(h).real.copy(), np.eye(n, dtype=complex)
     ref = np.eye(n, dtype=complex) if previous_u is None else np.asarray(previous_u, complex)
     energies, u = np.linalg.eigh(h)
     overlap = ref.conj().T @ u  # [i, k] = <ref_i | U_k>

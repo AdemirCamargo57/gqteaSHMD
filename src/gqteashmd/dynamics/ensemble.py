@@ -3,8 +3,12 @@
 from __future__ import annotations
 
 import math
+import multiprocessing
 import zlib
+from collections.abc import Sequence
+from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass, field
+from functools import partial
 
 import numpy as np
 
@@ -84,6 +88,40 @@ class Branching:
         return {name: wilson_interval(getattr(self, name), n) for name in BRANCHES}
 
 
+def _leaving(x_exit: float, state: TrajectoryState) -> bool:
+    """Stop rule: |x| > x_exit while moving outward."""
+    x, v = float(state.q[0]), float(state.v[0])
+    return abs(x) > x_exit and v * math.copysign(1.0, x) > 0
+
+
+def _run_chunk(
+    model: ElectronicModel,
+    q0: np.ndarray,
+    v0: np.ndarray,
+    seeds: Sequence[np.random.SeedSequence],
+    initial_state: int,
+    options: DynamicsOptions,
+    x_exit: float,
+    max_steps: int,
+) -> list[str]:
+    """Run the trajectories of one chunk; return the counter name of each, in order."""
+    stop = partial(_leaving, x_exit)
+    labels: list[str] = []
+    for qi, vi, seq in zip(q0, v0, seeds, strict=True):
+        rng = GeneratorSource(np.random.default_rng(seq))
+        state = make_initial_state(model, qi, vi, initial_state)
+        final, outcome = run_trajectory(model, state, options, rng, max_steps=max_steps, stop=stop)
+        if outcome is Outcome.ENERGY_DRIFT:
+            labels.append("energy_drift")
+        elif outcome is Outcome.FINISHED:
+            labels.append("unfinished")
+        else:
+            side = "transmitted" if final.q[0] > 0 else "reflected"
+            level = "lower" if final.active == 0 else "upper"
+            labels.append(f"{side}_{level}")
+    return labels
+
+
 def run_model_ensemble(
     model: ElectronicModel,
     *,
@@ -97,29 +135,47 @@ def run_model_ensemble(
     x_exit: float,
     max_steps: int,
     sampling: str = "wigner",
+    workers: int = 1,
 ) -> Branching:
-    """Run ``n_trajectories`` trajectories until |x| > x_exit while moving outward."""
+    """Run ``n_trajectories`` trajectories until |x| > x_exit while moving outward.
+
+    Trajectory i always uses its own stream (child i of the ``model-dynamics`` seed sequence)
+    and initial condition i, so the counts are identical for any ``workers``. With
+    ``workers > 1`` the trajectories run in chunks of consecutive indices on a pool of
+    ``spawn``-started worker processes, which are all joined before returning (also on an
+    error). ``model`` and ``options`` must be picklable, and a calling script must guard its
+    entry point with ``if __name__ == "__main__":``. Nothing about threads is set: BLAS
+    threading is irrelevant for these 2 x 2 problems.
+    """
+    if isinstance(workers, bool) or not isinstance(workers, int) or workers < 1:
+        raise ValueError(f"workers must be an integer >= 1; got {workers!r}")
     mass = float(model.masses[0])
     init_rng = np.random.default_rng(np.random.SeedSequence([seed, _INITIAL_TAG]))
     q0, v0 = wavepacket_initial_conditions(n_trajectories, x0, k, sigma, mass, init_rng, sampling)
     children = np.random.SeedSequence([seed, _TRAJECTORY_TAG]).spawn(n_trajectories)
+    common = (initial_state, options, x_exit, max_steps)
 
-    def stop(state: TrajectoryState) -> bool:
-        x, v = float(state.q[0]), float(state.v[0])
-        return abs(x) > x_exit and v * math.copysign(1.0, x) > 0
+    if workers == 1 or n_trajectories <= 1:
+        labels = _run_chunk(model, q0, v0, children, *common)
+    else:
+        size = max(1, math.ceil(n_trajectories / (4 * workers)))
+        bounds = [(i, min(i + size, n_trajectories)) for i in range(0, n_trajectories, size)]
+        labels = []
+        context = multiprocessing.get_context("spawn")
+        with ProcessPoolExecutor(max_workers=min(workers, len(bounds)), mp_context=context) as pool:
+            futures = [
+                pool.submit(_run_chunk, model, q0[a:b], v0[a:b], children[a:b], *common)
+                for a, b in bounds
+            ]
+            try:
+                for future in futures:  # submission order = trajectory order
+                    labels.extend(future.result())
+            except BaseException:
+                for future in futures:
+                    future.cancel()
+                raise
 
     result = Branching(n_trajectories=n_trajectories)
-    for i in range(n_trajectories):
-        rng = GeneratorSource(np.random.default_rng(children[i]))
-        state = make_initial_state(model, q0[i], v0[i], initial_state)
-        final, outcome = run_trajectory(model, state, options, rng, max_steps=max_steps, stop=stop)
-        if outcome is Outcome.ENERGY_DRIFT:
-            result.energy_drift += 1
-        elif outcome is Outcome.FINISHED:
-            result.unfinished += 1
-        else:
-            side = "transmitted" if final.q[0] > 0 else "reflected"
-            level = "lower" if final.active == 0 else "upper"
-            name = f"{side}_{level}"
-            setattr(result, name, getattr(result, name) + 1)
+    for name in labels:
+        setattr(result, name, getattr(result, name) + 1)
     return result

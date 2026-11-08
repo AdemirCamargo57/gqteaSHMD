@@ -135,3 +135,50 @@ def test_dispatch():
     )
     with pytest.raises(ValueError, match="hopping"):
         hopping_probabilities("x", *args)
+
+
+def _fssh_loop(active, substep_amplitudes, nac0, nac1, v0, v1, dt):
+    """Straightforward reference: one substep at a time (the pre-vectorization code)."""
+    from gqteashmd.dynamics.propagators import coupling_matrix
+
+    ns = len(substep_amplitudes)
+    n = substep_amplitudes[0].shape[0]
+    delta = dt / ns
+    flux = np.zeros(n)
+    for m, c in enumerate(substep_amplitudes, start=1):
+        pop = abs(c[active]) ** 2
+        if pop <= 1e-14:
+            continue
+        s = (m - 0.5) / ns
+        t = coupling_matrix((1 - s) * nac0 + s * nac1, (1 - s) * v0 + s * v1)
+        flux += delta * 2.0 * np.real(np.conj(c[active]) * t[active, :] * c) / pop
+    h = np.maximum(flux, 0.0)
+    h[active] = 0.0
+    total = h.sum()
+    return h / total if total > 1.0 else h
+
+
+@pytest.mark.parametrize("ns", [1, 3, 25])
+@pytest.mark.parametrize("dt", [0.05, 3.0])
+def test_vectorized_fssh_matches_the_loop_reference(ns, dt):
+    rng = np.random.default_rng(ns)
+    n, f = 4, 2
+    nac0, nac1 = rng.normal(size=(2, n, n, f))
+    nac0, nac1 = nac0 - nac0.transpose(1, 0, 2), nac1 - nac1.transpose(1, 0, 2)
+    v0, v1 = rng.normal(size=(2, f))
+    amps = rng.normal(size=(ns, n)) + 1j * rng.normal(size=(ns, n))
+    amps /= np.linalg.norm(amps, axis=1, keepdims=True)
+    amps[ns // 2, 1] = 1e-9  # a substep below the population floor for active = 1
+    for active in range(n):
+        got = fssh_probabilities(active, amps, nac0, nac1, v0, v1, dt)
+        ref = _fssh_loop(active, list(amps), nac0, nac1, v0, v1, dt)
+        assert np.max(np.abs(got - ref)) <= 1e-13
+        assert np.array_equal(got, fssh_probabilities(active, list(amps), nac0, nac1, v0, v1, dt))
+
+
+def test_fssh_with_every_substep_below_the_floor_is_zero():
+    nac = np.zeros((2, 2, 1))
+    nac[0, 1, 0], nac[1, 0, 0] = 1.0, -1.0
+    amps = np.array([[0.0, 1.0], [1e-8, 1.0]], dtype=complex)
+    h = fssh_probabilities(0, amps, nac, nac, np.ones(1), np.ones(1), 0.1)
+    assert h.shape == (2,) and np.all(h == 0)

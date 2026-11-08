@@ -66,3 +66,17 @@ def test_state_out_of_range_is_exit_2(tmp_path, capsys):
     bad = INPUT.replace("k = 30.0", "k = 30.0\nstate = 2")
     assert main(["model-dynamics", str(_write(tmp_path, bad))]) == 2
     assert "initial.state" in capsys.readouterr().err
+
+
+def test_workers_give_the_same_counts_and_must_be_positive(tmp_path, capsys):
+    outs = []
+    for workers in (1, 2):
+        out = tmp_path / f"out{workers}.json"
+        text = INPUT + f"workers = {workers}\n"
+        assert main(["model-dynamics", str(_write(tmp_path, text)), "--json", str(out)]) == 0
+        outs.append(json.loads(out.read_text()))
+    assert outs[0]["counts"] == outs[1]["counts"]
+    assert outs[1]["ensemble"]["workers"] == 2
+    capsys.readouterr()
+    assert main(["model-dynamics", str(_write(tmp_path, INPUT + "workers = 0\n"))]) == 2
+    assert "ensemble.workers" in capsys.readouterr().err

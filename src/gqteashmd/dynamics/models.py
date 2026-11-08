@@ -55,7 +55,7 @@ class DiabaticModel(ABC):
         g = np.einsum("ja,fab,bk->fjk", w.T, dv, w)  # G_f = W^T dV_f W
         gradients = np.einsum("fkk->kf", g)
         safe = np.where(off, gaps, 1.0)
-        nacs = np.where(off[:, :, None], np.moveaxis(g, 0, -1) / safe[:, :, None], 0.0)
+        nacs = np.where(off[:, :, None], g.transpose(1, 2, 0) / safe[:, :, None], 0.0)
         return ElectronicSnapshot(
             energies=energies,
             gradients=gradients,

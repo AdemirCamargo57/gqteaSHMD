@@ -322,6 +322,7 @@ def _cmd_model_dynamics(args: argparse.Namespace) -> int:
             x_exit=cfg.ensemble.x_exit,
             max_steps=cfg.ensemble.max_steps,
             sampling=cfg.initial.sampling,
+            workers=cfg.ensemble.workers,
         )
     except ValueError as exc:
         raise ConfigError(f"Invalid model-dynamics input {args.input}: {exc}") from exc

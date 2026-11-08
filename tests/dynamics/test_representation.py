@@ -27,3 +27,13 @@ def test_soc_guard():
     h = np.array([[0.0, 0.01], [0.01, 0.1]], dtype=complex)
     with pytest.raises(NotImplementedError, match="P7a-2"):
         diagonal_basis(h, None)
+
+
+@pytest.mark.parametrize("diag", [[0.5, 0.1], [-0.1, 0.0, 0.3], [0.2, 0.2 + 1e-9, -0.4]])
+def test_diagonal_fast_path_equals_the_general_path(diag):
+    h = np.diag(diag).astype(complex)
+    e_fast, u_fast = diagonal_basis(h, None)
+    e_gen, u_gen = diagonal_basis(h, np.eye(len(diag)))  # identity reference: general path
+    np.testing.assert_allclose(e_fast, e_gen, rtol=0, atol=1e-15)
+    np.testing.assert_allclose(u_fast, u_gen, rtol=0, atol=1e-15)
+    assert e_fast.dtype == float and u_fast.dtype == complex

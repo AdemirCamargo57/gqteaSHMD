@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 import numpy as np
 
-from gqteashmd.dynamics.propagators import substep_hamiltonian
+from gqteashmd.dynamics.propagators import midpoint_couplings
 
 DENOMINATOR_FLOOR = 1e-14
 
@@ -16,7 +18,7 @@ def _cap(h: np.ndarray) -> np.ndarray:
 
 def fssh_probabilities(
     active: int,
-    substep_amplitudes: list[np.ndarray],
+    substep_amplitudes: np.ndarray | Sequence[np.ndarray],
     nac0: np.ndarray,
     nac1: np.ndarray,
     v0: np.ndarray,
@@ -25,20 +27,25 @@ def fssh_probabilities(
 ) -> np.ndarray:
     """Tully flux from ``active``, T taken at substep midpoints like the propagator.
 
-    ``substep_amplitudes`` are the amplitudes at the start of each substep (from ``propagate``).
-    Returns (n,) with 0 at ``active``; capped so the sum is <= 1 (scaled proportionally).
+    ``substep_amplitudes`` are the amplitudes at the start of each substep, (N_s, n) (from
+    ``propagate``; a sequence of N_s vectors is also accepted). Substeps with
+    |c_active|^2 <= ``DENOMINATOR_FLOOR`` contribute nothing. Returns (n,) with 0 at
+    ``active``; capped so the sum is <= 1 (scaled proportionally).
     """
-    ns = len(substep_amplitudes)
-    n = substep_amplitudes[0].shape[0]
+    amps = np.asarray(substep_amplitudes, dtype=complex)
+    ns = amps.shape[0]
     delta = dt / ns
-    flux = np.zeros(n)
-    zeros = np.zeros(n)
-    for m, c in enumerate(substep_amplitudes, start=1):
-        pop = abs(c[active]) ** 2
-        if pop <= DENOMINATOR_FLOOR:
-            continue
-        _, t = substep_hamiltonian(zeros, zeros, nac0, nac1, v0, v1, (m - 0.5) / ns)
-        flux += delta * 2.0 * np.real(np.conj(c[active]) * t[active, :] * c) / pop
+    t_active = midpoint_couplings(nac0, nac1, v0, v1, ns)[:, active, :]  # (N_s, n)
+    c_active = amps[:, active]
+    pop = np.abs(c_active) ** 2
+    keep = pop > DENOMINATOR_FLOOR
+    terms = (
+        delta
+        * 2.0
+        * np.real(np.conj(c_active[keep])[:, None] * t_active[keep] * amps[keep])
+        / pop[keep][:, None]
+    )
+    flux = terms.sum(axis=0)  # (n,); zeros when no substep contributes
     h = np.maximum(flux, 0.0)
     h[active] = 0.0
     return _cap(h)
@@ -84,7 +91,7 @@ def hopping_probabilities(
     c_old: np.ndarray,
     c_new: np.ndarray,
     propagator: np.ndarray,
-    substep_amplitudes: list[np.ndarray],
+    substep_amplitudes: np.ndarray | Sequence[np.ndarray],
     nac0: np.ndarray,
     nac1: np.ndarray,
     v0: np.ndarray,
