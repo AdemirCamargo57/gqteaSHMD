@@ -27,7 +27,7 @@ The user writes one TOML input file and runs `gqteashmd run input.toml`. The pro
   Edit files with the normal file tools, using LF line endings.
 - **Git from WSL only.** Pre-commit hooks (ruff 0.17.4) are installed in WSL and do not run from Windows Git. Pushing from Windows is fine (`git -C C:\Users\ajc\OneDrive\gqteaSHMD push ...`), because Windows has the GitHub credentials and pushing runs no hooks. Never use `--no-verify`.
 - **Keep project runs, conda environments and large outputs out of OneDrive and out of `/mnt/c`.** Use `~/...` or `/tmp` in WSL. pytest's `tmp_path` already does this.
-- **Workflow.** Feature branch per sub-project (`feat/<topic>`), one commit per task, conventional commit subjects (`feat:`, `fix:`, `test:`, `docs:`, `ci:`, `build:`). The owner decides merges. P1, P2, P3a and P3b are merged into `main`. `main` up to P2 (`e73609f`) is on GitHub (`AdemirCamargo57/gqteaSHMD`); the P3a and P3b merges are local until the owner pushes. P3c is on `feat/p3c-hardening` and not merged.
+- **Workflow.** Feature branch per sub-project (`feat/<topic>`), one commit per task, conventional commit subjects (`feat:`, `fix:`, `test:`, `docs:`, `ci:`, `build:`). The owner decides merges. P1, P2, P3a, P3b and P3c are merged into `main`. `main` up to P2 (`e73609f`) is on GitHub (`AdemirCamargo57/gqteaSHMD`); the P3a, P3b and P3c merges are local until the owner pushes. P3c is on `feat/p3c-hardening` and not merged.
 - **Commit trailer.** End each commit message with the `Co-Authored-By:` trailer for the model that wrote the commit.
 - **Keep the two documents current.** Update **CLAUDE.md and USER_MANUAL.md in the same branch as any change to behaviour, inputs, outputs, formulas or status.** USER_MANUAL.md must always mark what is implemented and what is planned.
 
@@ -47,7 +47,7 @@ The user writes one TOML input file and runs `gqteashmd run input.toml`. The pro
 - CI: `.github/workflows/ci.yml` runs in an `oraclelinux:9` container on push, on PRs and nightly. It first ran on 2026-11-07 (`main` at `e73609f`) and passed.
 - Workstation facts in WSL: 16 cores and about 7 GB RAM. ORCA 6.1.1 and Gaussian 16 are installed, but they are not used before phase P7.
 
-## Architecture (implemented in P1, P2, P3a and P3c)
+## Architecture (implemented in P1, P2, P3a, P3b and P3c)
 Dependencies point down only; domain code never imports stages or the orchestrator.
 
 ```text
@@ -137,7 +137,7 @@ tools/sharc_compare/   executes SHARC 4.1 as a black box (never imported by gqte
 - **P2 — input schema & preflight: DONE**, merged into `main`. `main` is on GitHub and CI passed on 2026-11-07.
 - **P3a — PySCF electronic-structure layer: DONE**, merged locally into `main` on 2026-11-07 (not pushed yet). `pytest -m "not slow" -W error`: 260 passed, 1 skipped, 4 deselected (5-6 min). With `SHARC_HOME`/`SHARC_PYTHON` set, `pytest -W error` runs everything (the 4 slow tests: 2 FD gradient checks + 2 kill/resume tests; and the live SHARC test): 265 passed in 8.5 min. ruff and mypy are clean.
 - **P3b — couplings, overlaps, restarts: DONE, merged locally into `main` on 2026-11-07 (not pushed).** `pytest -m "not slow" -W error`: 335 passed, 1 skipped (live SHARC), 5 deselected (2 FD gradient, 1 NAC FD, 2 kill/resume), 6.5-11 min on /mnt/c; the slow NAC FD test takes 15 s and the live SHARC test (with NACs) 8 s. With `SHARC_HOME`/`SHARC_PYTHON` set, `pytest -W error`: 341 passed in about 13 min. NACs match SHARC 4.1 to 9.1e-8 1/bohr up to sign. Library only: no CLI command or stage uses NACs/overlaps yet (P7). The hardening sweep moved to P3c.
-- **P3c — hardening sweep: DONE on `feat/p3c-hardening`, NOT merged** (owner decides). Delivered: lock first (no leaked handle, "File locking is not available"), `Orchestrator.session()`, stale `.tmp` cleanup, `cpu_model`, guarded sqlite queries, whole-group SIGKILL, unreadable `task.json`, picklable `TaskError`, recompute of a deleted DONE stage directory, Ctrl-C exit 5 (the SIGINT/SIGTERM handlers are installed before the lock is taken, so a `stop` during start-up is a graceful exit 5), the `pyscf` test marker. Test tiers: see Environment.
+- **P3c — hardening sweep: DONE, merged locally into `main` on 2026-11-07 (not pushed).** Full suite `pytest -W error` with SHARC: 371 passed in about 14 min. Delivered: lock first (no leaked handle, "File locking is not available"), `Orchestrator.session()`, stale `.tmp` cleanup, `cpu_model`, guarded sqlite queries, whole-group SIGKILL, unreadable `task.json`, picklable `TaskError`, recompute of a deleted DONE stage directory, Ctrl-C exit 5 (the SIGINT/SIGTERM handlers are installed before the lock is taken, so a `stop` during start-up is a graceful exit 5), the `pyscf` test marker. Test tiers: see Environment.
 - **Implemented features:**
   - the CLI commands `init`, `validate`, `run [--rerun-from]`, `status`, `stop` and `single-point`;
   - the input sections `[project]`, `[molecule]`, `[resources]` (with per-stage overrides), `[execution]`, `[workflow]` and `[electronic]` / `[electronic.casscf]`;
@@ -162,7 +162,7 @@ tools/sharc_compare/   executes SHARC 4.1 as a black box (never imported by gqte
 |---|---|---|
 | P3a | PySCF electronic-structure layer | **DONE**, merged into local `main`; see Status |
 | P3b | Couplings for dynamics | **DONE**, merged into local `main`; see Status |
-| P3c | Hardening sweep | **DONE** on `feat/p3c-hardening` (not merged); see Status |
+| P3c | Hardening sweep | **DONE**, merged into local `main`; see Status |
 | P4 | `optimize` + `frequencies` stages | **Next.** Also takes the items moved by the P3c rulings (limitation 4). geomeTRIC; **PySCF Hessian (moved here from P3)**; own harmonic analysis; Molden output; stages declare `required_modules=("pyscf",)`. P4 and P6 must call `reset()` or use a fresh backend for independent geometries (a backend keeps the previous geometry) |
 | P5 | `sampling` stage | Own Wigner sampler; compare with SHARC `wigner.py` |
 | P6 | `excitations` + `selection` stages | Spectrum and initial-state selection |
