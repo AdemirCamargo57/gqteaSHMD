@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import contextlib
+import logging
 import os
 import signal
 import subprocess
@@ -13,6 +13,8 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import IO
+
+log = logging.getLogger(__name__)
 
 THREAD_ENV_VARS = ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS")
 
@@ -38,8 +40,13 @@ class _Running:
 
 
 def _signal_group(pid: int, sig: signal.Signals) -> None:
-    with contextlib.suppress(ProcessLookupError):
+    try:
         os.killpg(pid, sig)
+    except ProcessLookupError:
+        pass
+    except PermissionError:
+        # A stray member with other credentials must not abort the stage.
+        log.debug("No permission to signal process group %d with %s", pid, sig.name)
 
 
 class LocalExecutor:

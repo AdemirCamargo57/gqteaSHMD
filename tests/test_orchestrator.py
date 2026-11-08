@@ -347,3 +347,12 @@ def test_a_done_stage_whose_directory_was_deleted_is_recomputed(project, behavio
     assert all(name in second.up_to_date for name in first.completed if name != victim.name)
     assert orch.layout.stage_dir(0, victim.name).is_dir()
     assert "is missing; recomputing" in caplog.text
+
+
+def test_two_runs_in_one_session_append_one_provenance_record(project, behaviour):
+    orch = Orchestrator(load_config(project), pipeline_ref=FAKE)
+    with orch.session():
+        orch.run()
+        orch.run()
+    runs = read_json(orch.layout.provenance_file)["runs"]
+    assert len(runs) == 1

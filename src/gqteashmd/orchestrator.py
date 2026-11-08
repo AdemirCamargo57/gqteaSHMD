@@ -73,6 +73,7 @@ class Orchestrator:
         self._preflight_warnings: list[str] | None = None
         self._session_depth = 0
         self._provenance: dict[str, Any] | None = None
+        self._provenance_recorded = False
 
     def _executor_for(self, stage: Stage) -> LocalExecutor:
         res = self.config.resources.for_stage(stage.name)
@@ -108,6 +109,7 @@ class Orchestrator:
             for stale in self.layout.meta_dir.glob(".*.tmp"):
                 stale.unlink(missing_ok=True)  # left by a crashed controller; we hold the lock
             self._provenance = provenance
+            self._provenance_recorded = False
             self._session_depth = 1
             try:
                 yield
@@ -123,8 +125,12 @@ class Orchestrator:
                 log.warning("Preflight: %s", message)
         with self.session(), StateStore(self.layout.state_db) as state:
             write_snapshot(self.loaded, self.layout.config_snapshot)
-            assert self._provenance is not None
-            append_provenance(self.layout.provenance_file, self._provenance)
+            if self._provenance is not None:
+                append_provenance(self.layout.provenance_file, self._provenance)
+                self._provenance = None  # one record per session, however many run() calls
+                self._provenance_recorded = True
+            elif not self._provenance_recorded:
+                raise ProjectError("Internal error: no provenance record for this session.")
             if self.rerun_from is not None:
                 self._reset_from(state, self.rerun_from)
                 self.rerun_from = None

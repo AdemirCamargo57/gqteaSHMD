@@ -1,11 +1,13 @@
 import json
 import os
+import signal
 import sys
 import time
 
 import pytest
 
 from gqteashmd.execution.local import Job, LocalExecutor
+from gqteashmd.execution.processes import _alive
 
 SCRIPT = """
 import json, os, pathlib, sys, time
@@ -119,16 +121,6 @@ def test_exception_in_callback_cleans_up_running_workers(tmp_path):
     assert time.monotonic() - t0 < 20
 
 
-def _pid_alive(pid):
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    with open(f"/proc/{pid}/stat") as fh:
-        stat = fh.read()
-    return stat.rsplit(")", 1)[1].split()[0] != "Z"
-
-
 def test_stray_children_are_killed_when_the_worker_exits(tmp_path):
     script = tmp_path / "leaves_a_child.py"
     pid_file = tmp_path / "child.pid"
@@ -157,11 +149,21 @@ def test_stray_children_are_killed_when_the_worker_exits(tmp_path):
         assert finished
         child = int(pid_file.read_text())
         deadline = time.monotonic() + 5
-        while _pid_alive(child) and time.monotonic() < deadline:
+        while _alive(child) and time.monotonic() < deadline:
             time.sleep(0.05)
-        assert not _pid_alive(child)
+        assert not _alive(child)
     finally:
         if child is None and pid_file.exists():
             child = int(pid_file.read_text())
-        if child is not None and _pid_alive(child):
+        if child is not None and _alive(child):
             os.kill(child, 9)
+
+
+def test_signal_group_ignores_permission_errors(monkeypatch):
+    from gqteashmd.execution import local
+
+    def denied(pid, sig):
+        raise PermissionError(1, "Operation not permitted")
+
+    monkeypatch.setattr(os, "killpg", denied)
+    local._signal_group(12345, signal.SIGKILL)  # must not raise

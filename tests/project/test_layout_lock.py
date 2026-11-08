@@ -124,3 +124,15 @@ def test_failure_after_locking_releases_the_lock(tmp_path, monkeypatch):
     assert _open_fds() == before
     with ProjectLock(lock_path):  # the lock was released
         pass
+
+
+def test_locked_by_maps_unsupported_locking_to_project_error(tmp_path, monkeypatch):
+    lock_path = tmp_path / "controller.lock"
+    lock_path.write_text("")
+
+    def no_locks(fh, flags):
+        raise OSError(errno.ENOLCK, "No locks available")
+
+    monkeypatch.setattr(fcntl, "flock", no_locks)
+    with pytest.raises(ProjectError, match="locking is not available"):
+        locked_by(lock_path)

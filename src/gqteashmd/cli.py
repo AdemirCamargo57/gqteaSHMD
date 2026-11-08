@@ -103,31 +103,34 @@ def _cmd_run(args: argparse.Namespace) -> int:
     orchestrator = Orchestrator(loaded, pipeline_ref=args.pipeline, rerun_from=args.rerun_from)
     warnings = orchestrator.preflight()
     stop_requested = threading.Event()
-    with ExitStack() as stack:
-        try:
-            stack.enter_context(orchestrator.session())
-            configure_logging(orchestrator.layout.logs_dir / "gqteashmd.log")
-        except OSError as exc:
-            raise ConfigError(
-                f"Cannot create project directory {orchestrator.layout.root}: {exc.strerror or exc}"
-            ) from exc
-        logger = logging.getLogger("gqteashmd.cli")
-        for message in warnings:
-            logger.warning("Preflight: %s", message)
+    logger = logging.getLogger("gqteashmd.cli")
 
-        def _on_signal(signum: int, _frame: object) -> None:
-            if not stop_requested.is_set():
-                logger.warning("Stop requested (signal %d): stopping running tasks...", signum)
-            stop_requested.set()
+    def _on_signal(signum: int, _frame: object) -> None:
+        if not stop_requested.is_set():
+            logger.warning("Stop requested (signal %d): stopping running tasks...", signum)
+        stop_requested.set()
 
-        previous: dict[int, Any] = {}
-        try:
-            for sig in (signal.SIGINT, signal.SIGTERM):
-                previous[sig] = signal.signal(sig, _on_signal)
+    # Installed before the lock is taken and restored after it is released, so a
+    # `gqteashmd stop` during start-up is a graceful stop (the pipeline checks should_stop first).
+    previous: dict[int, Any] = {}
+    try:
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            previous[sig] = signal.signal(sig, _on_signal)
+        with ExitStack() as stack:
+            try:
+                stack.enter_context(orchestrator.session())
+                configure_logging(orchestrator.layout.logs_dir / "gqteashmd.log")
+            except OSError as exc:
+                raise ConfigError(
+                    f"Cannot create project directory {orchestrator.layout.root}: "
+                    f"{exc.strerror or exc}"
+                ) from exc
+            for message in warnings:
+                logger.warning("Preflight: %s", message)
             summary = orchestrator.run(should_stop=stop_requested.is_set)
-        finally:
-            for prev_sig, handler in previous.items():
-                signal.signal(prev_sig, handler)
+    finally:
+        for prev_sig, handler in previous.items():
+            signal.signal(prev_sig, handler)
     if summary.stopped:
         print("Stopped. Run the same command again to resume.")
         return EXIT_STOPPED

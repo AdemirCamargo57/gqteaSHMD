@@ -57,9 +57,11 @@ class ProjectLock:
 
     def __exit__(self, *exc_info: object) -> None:
         if self._fh is not None:
-            fcntl.flock(self._fh, fcntl.LOCK_UN)
-            self._fh.close()
-            self._fh = None
+            fh, self._fh = self._fh, None
+            try:
+                fcntl.flock(fh, fcntl.LOCK_UN)
+            finally:
+                fh.close()
 
 
 def locked_by(path: Path) -> int | None:
@@ -74,5 +76,10 @@ def locked_by(path: Path) -> int | None:
             fh.seek(0)
             text = fh.read().strip()
             return int(text) if text.isdigit() else None
+        except OSError as exc:
+            raise ProjectError(
+                f"File locking is not available for {path} "
+                f"({exc.strerror or exc}); put the project directory on a local Linux filesystem."
+            ) from exc
         fcntl.flock(fh, fcntl.LOCK_UN)
         return None

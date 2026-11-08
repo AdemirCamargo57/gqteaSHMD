@@ -44,8 +44,8 @@ class TaskError(ShmdError):
         super().__init__(message)
         self.retryable = retryable
 
-    def __reduce__(self) -> tuple[Any, tuple[Any, ...]]:
-        return (_rebuild_task_error, (type(self), str(self), self.retryable))
+    def __reduce__(self) -> tuple[Any, ...]:
+        return (_rebuild_task_error, (type(self), str(self), self.retryable), self.__dict__)
 
 
 def _rebuild_task_error(cls: type[TaskError], message: str, retryable: bool) -> TaskError:

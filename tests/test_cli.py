@@ -11,6 +11,8 @@ import pytest
 from gqteashmd.cli import EXIT_STOPPED, main
 from gqteashmd.config.loader import load_config
 from gqteashmd.logging_setup import configure_logging
+from gqteashmd.project.layout import ProjectLayout
+from gqteashmd.project.lock import ProjectLock
 from gqteashmd.project.state import StageStatus, StateStore, TaskStatus
 from gqteashmd.testing.fake_stages import BEHAVIOUR_ENV
 
@@ -304,7 +306,49 @@ def test_preflight_warnings_are_printed_once(tmp_path, write_input, monkeypatch,
     path = write_input(tmp_path, execution=FAST, total_cores=100000, total_memory_mb=10**9)
     main(["run", str(path), "--pipeline", FAKE])
     err = capsys.readouterr().err
-    lines = {line for line in err.splitlines() if "Preflight:" in line}
-    assert lines
-    for line in lines:
-        assert err.count(line) == 1
+    bodies = [
+        line.split("Preflight:", 1)[1].strip() for line in err.splitlines() if "Preflight:" in line
+    ]
+    assert bodies
+    for body in bodies:
+        assert err.count(body) == 1
+
+
+_SIGTERM_DRIVER = """
+import os, signal, sys
+from gqteashmd import cli
+real = cli.configure_logging
+def hit(*a, **k):
+    real(*a, **k)
+    os.kill(os.getpid(), signal.SIGTERM)  # a  arriving during start-up
+cli.configure_logging = hit
+sys.exit(cli.main(["run", sys.argv[1], "--pipeline", sys.argv[2]]))
+"""
+
+
+def test_sigterm_during_startup_is_a_graceful_stop(project):
+    # Run in a subprocess: without the early handlers the signal would kill the process.
+    proc = subprocess.run(
+        [sys.executable, "-c", _SIGTERM_DRIVER, str(project), FAKE],
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert proc.returncode == EXIT_STOPPED, proc.stderr
+    assert "Stopped." in proc.stdout
+    layout = ProjectLayout(load_config(project).config.project.directory)
+    with ProjectLock(layout.lock_file):
+        pass
+
+
+def test_ctrl_c_after_taking_the_lock_exits_5_and_frees_the_lock(project, monkeypatch):
+    import gqteashmd.cli as cli_module
+
+    def interrupt(*_a, **_k):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(cli_module, "configure_logging", interrupt)
+    assert main(["run", str(project), "--pipeline", FAKE]) == EXIT_STOPPED
+    layout = ProjectLayout(load_config(project).config.project.directory)
+    with ProjectLock(layout.lock_file):
+        pass

@@ -92,3 +92,14 @@ def test_task_errors_survive_pickling():
         copy = pickle.loads(pickle.dumps(err))
         assert type(copy) is type(err) and str(copy) == str(err)
         assert copy.retryable == err.retryable
+
+
+def test_task_error_extra_attributes_survive_pickling():
+    import pickle
+
+    from gqteashmd.errors import TaskError
+
+    err = TaskError("boom", retryable=True)
+    err.extra = {"scf_cycles": 7}
+    copy = pickle.loads(pickle.dumps(err))
+    assert copy.retryable is True and copy.extra == {"scf_cycles": 7}

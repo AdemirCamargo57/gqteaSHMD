@@ -97,7 +97,17 @@ def test_worker_unexpected_exception_traceback_goes_to_stderr(make_task, capsys)
     assert "Traceback" in err
 
 
-def test_unreadable_task_file_gives_an_error_result(tmp_path):
+def test_oserror_reading_the_task_file_is_retryable(tmp_path):
+    task_dir = tmp_path / "tasks" / "t0"
+    task_dir.mkdir(parents=True)
+    task_file = task_dir / "task.json"
+    task_file.mkdir()  # a directory: reading it raises an OSError
+    assert run_task_file(task_file) == 1
+    result = json.loads((task_dir / "result.json").read_text())
+    assert result["status"] == "error" and result["retryable"] is True
+
+
+def test_malformed_task_file_gives_a_non_retryable_error_result(tmp_path):
     task_dir = tmp_path / "tasks" / "t0"
     task_dir.mkdir(parents=True)
     task_file = task_dir / "task.json"
@@ -132,3 +142,4 @@ def test_unserialisable_result_gives_an_error_result(make_task, monkeypatch, kin
     result = read_result(task_dir)
     assert result["status"] == "error" and result["retryable"] is False
     assert "task result is not JSON-serializable" in result["message"]
+    assert result["error_type"] == {"circular": "ValueError", "set": "TypeError"}[kind]

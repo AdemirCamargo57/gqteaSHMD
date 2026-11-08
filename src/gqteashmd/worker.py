@@ -73,9 +73,11 @@ def run_task_file(task_file: Path) -> int:
     except (OSError, ValueError, KeyError, TypeError) as exc:
         message = f"Cannot read task file {task_file}: {type(exc).__name__}: {exc}"
         print(message, file=sys.stderr)
+        # The controller rewrites task.json before every attempt: an I/O error may be transient,
+        # a malformed file will not improve.
         write_json_atomic(
             Path(task_file).parent / RESULT_FILE,
-            _error(ProjectError(message), retryable=False, with_traceback=False),
+            _error(ProjectError(message), retryable=isinstance(exc, OSError), with_traceback=False),
         )
         return 1
     try:
@@ -111,14 +113,16 @@ def run_task_file(task_file: Path) -> int:
     try:
         write_json_atomic(task_dir / RESULT_FILE, {"status": "ok", "result": result})
     except (TypeError, ValueError) as exc:
-        print(f"TypeError: task result is not JSON-serializable: {exc}", file=sys.stderr)
+        kind = type(exc).__name__
+        print(f"{kind}: task result is not JSON-serializable: {exc}", file=sys.stderr)
         write_json_atomic(
             task_dir / RESULT_FILE,
-            _error(
-                TypeError(f"task result is not JSON-serializable: {exc}"),
-                retryable=False,
-                with_traceback=False,
-            ),
+            {
+                "status": "error",
+                "error_type": kind,
+                "message": f"task result is not JSON-serializable: {exc}",
+                "retryable": False,
+            },
         )
         return 1
     return 0
