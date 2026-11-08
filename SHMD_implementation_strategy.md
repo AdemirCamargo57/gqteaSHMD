@@ -389,7 +389,7 @@ You need SOC matrix elements between singlet and triplet *states*, consistent wi
 ### 4.8 Initial conditions and excitation
 
 - **Wigner sampling** from harmonic frequencies and normal modes, from a Gaussian `.fchk`/`freq` log or a PySCF Hessian. Pay attention to mass-weighting, linear molecules, and imaginary frequencies, and handle low-frequency modes the way `wigner.py` does (temperature option). This is an area where reading SHARC's `wigner.py` *behaviour* (not copying code) is useful.
-- **Excitation selection** (`excite.py` equivalent): compute vertical excitation energies and oscillator strengths for each initial geometry. Select the starting state stochastically ∝ f · ΔE² (or within an energy window, or delta-pulse style), and write the chosen state and coefficients into each trajectory's config.
+- **Excitation selection** (`excite.py` equivalent): compute vertical excitation energies and oscillator strengths for each initial geometry. Select the starting state stochastically with acceptance w/w_max over the in-window pairs, where w = f/ΔE² (SHARC 4.1 `excite.py`-compatible; measured in P6 by black-box maximum likelihood: ΔE exponent −1.99 ± 0.05, f exponent 0.99 ± 0.03) or w = f (the oscillator-strength convention of Barbatti et al. 2007); optionally within an energy window, or delta-pulse style, and write the chosen state and coefficients into each trajectory's config.
 - Compare your sampled distributions (bond-length, kinetic-energy, and excitation-energy histograms) against `wigner.py` + `excite.py` output from the *same* frequency file before running any dynamics.
 
 ---

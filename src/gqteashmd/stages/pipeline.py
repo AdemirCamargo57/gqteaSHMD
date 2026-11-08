@@ -54,6 +54,12 @@ def check_stage_inputs(config: ShmdConfig, stages: Sequence[Stage]) -> None:
         for section in stage.config_sections
         if getattr(config, section, None) is None
     ]
+    missing += [
+        problem
+        for stage in stages
+        if stage.enabled(config)
+        for problem in stage.check_config(config)
+    ]
     if missing:
         raise ConfigError("; ".join(missing) + ". See USER_MANUAL.md §4.")
 

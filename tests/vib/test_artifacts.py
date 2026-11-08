@@ -171,3 +171,47 @@ def test_read_frequencies_h5_missing_dataset_and_bad_shape(tmp_path):
     path.write_bytes(b"not an hdf5 file")
     with pytest.raises(ValueError, match="missing or unreadable"):
         read_frequencies_h5(path)
+
+
+def test_read_samples_h5_round_trip_and_errors(tmp_path):
+    from gqteashmd.vib.artifacts import read_samples_h5, write_samples_h5
+    from gqteashmd.vib.wigner import sample_wigner
+
+    masses = np.array([1.007825, 1.007825])
+    coords = np.array([[0.0, 0.0, -0.7], [0.0, 0.0, 0.7]])
+    e = np.array([0, 0, -1, 0, 0, 1]) / np.sqrt(2)
+    a = harmonic_analysis(masses, coords, np.outer(e, e))
+    s = sample_wigner(
+        masses,
+        coords,
+        a.frequencies_cm1,
+        a.modes_mass_weighted,
+        n_samples=4,
+        temperature_K=0.0,
+        low_frequency_cutoff_cm1=10.0,
+        rng=np.random.default_rng(1),
+    )
+    path = tmp_path / "samples.h5"
+    write_samples_h5(
+        path,
+        symbols=("H", "H"),
+        masses_amu=masses,
+        coords_bohr=coords,
+        frequencies_cm1=a.frequencies_cm1,
+        samples=s,
+        temperature_K=300.0,
+        low_frequency_cutoff_cm1=10.0,
+        project_seed=42,
+    )
+    d = read_samples_h5(path)
+    assert d["symbols"] == ("H", "H") and d["n_samples"] == 4 and d["temperature_K"] == 300.0
+    np.testing.assert_allclose(d["masses_amu"], masses)
+    np.testing.assert_allclose(d["equilibrium_bohr"], coords)
+    np.testing.assert_allclose(d["positions_bohr"], s.positions_bohr)
+    np.testing.assert_allclose(d["velocities_au"], s.velocities_au)
+    with pytest.raises(ValueError, match="--rerun-from sampling"):
+        read_samples_h5(tmp_path / "missing.h5")
+    bad = tmp_path / "bad.h5"
+    bad.write_bytes(b"not hdf5")
+    with pytest.raises(ValueError, match="--rerun-from sampling"):
+        read_samples_h5(bad)

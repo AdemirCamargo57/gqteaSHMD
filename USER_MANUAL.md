@@ -4,7 +4,7 @@
 **Program:** `gqteashmd`, automated surface-hopping molecular dynamics with PySCF
 **Licence:** MIT
 
-> **Read this first: what works today.** This is an early development version. The **workflow engine is complete**: input file (with hardware and per-stage resource settings), checks before a run (preflight), project management, parallel tasks, crash-safe resume, graceful stop, review pauses, change detection, and a record of the software used (provenance). Four stages exist: **`prepare`** (validates and stores the molecule), **`optimize`** (optional S0 geometry optimization with geomeTRIC), **`frequencies`** (S0 Hessian, harmonic frequencies, normal modes, Molden file) and **`sampling`** (harmonic Wigner sampling of initial geometries and velocities, from the frequencies). `optimize` and `frequencies` work at the level of the `[electronic]` input section. The **electronic-structure layer** (PySCF: SCF, SA-CASSCF, TDA, TDDFT, CIS, TDHF; energies, analytic gradients, transition dipoles, the S0 Hessian) is **implemented** and validated against SHARC 4.1 and other programs; you can also use it directly with **`gqteashmd single-point`** (§5.3). **Excitations, initial-state selection, dynamics and analysis are *planned*; so is the use of nonadiabatic couplings and wavefunction overlaps in dynamics** (SA-CASSCF couplings and the overlap engine exist as a library, §8.6.8, but no command reaches them). They are described in §8.9–§8.13 so that you can see in advance how results will be computed. Every section is marked:
+> **Read this first: what works today.** This is an early development version. The **workflow engine is complete**: input file (with hardware and per-stage resource settings), checks before a run (preflight), project management, parallel tasks, crash-safe resume, graceful stop, review pauses, change detection, and a record of the software used (provenance). Six stages exist: **`prepare`** (validates and stores the molecule), **`optimize`** (optional S0 geometry optimization with geomeTRIC), **`frequencies`** (S0 Hessian, harmonic frequencies, normal modes, Molden file), **`sampling`** (harmonic Wigner sampling of initial geometries and velocities, from the frequencies), **`excitations`** (vertical excitation energies and oscillator strengths at every sample, and the absorption spectrum) and **`selection`** (the initial excited state of every trajectory). `optimize`, `frequencies` and `excitations` work at the level of the `[electronic]` input section. The **electronic-structure layer** (PySCF: SCF, SA-CASSCF, TDA, TDDFT, CIS, TDHF; energies, analytic gradients, transition dipoles, the S0 Hessian) is **implemented** and validated against SHARC 4.1 and other programs; you can also use it directly with **`gqteashmd single-point`** (§5.3). **Dynamics and analysis are *planned*; so is the use of nonadiabatic couplings and wavefunction overlaps in dynamics** (SA-CASSCF couplings and the overlap engine exist as a library, §8.6.8, but no command reaches them). They are described in §8.10–§8.13 so that you can see in advance how results will be computed. Every section is marked:
 >
 > - **[IMPLEMENTED]**: available in this version.
 > - **[PLANNED]**: designed but not yet available; details may still change.
@@ -29,7 +29,7 @@
 
 ## 1. What the program does
 
-`gqteashmd` will run a complete photodynamics study from **one input file**; the first four stages below exist today. The stages run in this order:
+`gqteashmd` will run a complete photodynamics study from **one input file**; the first six stages below exist today. The stages run in this order:
 
 | Order | Stage | What it does | Status |
 |---|---|---|---|
@@ -37,14 +37,14 @@
 | 1 | `optimize` (optional) | Ground-state (S0) geometry optimization with geomeTRIC, on the surface of the `[electronic]` section | **[IMPLEMENTED, P4]** |
 | 2 | `frequencies` | S0 Hessian, harmonic frequencies and normal modes (analytic Hessian or finite differences of gradients); Molden, HDF5 and JSON output | **[IMPLEMENTED, P4]** |
 | 3 | `sampling` | Harmonic Wigner sampling of initial geometries and velocities, at zero or finite temperature | **[IMPLEMENTED, P5]** |
-| 4 | `excitations` | Vertical excitation energies and oscillator strengths at each sampled geometry | [PLANNED, P6] |
-| 5 | `selection` | Choice of the initial electronic state for each trajectory | [PLANNED, P6] |
+| 4 | `excitations` | Vertical excitation energies and oscillator strengths at the reference and at each sampled geometry; nuclear-ensemble absorption spectrum | **[IMPLEMENTED, P6]** |
+| 5 | `selection` | Choice of the initial electronic state for each trajectory (bright-state rule or one fixed state) | **[IMPLEMENTED, P6]** |
 | 6 | `dynamics` | Surface-hopping trajectories, run in parallel | [PLANNED, P7] |
 | 7 | `analysis` (optional) | State populations, lifetimes, summary report | [PLANNED, P8] |
 
 In SHARC 4.1 these steps are separate manual tools: `wigner.py`, `setup_init.py`, `excite.py`, `setup_traj.py` and `populations.py`. `gqteashmd` runs them automatically, one after another. You only intervene when the program asks you to fix something.
 
-The electronic-structure program is **PySCF** **[IMPLEMENTED]**: the `[electronic]` input section (§4.2), the command `gqteashmd single-point` (§5.3) and the stages `optimize` and `frequencies` use it today. The stages that will call it later (`excitations`, `dynamics`) are still planned, as is the use of couplings in dynamics; SA-CASSCF nonadiabatic couplings, wavefunction overlaps and phase tracking (P3b) exist as a library only (§8.6.8). ORCA, Gaussian and others may be added later.
+The electronic-structure program is **PySCF** **[IMPLEMENTED]**: the `[electronic]` input section (§4.2), the command `gqteashmd single-point` (§5.3) and the stages `optimize`, `frequencies` and `excitations` use it today. The stage that will call it later (`dynamics`) is still planned, as is the use of couplings in dynamics; SA-CASSCF nonadiabatic couplings, wavefunction overlaps and phase tracking (P3b) exist as a library only (§8.6.8). ORCA, Gaussian and others may be added later.
 
 ---
 
@@ -84,6 +84,7 @@ Keep project directories on a **local Linux disk**, for example `~/gqteashmd-run
 mkdir -p ~/gqteashmd-runs/water && cd ~/gqteashmd-runs/water
 gqteashmd init input.toml                  # writes a commented template
 sed -i 's/^total_cores = .*/total_cores = 4/; s/^total_memory_mb = .*/total_memory_mb = 6000/; s/^basis = .*/basis = "sto-3g"/; s/^functional = .*/functional = "hf"/' input.toml
+sed -i 's/^n_samples = .*/n_samples = 20/; s/^n_trajectories = .*/n_trajectories = 5/; s/^allow_fewer = .*/allow_fewer = true/' input.toml
 cat > molecule.xyz <<'EOF'
 3
 water
@@ -92,11 +93,11 @@ H    0.000000    0.757200   -0.469200
 H    0.000000   -0.757200   -0.469200
 EOF
 gqteashmd validate input.toml              # checks the input; runs nothing
-gqteashmd run input.toml                   # runs prepare, optimize, frequencies and sampling (about 17 s here)
+gqteashmd run input.toml                   # runs the six stages (about 1 min here)
 gqteashmd status input.toml                # shows progress
 ```
 
-The `sed` line sets `total_cores` and `total_memory_mb`, which are **required** and describe *your* workstation (the cores and the RAM in MB that you allow `gqteashmd` to use). The template's values (8 cores, 16000 MB) are only examples. If your values exceed what the program detects on the machine, `run` prints a warning but continues (§7.9). Set the two values to something that fits your machine, as above. The same `sed` line also replaces the template's electronic-structure setting (TDA-B3LYP/def2-SVP) by Hartree–Fock/STO-3G (`method = "tda"` with `functional = "hf"` is CIS), so that this first example is fast. `optimize` and `frequencies` need the `[electronic]` section (§4.2).
+The `sed` line sets `total_cores` and `total_memory_mb`, which are **required** and describe *your* workstation (the cores and the RAM in MB that you allow `gqteashmd` to use). The template's values (8 cores, 16000 MB) are only examples. If your values exceed what the program detects on the machine, `run` prints a warning but continues (§7.9). Set the two values to something that fits your machine, as above. The first `sed` line also replaces the template's electronic-structure setting (TDA-B3LYP/def2-SVP) by Hartree–Fock/STO-3G (`method = "tda"` with `functional = "hf"` is CIS), so that this first example is fast. The second `sed` line shrinks the run to **20 samples** and **5 trajectories** and sets `allow_fewer = true` (the template asks for 200 samples and 100 trajectories, which would take several minutes here, and stops if fewer than 100 trajectories can be selected, §8.9.3). `optimize` and `frequencies` need the `[electronic]` section (§4.2).
 
 Expected output of `validate` (the paths are those of your machine):
 
@@ -109,25 +110,33 @@ Input file /home/you/gqteashmd-runs/water/input.toml is valid.
 Expected output of `run` (real output from a development machine; the dates and times differ):
 
 ```text
-2026-11-08 09:12:02 INFO    gqteashmd.orchestrator: Stage prepare: starting
-2026-11-08 09:12:03 INFO    gqteashmd.orchestrator: Stage prepare: done (1/1 tasks)
-2026-11-08 09:12:03 INFO    gqteashmd.orchestrator: Stage optimize: starting
-2026-11-08 09:12:06 INFO    gqteashmd.orchestrator: Stage optimize: done (1/1 tasks)
-2026-11-08 09:12:06 INFO    gqteashmd.orchestrator: Stage frequencies: starting
-2026-11-08 09:12:08 INFO    gqteashmd.orchestrator: Stage frequencies: done (1/1 tasks)
-2026-11-08 09:12:08 INFO    gqteashmd.orchestrator: Stage sampling: starting
-2026-11-08 09:12:10 INFO    gqteashmd.orchestrator: Stage sampling: done (1/1 tasks)
-Workflow complete: 4 stage(s) run, 0 already up to date, 0 skipped.
+2026-11-08 12:25:54 INFO    gqteashmd.orchestrator: Stage prepare: starting
+2026-11-08 12:25:58 INFO    gqteashmd.orchestrator: Stage prepare: done (1/1 tasks)
+2026-11-08 12:25:58 INFO    gqteashmd.orchestrator: Stage optimize: starting
+2026-11-08 12:26:02 INFO    gqteashmd.orchestrator: Stage optimize: done (1/1 tasks)
+2026-11-08 12:26:02 INFO    gqteashmd.orchestrator: Stage frequencies: starting
+2026-11-08 12:26:06 INFO    gqteashmd.orchestrator: Stage frequencies: done (1/1 tasks)
+2026-11-08 12:26:06 INFO    gqteashmd.orchestrator: Stage sampling: starting
+2026-11-08 12:26:07 INFO    gqteashmd.orchestrator: Stage sampling: done (1/1 tasks)
+2026-11-08 12:26:07 INFO    gqteashmd.orchestrator: Stage excitations: starting
+2026-11-08 12:26:52 INFO    gqteashmd.stages.excitations: Stage excitations: S1  mean dE = 12.157 +- 1.683 eV, mean f = 0.0024 +- 0.0006 (20 ok)
+2026-11-08 12:26:52 INFO    gqteashmd.stages.excitations: Stage excitations: S2  mean dE = 14.901 +- 1.965 eV, mean f = 0.0260 +- 0.0391 (20 ok)
+2026-11-08 12:26:52 INFO    gqteashmd.orchestrator: Stage excitations: done (21/21 tasks)
+2026-11-08 12:26:52 INFO    gqteashmd.orchestrator: Stage selection: starting
+2026-11-08 12:26:54 INFO    gqteashmd.orchestrator: Stage selection: done (1/1 tasks)
+Workflow complete: 6 stage(s) run, 0 already up to date, 0 skipped.
 ```
 
 Running the same command again recomputes nothing:
 
 ```text
-2026-11-08 09:12:13 INFO    gqteashmd.orchestrator: Stage prepare: up to date
-2026-11-08 09:12:13 INFO    gqteashmd.orchestrator: Stage optimize: up to date
-2026-11-08 09:12:13 INFO    gqteashmd.orchestrator: Stage frequencies: up to date
-2026-11-08 09:12:13 INFO    gqteashmd.orchestrator: Stage sampling: up to date
-Workflow complete: 0 stage(s) run, 4 already up to date, 0 skipped.
+2026-11-08 12:26:56 INFO    gqteashmd.orchestrator: Stage prepare: up to date
+2026-11-08 12:26:56 INFO    gqteashmd.orchestrator: Stage optimize: up to date
+2026-11-08 12:26:56 INFO    gqteashmd.orchestrator: Stage frequencies: up to date
+2026-11-08 12:26:56 INFO    gqteashmd.orchestrator: Stage sampling: up to date
+2026-11-08 12:26:56 INFO    gqteashmd.orchestrator: Stage excitations: up to date
+2026-11-08 12:26:56 INFO    gqteashmd.orchestrator: Stage selection: up to date
+Workflow complete: 0 stage(s) run, 6 already up to date, 0 skipped.
 ```
 
 Expected output of `status`:
@@ -140,9 +149,11 @@ prepare         done              1       0        0        0  1/1 tasks succeed
 optimize        done              1       0        0        0  1/1 tasks succeeded
 frequencies     done              1       0        0        0  1/1 tasks succeeded
 sampling        done              1       0        0        0  1/1 tasks succeeded
+excitations     done             21       0        0        0  21/21 tasks succeeded
+selection       done              1       0        0        0  1/1 tasks succeeded
 ```
 
-The results are in `~/gqteashmd-runs/water/run/` (see §6). §5.4 and §5.5 show what the files of this run contain. With the default input the `sampling` stage draws 200 samples; the captured output above and in §5.5 used `n_samples = 20` (the log lines do not show the number).
+The results are in `~/gqteashmd-runs/water/run/` (see §6). §5.4, §5.5 and §5.6 show what the files of this run contain. With the default input the `sampling` stage draws 200 samples and the `excitations` stage computes all of them; the captured output above and in §5.5 and §5.6 used `n_samples = 20` (the log lines do not show the number). The `excitations` stage dominates the run time: 21 single-point tasks, one after the other because `max_parallel_tasks = 1`.
 
 ---
 
@@ -224,9 +235,27 @@ imaginary_cutoff_cm1 = 20.0   # imaginary modes above this wavenumber are errors
 n_samples = 200               # number of Wigner-sampled initial geometries and velocities
 temperature_K = 0.0           # 0 = zero-point (vibrational ground state) distribution
 low_frequency_cutoff_cm1 = 10.0   # modes below this wavenumber are not sampled
+
+[excitations]
+include_reference = true      # also compute the vertical excitations at the reference geometry
+samples_per_task = 1          # samples per task (raise for cheap methods: start-up dominates)
+max_failed_fraction = 0.05    # stop if more samples than this fraction fail
+broadening_fwhm_eV = 0.1      # Gaussian width (FWHM) of the nuclear-ensemble spectrum
+spectrum_step_eV = 0.01       # energy grid step of the spectrum
+
+[selection]
+# n_samples x (number of states) x acceptance (typically 0.1-0.3) must reach n_trajectories,
+# or the stage stops (set allow_fewer = true to accept fewer). f_over_dE2 favours low-energy
+# pairs: set energy_window_eV around the band of interest.
+mode = "bright"               # "bright": accept by oscillator strength; "fixed": one state
+weighting = "f_over_dE2"      # "f_over_dE2" (SHARC excite.py-compatible) or "f"
+# states = ["S1", "S2"]       # candidate excited states (default: all excited singlets)
+# energy_window_eV = [4.5, 6.0]   # accepted excitation energy range (default: none)
+n_trajectories = 100          # number of trajectories to start
+allow_fewer = false           # accept fewer trajectories if too few pass the selection
 ```
 
-The template's `[electronic]` block is active (TDA-B3LYP/def2-SVP with S0 and two excited states), because `optimize` and `frequencies` need it, and so does `single-point`; the CASSCF alternative is given as comments. `[optimize]`, `[frequencies]` and `[sampling]` show their defaults. The template omits one key, `execution.poll_interval_s` (default 0.5). The table lists every key:
+The template's `[electronic]` block is active (TDA-B3LYP/def2-SVP with S0 and two excited states), because `optimize` and `frequencies` need it, and so does `single-point`; the CASSCF alternative is given as comments. `[optimize]`, `[frequencies]`, `[sampling]`, `[excitations]` and `[selection]` show their defaults (the commented `states` and `energy_window_eV` have no default value: the default is all excited singlets and no window). The template omits one key, `execution.poll_interval_s` (default 0.5). The table lists every key:
 
 | Key | Type | Default | Allowed | Meaning |
 |---|---|---|---|---|
@@ -272,6 +301,17 @@ The template's `[electronic]` block is active (TDA-B3LYP/def2-SVP with S0 and tw
 | `sampling.n_samples` | int | 200 | ≥ 1 | Number $N_s$ of Wigner samples (initial geometries with velocities) to draw (§8.8) |
 | `sampling.temperature_K` | float | 0.0 | ≥ 0 | Temperature $T$ of the thermal Wigner distribution, in kelvin. `0` is the vibrational ground state (zero-point distribution) (§8.8) |
 | `sampling.low_frequency_cutoff_cm1` | float | 10.0 | > 0 | Modes with wavenumber $\tilde\nu$ below this value, including the small imaginary modes that `frequencies` accepts, are **not sampled**: they stay at the equilibrium coordinate with zero velocity, and a warning lists them (§8.8). `0` is not allowed |
+| `excitations.include_reference` | bool | `true` | `true`, `false` | Also compute the vertical excitations at the reference (equilibrium) geometry, as task `ref`. The values go into the `reference` group of `excitations.h5` and into `excitations.json`; they are not used for the spectrum or the selection (§8.9). Part of the fingerprint: changing it after results exist needs `--rerun-from excitations`, which recomputes every sample |
+| `excitations.samples_per_task` | int | 1 | ≥ 1 | Wigner samples computed by one task (§8.9.1). Larger values make fewer, longer tasks; a retry of a task repeats all its samples. **Raise it for cheap methods**: with one sample per task, Python and PySCF start-up (about 2 s per task, §5.6) dominates |
+| `excitations.max_failed_fraction` | float | 0.05 | $0 \le x < 1$ | The stage fails if more than this fraction of the samples (or of the tasks) failed (§8.9.1). Equality is allowed. It is a check on the finished results: changing it does not recompute anything (§8.3) |
+| `excitations.broadening_fwhm_eV` | float | 0.1 | > 0 | Full width at half maximum $\delta$ of the Gaussian that broadens every line of the spectrum (§8.9.2). Changing it does not recompute the excitations |
+| `excitations.spectrum_step_eV` | float | 0.01 | > 0 | Energy grid step of `spectrum.csv` (§8.9.2). Changing it does not recompute the excitations |
+| `selection.mode` | str | `"bright"` | `"bright"`, `"fixed"` | `"bright"`: stochastic choice weighted by the oscillator strength. `"fixed"`: all trajectories start in the one state of `selection.states` (§8.9.3) |
+| `selection.weighting` | str | `"f_over_dE2"` | `"f_over_dE2"`, `"f"` | Acceptance weight $w$ of the bright mode (§8.9.3): $w=f/\Delta E^2$ (SHARC 4.1 `excite.py`-compatible, measured in §8.9.4) or $w=f$ (the oscillator-strength convention). `f_over_dE2` favours low-energy pairs, so **use an `energy_window_eV`** with it (§8.9.3). Ignored by `"fixed"` (and then not part of the fingerprint) |
+| `selection.states` | list of str | all excited singlets | labels `"S1"`, `"S2"`, ...; each must exist (`S0` and triplets are rejected, no duplicates, not empty) | Candidate states. `"fixed"` needs exactly one |
+| `selection.energy_window_eV` | `[lo, hi]` | none (no window) | finite, $0 \le lo < hi$ | Only pairs with $lo \le \Delta E \le hi$ (inclusive, in eV) are candidates. **Recommended with `f_over_dE2`**: put it around the band to excite (read it from `spectrum.csv`); it keeps a low-gap outlier from setting $w_{\max}$ (§8.9.3) |
+| `selection.n_trajectories` | int | 100 | ≥ 1 | Number of trajectories (initial conditions) to select. Budget: $N_s \times$ (number of states) $\times$ acceptance (typically 0.1-0.3; 6/40 in §5.6) must reach it, otherwise the stage stops (O20, §8.9.3) |
+| `selection.allow_fewer` | bool | `false` | `true`, `false` | `false`: stop if fewer than `n_trajectories` can be selected. `true`: accept the smaller number with a warning (§8.9.3). Zero selected is always an error. Acts only in the finalization and is not part of the fingerprint: after an O20 stop, set it and run again (no `--rerun-from`) |
 
 **Hardware keys.** `total_cores` and `total_memory_mb` are required, so that the input file records which machine the settings were written for. The input is rejected if the settings do not fit inside them (see the rules below and §8.4). The program also detects the real machine; if your values exceed it, `run` only **warns** (§7.9).
 
@@ -303,7 +343,7 @@ threads_per_task = 32
 
 - **Merge rule:** a key you leave out of an override takes the global value from `[resources]`. In the second example, `optimize` uses `memory_mb_per_task = 4000`.
 - **Fit rule:** for the global settings **and for every override** (after merging), the input must satisfy $n_p n_t \le N_{\text{cores}}$ and $n_p m \le M_{\text{total}}$ (§8.4). Otherwise the input is rejected, naming `[resources]` or `[resources.stages.<name>]` and the numbers. Note that an override that sets only `max_parallel_tasks` is also checked against the global `threads_per_task`.
-- **Stage names:** an override for a stage that does not exist is an input error (`[resources.stages] names unknown stage(s): …`). The stages in this version are `prepare`, `optimize`, `frequencies` and `sampling`.
+- **Stage names:** an override for a stage that does not exist is an input error (`[resources.stages] names unknown stage(s): …`). The stages in this version are `prepare`, `optimize`, `frequencies`, `sampling`, `excitations` and `selection`.
 
 #### The `[electronic]` section
 **[IMPLEMENTED]** (P3a). A complete example for ethylene, SA2-CASSCF(2,2)/6-31G\*:
@@ -358,6 +398,16 @@ The rules, all checked when the input is loaded (`validate`, `run`, `single-poin
 - **Fingerprint (§8.3):** `sampling` depends on `[sampling]`, `project.seed` and the fingerprint of `frequencies`. Changing any of them after results exist is a stale-input stop (§7.5): use `--rerun-from sampling` to draw new samples and keep the earlier stages.
 - **Input errors** (exit code 2, found by `validate`): `n_samples < 1`, `temperature_K < 0` or `low_frequency_cutoff_cm1 <= 0`.
 
+#### The `[excitations]` and `[selection]` sections
+**[IMPLEMENTED]** (P6). Both sections are optional; if one is absent, the defaults of the table apply. The keys are in the table above.
+
+- **`[electronic]` is required, with `singlets >= 2`.** `excitations` runs at the level of the `[electronic]` section, **with all its settings** (for `casscf` the whole state average, for `tda`/`tddft` the functional and the number of roots), because it needs the excited states. If `[electronic]` is missing, `validate` and `run` stop with exit code 2 (the rule of `optimize` and `frequencies`, above). `singlets = 1` (only S0) is rejected when the input is checked: *the excitations stage needs at least one excited state: [electronic] singlets must be >= 2*. The spectrum and the selection use the states S1, ..., S($n-1$) with $n$ = `singlets`.
+- **The stages and what they read.** `excitations` reads `samples.h5` of `sampling` (the reference geometry and the sample positions) and the molecule of `prepare`. `selection` reads `excitations.h5`. Neither needs an extra input file.
+- **State labels (`selection.states`) are checked when the input is loaded** (`validate`, `run`): a state that does not exist with the chosen `singlets` is an input error (exit code 2), for example *selection.states: S5 does not exist with [electronic] singlets = 3 (S0..S2)*; `"fixed"` without exactly one state is also an input error. When several rules are violated the message lists all of them, separated by `; `.
+- **The random numbers.** `selection` draws from the stream of `project.seed` and the stage name `selection` (§8.9.3). The same input, with the same excitations, selects the same trajectories.
+- **Fingerprints (§8.3):** `excitations` depends on `[electronic]` (without `overlap_norm_kept`), on `include_reference` and `samples_per_task`, on `sampling.n_samples` and on the fingerprint of `sampling`; **not** on `max_failed_fraction`, `broadening_fwhm_eV` or `spectrum_step_eV`, which act only on the finished results (if the stage stopped on `max_failed_fraction`, raise the limit and run again: only the finalization is repeated from the stored task results). `selection` depends on the `[selection]` section **without `allow_fewer`** (and without `weighting` when `mode = "fixed"`, where it has no effect), `project.seed` and the fingerprint of `excitations`; so after a stop on too few trajectories, setting `allow_fewer = true` and running again repeats only the finalization. Changing any other key after results exist is a stale-input stop (§7.5): use `--rerun-from excitations` (this recomputes every sample, e.g. after changing `include_reference`) or `--rerun-from selection`.
+- **Input errors** (exit code 2, found by `validate`): `samples_per_task < 1`, `max_failed_fraction` outside $[0,1)$, a non-positive `broadening_fwhm_eV` or `spectrum_step_eV`, an unknown `mode` or `weighting`, a bad `energy_window_eV` (not two finite numbers with $0 \le lo < hi$), `n_trajectories < 1`, and the state-label problems above.
+
 ### 4.3 The XYZ geometry file
 **[IMPLEMENTED]**
 
@@ -373,8 +423,8 @@ The rules, all checked when the input is loaded (`validate`, `run`, `single-poin
 - Every error message gives the line number, for example `line 3: expected 'symbol x y z'`.
 
 ### 4.4 Planned sections
-**[PLANNED]** Their key names and meanings are in the master plan §4.3 (`[optimize]`, `[frequencies]` and `[sampling]` are implemented, see above). Each sub-project adds the sections it needs, and this manual is updated each time. The sections for the later stages are not part of the input yet, because their keys depend on decisions that are still open:
-- `[excitations]`, `[selection]` (P6); `[dynamics]` (P7); `[analysis]` (P8).
+**[PLANNED]** Their key names and meanings are in the master plan §4.3 (`[optimize]`, `[frequencies]`, `[sampling]`, `[excitations]` and `[selection]` are implemented, see above). Each sub-project adds the sections it needs, and this manual is updated each time. The sections for the later stages are not part of the input yet, because their keys depend on decisions that are still open:
+- `[dynamics]` (P7); `[analysis]` (P8).
 - Additional `[electronic]` keys: density fitting, MC-PDFT, triplet states (with intersystem crossing).
 - A `scratch` directory key in the input file (the backend takes a scratch directory and has no checkpoint file since P3b, §8.6.8; the input key arrives with the stage that uses it).
 
@@ -645,6 +695,94 @@ H      0.0000000000   -0.8430601202   -0.5466669159
 - The total linear and angular momentum of every sample is zero to $2\times10^{-15}$ atomic units.
 - `mode_energy_ratio_sums` are the $S_k=\sum_s E_{k,s}/\langle E_k\rangle$ of the three modes (expected value $N_s = 20$ each). The smallest two-sided Gamma tail probability is $p = 0.0084$, far above the limit $10^{-9}/3 = 3.3\times10^{-10}$, so the check passes (§8.8).
 
+### 5.6 Example: `excitations` and `selection` on water
+**[IMPLEMENTED]** (P6). Real output from a development machine: the run of §3 (water, HF/STO-3G, that is CIS, `singlets = 3`: S0, S1, S2), with the **small settings** `[sampling] n_samples = 20`, `[selection] n_trajectories = 5` and `allow_fewer = true`, otherwise the defaults (`project.seed = 12345`, broadening 0.1 eV, grid step 0.01 eV, bright mode with `weighting = "f_over_dE2"`, no window). The excitation energies are far too high (12-17 eV) because CIS/STO-3G is a poor description of water; the example shows the workflow and the files, not chemistry. All six stages took 64 s with `max_parallel_tasks = 1`, 45 s of them in `excitations` (21 tasks, one per sample plus the reference); `selection` took about 2 s, mostly Python start-up. The console output is in §3.
+
+`04_excitations/` holds:
+
+| File | Contents | Units |
+|---|---|---|
+| `excitations.h5` | Energies, excitation energies, transition dipoles and oscillator strengths of all samples and of the reference; every dataset has a `units` attribute (§6) | $E_h$, eV, $e\,a_0$, 1 |
+| `excitations.json` | Per-state means and standard deviations, reference values, failed samples (§6) | eV, 1 |
+| `spectrum.csv` | The absorption spectrum (columns in §6) | eV, Å² per molecule, M⁻¹ cm⁻¹ |
+| `tasks/ref/`, `tasks/s00001/`, ... | `task.json`, `result.json`, `worker.log`, `electronic.log` (PySCF output) and `scratch/` of each task | |
+
+`05_selection/` holds `trajectories.json`, `selection_report.json`, `selection_report.md` and `tasks/select/`.
+
+`excitations.json` (the file has its keys in alphabetical order; `failed` is empty):
+
+```json
+{"schema_version": 1, "n_samples": 20, "n_ok": 20, "failed": [],
+ "error": null, "reference_error": null,
+ "state_labels": ["S0", "S1", "S2"], "include_reference": true,
+ "broadening_fwhm_eV": 0.1, "spectrum_step_eV": 0.01,
+ "states": {
+   "S1": {"mean_excitation_eV": 12.157048, "std_excitation_eV": 1.682796,
+          "mean_oscillator_strength": 0.0024137, "std_oscillator_strength": 0.00056057,
+          "reference_excitation_eV": 12.485060, "reference_oscillator_strength": 0.0030410},
+   "S2": {"mean_excitation_eV": 14.901126, "std_excitation_eV": 1.965218,
+          "mean_oscillator_strength": 0.025989, "std_oscillator_strength": 0.039082,
+          "reference_excitation_eV": 16.456694, "reference_oscillator_strength": 0.081386}}}
+```
+
+(The numbers are shortened here.) How to read it: the 20 samples spread the S1 excitation energy over $\pm1.7$ eV around a mean 0.33 eV below the value at the equilibrium geometry (12.485 eV); the S2 oscillator strength changes by a factor of the order of its own mean from geometry to geometry (mean 0.026, standard deviation 0.039, reference 0.081). The spectrum, `spectrum.csv`, has 880 grid points from 9.17 eV in steps of 0.01 eV; its maximum, $\sigma = 0.0473$ Å² ($\varepsilon = 1237\ \mathrm{M^{-1}cm^{-1}}$), is at 16.81 eV and belongs to S2:
+
+```text
+# gqteashmd nuclear-ensemble absorption spectrum
+# units: energy_eV = eV, cross sections = angstrom^2 per molecule, epsilon = M^-1 cm^-1
+# n_ok = 20
+# fwhm_eV = 0.1
+# step_eV = 0.01
+energy_eV,cross_section_A2,epsilon_M-1cm-1,S1_A2,S2_A2
+9.170000e+00,8.687311e-08,2.272064e-03,8.687311e-08,0.000000e+00
+9.180000e+00,2.285757e-07,5.978128e-03,2.285757e-07,0.000000e+00
+```
+
+When you pause with `pause_after = ["excitations"]`, `selection` has not run yet: read `spectrum.csv` and `excitations.json` (above) to choose `[selection]` (for example an `energy_window_eV` around the band), then run again. After the run, read `selection_report.md` (the 5 trajectories are all in S2, in the order of the samples):
+
+```text
+# Initial-state selection
+
+- mode: bright
+- weighting: f_over_dE2 (w_max = 0.0003954)
+- w_max pair: sample 3, S2, dE = 14.2923 eV, f = 0.0808, w = 0.0003954 (99th percentile of the weights: 0.0003831)
+- states: S1, S2
+- energy window (eV): none
+- trajectories: 5 selected of 5 requested
+- candidates: 40, accepted: 6, f_max: 0.09174
+- project seed: 12345
+
+## Per state
+
+| state | candidates | accepted | selected | mean dE (eV) | mean f |
+|---|---|---|---|---|---|
+| S1 | 20 | 0 | 0 | - | - |
+| S2 | 20 | 6 | 5 | 16.133 | 0.0845 |
+
+## First 5 trajectories
+
+| id | sample | state | dE (eV) | f |
+|---|---|---|---|---|
+| t00001 | 2 | S2 | 16.809 | 0.0917 |
+| t00002 | 3 | S2 | 14.292 | 0.0808 |
+| t00003 | 12 | S2 | 15.996 | 0.0840 |
+| t00004 | 14 | S2 | 15.780 | 0.0906 |
+| t00005 | 16 | S2 | 17.785 | 0.0756 |
+```
+
+(The report ends with the paths of `spectrum.csv` and `excitations.json` and the line *If the run paused here (`pause_after = ["selection"]`, effective once a later stage follows `selection`), review this report, then run `gqteashmd run` again to continue.*; while `selection` is the last stage, it never pauses.) How to read it: there are $20 \times 2 = 40$ candidate pairs (no window). The $w_{\max}$ pair is only slightly above the 99th percentile of the weights, so no single pair dominates (no outlier warning, §8.9.3). The weight is $w=f/\Delta E^2$ and the largest weight, $w_{\max} = 3.954\times10^{-4}\ \mathrm{eV^{-2}}$, belongs to S2 of sample 3 ($f=0.0808$, $\Delta E = 14.292$ eV: $0.0808/14.292^2 = 3.95\times10^{-4}$); it is not the pair with the largest $f$ (S2 of sample 2, $f_{\max}=0.0917$ at 16.81 eV), because a lower energy raises the weight. A pair is accepted with probability $w/w_{\max}$. An S1 pair has $f/\Delta E^2\approx0.0024/12.2^2 = 1.6\times10^{-5}$, about 4 % of $w_{\max}$, so none of the 20 S1 pairs was accepted; 6 S2 pairs were, and the first 5 were kept because `n_trajectories = 5`. `trajectories.json` lists them:
+
+```json
+{"schema_version": 1, "n_trajectories": 5, "mode": "bright", "project_seed": 12345,
+ "trajectories": [
+   {"id": "t00001", "index": 0, "sample": 2, "state": "S2",
+    "excitation_energy_eV": 16.809196, "oscillator_strength": 0.091742,
+    "rng": {"stage": "dynamics", "task_index": 0}},
+   {"id": "t00002", "index": 1, "sample": 3, "state": "S2", "...": "..."}]}
+```
+
+`sample` is the 1-based number of the geometry and velocity in `samples.h5` (§6); `rng` names the random stream that `dynamics` will use for this trajectory (§8.9.3).
+
 ---
 
 ## 6. Project directory and output files
@@ -699,7 +837,23 @@ and, after `frequencies`:
     └── tasks/samples/          # task.json, result.json, worker.log, and the task's own samples.h5 / samples.xyz
 ```
 
-A disabled `optimize` stage still occupies number 01, so `frequencies` stays in `02_frequencies/` and `sampling` in `03_sampling/`. In `fd_<k>_plus` and `fd_<k>_minus`, $k$ counts the Cartesian coordinates ($x,y,z$ of atom 1, then atom 2, ...) from 0. PySCF's temporary files of a task are written to its own `scratch/` directory inside the project, never to the system temporary directory.
+and, after `sampling`:
+
+```text
+├── 04_excitations/             # [IMPLEMENTED, P6]
+│   ├── excitations.h5          # energies, excitation energies, transition dipoles, oscillator strengths (with units)
+│   ├── excitations.json        # per-state statistics, reference values, failed samples
+│   ├── spectrum.csv            # nuclear-ensemble absorption spectrum
+│   └── tasks/                  # ref/ (the reference geometry) and s00001/, s00002/, ... (task id = number of its first
+│                               #   sample); each with task.json, result.json, worker.log, electronic.log, scratch/
+└── 05_selection/               # [IMPLEMENTED, P6]
+    ├── trajectories.json       # the selected initial conditions
+    ├── selection_report.json   # numbers behind the selection
+    ├── selection_report.md     # the same, to read
+    └── tasks/select/           # task.json, result.json, worker.log
+```
+
+A disabled `optimize` stage still occupies number 01, so `frequencies` stays in `02_frequencies/`, `sampling` in `03_sampling/`, `excitations` in `04_excitations/` and `selection` in `05_selection/`. In `fd_<k>_plus` and `fd_<k>_minus`, $k$ counts the Cartesian coordinates ($x,y,z$ of atom 1, then atom 2, ...) from 0. PySCF's temporary files of a task are written to its own `scratch/` directory inside the project, never to the system temporary directory.
 
 **`optimize.json`** [IMPLEMENTED]:
 
@@ -788,6 +942,65 @@ A disabled `optimize` stage still occupies number 01, so `frequencies` stays in 
 
 **`samples.xyz`** [IMPLEMENTED]: the $N_s$ geometries in Å, one XYZ frame each; the comment line is `sample k  E_harm = … Eh`.
 
+**`excitations.json`** [IMPLEMENTED]:
+
+| Field | Meaning | Unit |
+|---|---|---|
+| `schema_version` | File-format version (1) | — |
+| `n_samples`, `n_ok` | Number of samples $N_s$, and of those that succeeded | — |
+| `failed` | `[{"sample": k, "error": message}, ...]` for the samples that failed (empty if none), including unusable results (non-finite values, $\Delta E\le0$, §8.9.1) | — |
+| `reference_error` | The error of the reference task `ref`, or `null` (also `null` with `include_reference = false`) | — |
+| `error` | `null` if the stage succeeded; otherwise the message of the stop (too many failed samples, or the reference failed). The file is written before the stop | — |
+| `state_labels` | `["S0", "S1", ...]` | — |
+| `states` | `null` if the stage stopped; otherwise, for every excited state, an object with `mean_excitation_eV` and `std_excitation_eV` (mean and **population** standard deviation, divisor $N_{\text{ok}}$, over the successful samples), `mean_oscillator_strength`, `std_oscillator_strength`, and `reference_excitation_eV`, `reference_oscillator_strength` (`null` if `include_reference = false`) | eV, 1 |
+| `include_reference`, `broadening_fwhm_eV`, `spectrum_step_eV` | The `[excitations]` values used | —, eV |
+
+**`excitations.h5`** [IMPLEMENTED] (HDF5; file attributes `schema_version` = 1, `gqteashmd_version`, `n_samples`, `n_ok` and `project_seed`). Every numeric dataset has a string attribute `units`. $N_s$ is the number of samples, $n_s$ the number of states including S0 (`electronic.singlets`) and $N$ the number of atoms. **The rows of failed samples are `NaN`**; `ok` says which rows are valid:
+
+| Dataset | Shape | Unit | Meaning |
+|---|---|---|---|
+| `symbols` | $N$ | — | Element symbols |
+| `state_labels` | $n_s$ | — | `S0`, `S1`, ... (the $k$-th root at each geometry, in order of energy) |
+| `sample_index` | $N_s$ | 1-based | Sample number, as in `samples.h5` |
+| `ok` | $N_s$ | `int8 (1 = ok)` | Whether the sample succeeded (stored as int8: 1 = ok, 0 = failed) |
+| `energies` | $N_s\times n_s$ | $E_h$ | Total energies of S0, S1, ... |
+| `excitation_energies` | $N_s\times(n_s-1)$ | eV | $\Delta E_{0I}=E_I-E_0$, I = S1, S2, ... |
+| `transition_dipoles` | $N_s\times(n_s-1)\times3$ | $e\,a_0$ | $\boldsymbol\mu_{0I}$ (§8.6.5); the overall sign of each vector is arbitrary |
+| `oscillator_strengths` | $N_s\times(n_s-1)$ | 1 | $f_{0I}$ (§8.6.6) |
+| `reference/…` | one row each | | Group written only if `include_reference = true`: `energies`, `excitation_energies`, `transition_dipoles`, `oscillator_strengths` as above, and `coordinates` ($N\times3$, bohr), the geometry that `sampling` sampled around |
+
+**`spectrum.csv`** [IMPLEMENTED]: comment lines that start with `#` (title, units, `n_ok`, `fwhm_eV`, `step_eV`), a header line, then one line per grid point with values in `%.6e` format. Columns: `energy_eV` (photon energy $E$), `cross_section_A2` (total $\sigma(E)$, Å² per molecule), `epsilon_M-1cm-1` (molar absorption coefficient $\varepsilon(E)$), and one column `S1_A2`, `S2_A2`, ... per excited state (that state's contribution to $\sigma$; the columns add up to `cross_section_A2`). The formulas are in §8.9.2.
+
+**`trajectories.json`** [IMPLEMENTED]:
+
+| Field | Meaning |
+|---|---|
+| `schema_version`, `n_trajectories`, `mode`, `project_seed` | Format version (1), the number selected (can be below the request with `allow_fewer = true`), `"bright"` or `"fixed"`, and `project.seed` |
+| `trajectories[].id` | `t00001`, `t00002`, ... |
+| `trajectories[].index` | 0-based number $k$ of the trajectory |
+| `trajectories[].sample` | 1-based sample number: the geometry and velocity in `samples.h5` (`positions[sample-1]`, `velocities[sample-1]`) |
+| `trajectories[].state` | Initial electronic state label, e.g. `S2` |
+| `trajectories[].excitation_energy_eV`, `oscillator_strength` | $\Delta E$ (eV) and $f$ of that pair |
+| `trajectories[].rng` | `{"stage": "dynamics", "task_index": k}`: the random stream of the future `dynamics` task of this trajectory, derived from `project.seed`, the stage name and $k$ (§8.9.3). It is not an integer seed |
+
+**`selection_report.json`** [IMPLEMENTED]:
+
+| Field | Meaning |
+|---|---|
+| `schema_version`, `mode`, `weighting` | Format version (1), `"bright"` or `"fixed"`, and the `[selection] weighting` value (recorded for `"fixed"` too, where it has no effect) |
+| `states`, `window_eV` | Candidate states and the window (`null` if none) |
+| `n_requested`, `n_selected` | `n_trajectories` and the number selected |
+| `stage_failed` | `true` if the stage stopped on too few trajectories (O20); the report is written before the stop, and `trajectories.json` is then not written |
+| `candidates`, `accepted` | Number of candidate pairs, and of pairs accepted by the rule **before** the cut to `n_trajectories` |
+| `f_max` | Largest oscillator strength among the candidates |
+| `weight_max` | $w_{\max}$ of the weighting (in $\mathrm{eV^{-2}}$ for `f_over_dE2`, dimensionless for `f`; for `"fixed"` it is $f_{\max}$) |
+| `weight_max_pair` | Bright mode: the pair that sets $w_{\max}$, `{"sample", "state", "excitation_energy_eV", "oscillator_strength", "weight"}`; `null` in fixed mode or without candidates |
+| `weight_p99` | Bright mode: the 99th percentile of the candidate weights (linear interpolation); `null` in fixed mode or without candidates |
+| `weight_outlier` | `true` if `weight_max_pair.weight` $> 10\times$ `weight_p99`: one pair dominates the normalization (a warning is logged, §8.9.3) |
+| `per_state` | For every state: `candidates`, `accepted`, `selected`, `mean_excitation_energy_eV` and `mean_oscillator_strength` of the selected pairs (`null` if none) |
+
+**`selection_report.md`** [IMPLEMENTED]: the same numbers as a page to read: the settings (with the $w_{\max}$ pair in bright mode), the outlier warning and the failure note if they apply, a per-state table, the first 20 trajectories, and the paths of `spectrum.csv` and `excitations.json`. All JSON files of both stages contain only valid JSON: missing values are `null`, never `NaN`.
+
 **`provenance.json`** [IMPLEMENTED]. Every `gqteashmd run` appends one record once the controller holds the project lock and has opened `state.db` (one run is one record), so the file shows the software behind every run of the project. A run that is later refused because a stage is stale (`StaleStageError`, §7.5) has a record; a run refused by the preflight checks, by the lock, or by a corrupt `state.db` has none. Open it with any text editor, or with `python -m json.tool .gqteashmd/provenance.json`.
 
 ```json
@@ -826,7 +1039,7 @@ A disabled `optimize` stage still occupies number 01, so `frequencies` stays in 
 **[IMPLEMENTED]**
 
 ### 7.1 Stages and tasks
-- Each stage is split into **tasks**. `prepare` and `optimize` have one task each. `frequencies` has one task with the analytic Hessian, or $1+6N_{\text{at}}$ tasks with finite differences (§8.7). Planned stages have many; for example, `dynamics` will have one task per trajectory.
+- Each stage is split into **tasks**. `prepare` and `optimize` have one task each. `frequencies` has one task with the analytic Hessian, or $1+6N_{\text{at}}$ tasks with finite differences (§8.7). `sampling` and `selection` have one task each. `excitations` has $1+\lceil N_s/\text{samples\_per\_task}\rceil$ tasks (the reference `ref`, then chunks of `samples_per_task` consecutive samples; $N_s$ = `sampling.n_samples`), which run in parallel up to `max_parallel_tasks`. Planned stages have many tasks; for example, `dynamics` will have one task per trajectory.
 - Stages run in order. A stage starts only when the stages it depends on are done.
 - Within a stage, up to `max_parallel_tasks` tasks run at the same time. Each task runs as a separate process, so a crashing calculation cannot bring down the controller.
 
@@ -900,7 +1113,7 @@ pause_after = ["optimize"]         # example: stop after the geometry optimizati
 
 - Review the results in the stage directory, then run **the same command again**. The finished stage is "up to date", so the run continues with the next stage and does not pause again.
 - A stage that was **skipped** (disabled in the input) never pauses. A stage that was already up to date from an earlier run does not pause either.
-- The **last** stage never pauses, because nothing follows it. In this version the stages are `prepare`, `optimize`, `frequencies` and `sampling`, so `pause_after = ["optimize"]` lets you inspect `optimized.xyz` before the frequencies are computed, and `pause_after = ["frequencies"]` lets you inspect the frequencies and the Molden file before any samples are drawn, while `pause_after = ["sampling"]` has no effect until later stages exist.
+- The **last** stage never pauses, because nothing follows it. In this version the stages are `prepare`, `optimize`, `frequencies`, `sampling`, `excitations` and `selection`, so `pause_after = ["optimize"]` lets you inspect `optimized.xyz` before the frequencies are computed, `pause_after = ["frequencies"]` lets you inspect the frequencies and the Molden file before any samples are drawn, `pause_after = ["sampling"]` lets you look at `samples.xyz` before the expensive excitations, and `pause_after = ["excitations"]` lets you look at `spectrum.csv` and `excitations.json` before the initial states are chosen. `pause_after = ["selection"]` **has no effect until `dynamics` exists (P7)**, because `selection` is then the last stage.
 - A stage name that does not exist is an input error (`workflow.pause_after names unknown stage(s): …`), found before anything runs.
 
 ### 7.9 Checks before a run (preflight)
@@ -1020,6 +1233,8 @@ $$
   - For `prepare`: `charge`, `multiplicity` and the SHA-256 of the geometry file's **contents**. The path is not included, so moving the file does not invalidate results, but editing it does.
 - For `optimize` and `frequencies`: only what determines the S0 surface, namely the `[electronic]` keys that enter the ground-state calculation, plus the stage's own section. The keys that matter only for excited states are left out: `td_conv_tol` and `overlap_norm_kept` always, and `singlets` for `tda` and `tddft` (for `casscf`, `singlets` defines the state average and **is** included). Changing them therefore does not redo `optimize` or `frequencies`. For `frequencies` the key `imaginary_cutoff_cm1` is also left out, because it is only checked after the calculation: if the stage stopped on a too-large imaginary mode and you change the cutoff, the next run repeats only the finalization from the stored task results. Changing `basis`, `functional`, the active space or `fd_step_bohr` does recompute. These stages read no upstream file when the fingerprint is computed; they depend on `prepare` (and on `optimize`) only through the upstream fingerprints. A disabled `optimize` counts as "skipped" in the fingerprint of `frequencies`.
 - For `sampling`: the whole `[sampling]` section and `project.seed`, plus the fingerprint of `frequencies` (and so, through it, everything upstream). Any change of these after results exist is a stale-input stop (§7.5).
+- For `excitations`: the `[electronic]` section **without** `overlap_norm_kept`, the `[excitations]` keys `include_reference` and `samples_per_task`, `sampling.n_samples`, and the fingerprint of `sampling`. The keys `max_failed_fraction`, `broadening_fwhm_eV` and `spectrum_step_eV` are left out because they act only after the calculation: after changing one of them, the next run repeats only the finalization from the stored task results (new spectrum, new failure check).
+- For `selection`: the `[selection]` section **without `allow_fewer`**, and without `weighting` when `mode = "fixed"`; `project.seed`; and the fingerprint of `excitations`. `allow_fewer` acts only in the finalization (the O20 check, §8.9.3): after changing it, the next run repeats only the finalization from the stored task result. `weighting` has no effect in fixed mode. Changing any other `[selection]` key after results exist is a stale-input stop (§7.5): use `--rerun-from selection`.
 - **Canonical form:** JSON is written with sorted keys and fixed separators, so the same inputs always give the same $F_s$.
 - **Chaining:** a fingerprint includes the fingerprints of the stages it depends on. A change therefore invalidates every later stage that depends on it.
 - **Interpreting it:** you never see $F_s$ directly. It produces the "results produced from different inputs" message in §7.5.
@@ -1546,9 +1761,136 @@ The harmonic energy of SHARC's output, $\tfrac12\sum_k\hbar\omega_k$ = 0.0243789
 Other checks of the sampler (exact Gaussian widths, the $T > 0$ energy, zero total momenta, linear molecules, reproducibility) are unit tests of the package.
 
 ### 8.9 Initial excitation
-**[PLANNED, P6]** At each sampled geometry, the vertical excitation energies $\Delta E_{0J} = E_J - E_0$ and oscillator strengths $f_{0J}$ will be computed with the formulas of §8.6.5 and §8.6.6 (**[IMPLEMENTED]** there for one geometry; this stage will run them at every sampled geometry).
-- **Spectrum:** the absorption spectrum is the sum of $f_{0J}$ over all samples, broadened with Gaussians.
-- **Initial states:** they are chosen within a user-defined energy window, with a probability that increases with $f_{0J}$. The exact rule is open item O3 and will be documented here when fixed.
+**[IMPLEMENTED]** (P6). The stage `excitations` computes the vertical excitations at the reference geometry and at every Wigner sample (§8.9.1) and builds the absorption spectrum (§8.9.2). The stage `selection` then chooses the initial electronic state of every trajectory (§8.9.3). §8.9.4 gives the comparison with SHARC 4.1. Atomic units are used inside the calculation and the files carry the units of §6, except that excitation energies are in eV (the only conversion is $E_h \to$ eV with the CODATA factor of §8.1).
+
+#### 8.9.1 Vertical excitations (`excitations`)
+At a geometry $\mathbf R$ the electronic-structure backend (§8.6) gives the energies $E_0, E_1, \dots, E_{n-1}$ of the $n$ = `electronic.singlets` singlet states, in order of energy, and the transition dipoles $\boldsymbol\mu_{0I}$. With the formulas of §8.6.5 and §8.6.6 this gives, for I = S1, ..., S($n-1$),
+
+$$
+\Delta E_{0I} = E_I - E_0,
+\qquad
+f_{0I} = \tfrac23\,\Delta E_{0I}\,\lvert\boldsymbol\mu_{0I}\rvert^2 \quad(\text{atomic units}).
+$$
+
+**Procedure.**
+
+1. The stage plans one task `ref` (if `include_reference = true`) for the equilibrium geometry of `samples.h5`, and tasks `s00001`, `s00002`, ... of `samples_per_task` consecutive samples each (the task name is the number of its first sample).
+2. A task builds **one backend** with the **full `[electronic]` settings** (the same method, basis, functional, active space and number of states as `single-point`; the logs are in its `electronic.log`, the scratch files in its `scratch/` directory), and calls `reset()` **before every sample**. A reset removes everything the backend remembers of the previous geometry (orbitals, density, phases), so a sample's result does not depend on which samples were computed before it in the same task. The $k$-th sample uses `positions[k-1]` of `samples.h5`. State $S_n$ is the $n$-th root **at that geometry**; no state is tracked between samples.
+3. **A sample whose electronic structure fails** (an SCF, CASSCF or linear-response calculation that exhausts its retry ladder, §8.6; an `ElectronicStructureError`) is **recorded as failed, with the message**, and the task goes on with the next sample. The task itself then still counts as done. **A sample whose results cannot be used is recorded as failed in the same way:** a non-finite energy, transition dipole or oscillator strength (*non-finite energy of S1 (nan Eh)*, *non-finite transition dipole of S1 …*, *non-finite oscillator strength of S1 …*), or an excited state at or below S0 (*excitation energy of S2 is not positive (-2.72114 eV)*; for example an unstable reference in TDA, or a collapsed root). So every successful sample has finite values and $\Delta E_{0I}>0$ for every state, which the spectrum (§8.9.2) and the selection weights (§8.9.3) rely on. The same rule applies to the reference, whose failure stops the stage (step 4). Retryable errors (a `MemoryError` or `OSError` inside PySCF) and crashes fail the task instead; the task is retried up to `execution.max_attempts` times and **repeats all its samples** (§8.4).
+4. **Failure tolerance.** After all tasks are done, `finalize` counts the failed samples, including all samples of a task that failed completely. If more than `max_failed_fraction` $\times N_s$ samples failed (equality is allowed), the stage stops with exit code 4 and lists the first five failures. The same fraction is applied to the tasks by the orchestrator (§8.4). **If the reference geometry failed (and `include_reference = true`), the stage always stops**, because the reference is the check on the sampled values. Samples that failed are excluded from the spectrum and from the selection; they stay in `excitations.h5` as `NaN` rows with `ok = 0`. **Before either stop, `finalize` writes `excitations.json`** with `n_ok`, the list of failed samples, `reference_error` and the message in `error` (`states` is then `null`; `excitations.h5` and `spectrum.csv` are not written), so the failures can be inspected. Raising `max_failed_fraction` repeats only the finalization (no `--rerun-from` needed); `include_reference = false` changes the fingerprint and needs `--rerun-from excitations`, **which recomputes every sample**.
+   Before computing, every task checks that `samples.h5` holds `sampling.n_samples` samples; otherwise it fails (not retried) with *samples.h5 holds K samples but [sampling] n_samples = N; rerun the sampling stage with --rerun-from sampling*.
+5. `finalize` writes `excitations.h5`, `spectrum.csv` and `excitations.json` (§6), and logs for each state the mean and standard deviation of $\Delta E$ and $f$ over the successful samples.
+
+The sample is computed at the geometry that `sampling` produced; the velocities are not used. The reference is not part of the spectrum and not a candidate for the selection.
+
+#### 8.9.2 The absorption spectrum (nuclear-ensemble method)
+**Symbols.** $i$: a successful sample, $i = 1,\dots,N_{\text{ok}}$. $n$: an excited state (S1, S2, ...). $\Delta E_{in}$: its excitation energy at sample $i$, in eV. $f_{in}$: its oscillator strength. $E$: the photon energy of the spectrum, in eV. $\delta$: `broadening_fwhm_eV` (full width at half maximum, eV). $s = \delta/(2\sqrt{2\ln2})$: the corresponding standard deviation. $g(x)=\dfrac{1}{s\sqrt{2\pi}}\exp\!\Bigl(-\dfrac{x^2}{2s^2}\Bigr)$: the normalized Gaussian (unit area, in eV$^{-1}$). $e$, $\hbar$, $m_e$, $c$, $\varepsilon_0$: elementary charge, reduced Planck constant, electron mass, speed of light, vacuum permittivity.
+
+**Formula** (Crespo-Otero and Barbatti, *Theor. Chem. Acc.* **131**, 1237 (2012); refractive index 1). The absorption cross section per molecule is
+
+$$
+\sigma(E)=\sum_n\sigma_n(E),
+\qquad
+\sigma_n(E)=\frac{\pi e^2\hbar}{2\,m_e\,c\,\varepsilon_0}\;\frac1E\;\frac1{N_{\text{ok}}}\sum_{i=1}^{N_{\text{ok}}}\Delta E_{in}\,f_{in}\;g\bigl(E-\Delta E_{in}\bigr).
+$$
+
+**The prefactor.** With $E$ and $\Delta E$ in eV the units of $\sigma$ are Å². In atomic units ($e=\hbar=m_e=1$, $4\pi\varepsilon_0=1$) the constant is $2\pi^2/c$, so
+
+$$
+\frac{\pi e^2\hbar}{2\,m_e\,c\,\varepsilon_0}=\frac{2\pi^2}{c_{\text{au}}}\;E_h[\mathrm{eV}]\;a_0[\text{Å}]^2 = 1.09761\ \mathrm{eV\,\text{Å}^2},
+$$
+
+with $c_{\text{au}}=137.036$, $E_h = 27.2114$ eV and $a_0 = 0.529177$ Å (§8.1). This is the same number as the SI expression. The molar absorption coefficient follows from the unit change Å² $\to$ cm² ($10^{-16}$), the Avogadro constant $N_A$, litres ($1/1000$) and the decadic logarithm:
+
+$$
+\varepsilon(E)=\sigma(E)\,\frac{10^{-16}\,N_A}{1000\ln10}=26153.8\ \mathrm{M^{-1}cm^{-1}\,\text{Å}^{-2}}\;\sigma(E).
+$$
+
+**The grid.** $E_j=e_0+j\,\Delta$, with $\Delta$ = `spectrum_step_eV`, where
+$e_0=\max\bigl(\Delta,\ \Delta\lfloor(\min\Delta E - 4s)/\Delta\rfloor\bigr)$, and $j$ runs up to the first grid point at or above $\max\Delta E+4s$ (minimum and maximum over all successful samples and all states). The Gaussians are evaluated at every grid point, so a single line is integrated to within $2\times10^{-4}$ (relative) of the exact value (the grid ends at $\pm4s$ from the lowest and highest line). The columns of `spectrum.csv` are $\sigma(E_j)$, $\varepsilon(E_j)$ and the single terms $\sigma_n(E_j)$ (§6).
+
+**Remarks.** The spectrum has no vibronic structure, only the width that the Wigner distribution of the ground-state nuclei gives plus the broadening $\delta$ (which smooths the finite number of samples; with few samples, a smaller $\delta$ shows the individual samples). The result depends on $\delta$ and on $N_{\text{ok}}$; check convergence with more samples.
+#### 8.9.3 Selection of the initial states (`selection`)
+**Candidates.** A *candidate* is a pair (sample $i$, state $n$) such that sample $i$ succeeded, state $n$ is in `selection.states` (default: all excited singlets), and, if `energy_window_eV` $=[lo,hi]$ is given, $lo \le \Delta E_{in} \le hi$ (both limits included, $\Delta E$ in eV). Candidates are ordered **sample by sample, and within a sample S1, S2, ...** (sample-major). A sample can give several candidates, and so it can start more than one trajectory; a given pair is used at most once.
+
+**Bright mode** (`mode = "bright"`, open item O3, decided 2026-11-08). Every candidate has a weight $w_{in}$, and $w_{\max}$ is the largest weight **over the candidates** (so over the pairs inside the window; a narrower window therefore raises the acceptance of the remaining pairs). A candidate is accepted if
+
+$$
+r_{in} < \frac{w_{in}}{w_{\max}},
+\qquad r_{in}\sim U[0,1) \text{ independent, one per candidate}.
+$$
+
+The weighting is chosen by `selection.weighting`:
+
+| `weighting` | Weight $w_{in}$ | Notes |
+|---|---|---|
+| `"f_over_dE2"` (default) | $f_{in}/\Delta E_{in}^2$ | **SHARC 4.1 `excite.py`-compatible.** The rule was determined from SHARC's `excite.py` run as a black box: maximum-likelihood fits of the exponents of $w=f^a\,\Delta E^k$ to its per-pair selections give $k=-1.99\pm0.05$ and $a=0.99\pm0.03$ (§8.9.4); it is *not* taken from a publication. Since $f=\tfrac23\Delta E\lvert\mu\rvert^2$, $w\propto\lvert\mu\rvert^2/\Delta E$: it **favours low-energy pairs** (see the limits below). The ratio $w/w_{\max}$ does not depend on the energy unit |
+| `"f"` | $f_{in}$ | The oscillator-strength convention: the acceptance probability is $f/f_{\max}$ (cf. Barbatti et al., *J. Photochem. Photobiol. A* **190**, 228 (2007)) |
+
+If $w_{\max}\le0$ (no candidate, or all $f=0$), nothing is accepted. The accepted pairs are taken **in candidate order, up to `n_trajectories`**. All accepted pairs are counted first (the per-state numbers in the report are exact), then the list is cut.
+
+**Fixed mode** (`mode = "fixed"`). `selection.states` holds exactly one state. The trajectories are the **first** `n_trajectories` eligible samples in ascending order (successful, and inside the window if one is given) in that state; no random numbers and no weights are used. `weighting` is ignored (and not part of the fingerprint, §8.3), but it is still written to the reports.
+
+**Too few trajectories (O20, decided 2026-11-08).** If fewer than `n_trajectories` pairs are selected, the stage stops with exit code 4 and a message with the numbers (candidates, accepted, $f_{\max}$, the weighting, the window, the states) and the advice, each with the rerun it needs:
+
+- widen `energy_window_eV`, add states or lower `n_trajectories`, **then run with `--rerun-from selection`** (these keys change the selection);
+- increase `[sampling] n_samples`, **then run with `--rerun-from sampling`**, which recomputes the samples and the excitations of every sample;
+- or set `allow_fewer = true` and run again: **no `--rerun-from` is needed**, because `allow_fewer` acts only in the finalization and is not part of the fingerprint (§8.3); the stored task result is reused.
+
+With `allow_fewer = true` the stage accepts the smaller number, logs a warning, and writes `trajectories.json` with the number actually found. **Zero selected pairs is always an error**, also with `allow_fewer = true`. `selection_report.json` and `selection_report.md` are written **before** the stop (with `stage_failed = true`; `trajectories.json` is not written), so the numbers behind the stop can be read there. Because `allow_fewer` is not part of the fingerprint, setting it back to `false` after a finished run does **not** make `selection` stale: the smaller `trajectories.json` is kept. To apply the stricter setting, run with `--rerun-from selection`.
+
+**The $w_{\max}$ pair and outliers.** In bright mode the reports name the pair that sets $w_{\max}$ (sample, state, $\Delta E$, $f$, $w$) and give the 99th percentile $w_{99}$ of the candidate weights. If $w_{\max} > 10\,w_{99}$, one pair dominates the normalization and suppresses every other acceptance; the stage then logs a **warning** (*the w_max pair (sample k, S1, dE = 0.05 eV, …) is … times the 99th percentile of the candidate weights …; set [selection] energy_window_eV to exclude it (then run with --rerun-from selection)*), marks `weight_outlier = true` in `selection_report.json` and repeats the warning in `selection_report.md` and, if the stage stops on O20, in its message. Example (measured by a unit test): 200 samples with S1 at 5 eV ($f=0.05$) and S2 at 7 eV ($f=0.3$), plus **one** sample with S1 at 0.05 eV and $\lvert\mu\rvert=1$ a.u.: with `f_over_dE2` and no window, fewer than 10 of the 402 candidates are accepted; with `energy_window_eV = [1.0, 10.0]` more than 200 are, and there is no warning.
+
+**Random streams (seeds, D12).** The random numbers $r_{in}$ come from the generator of the stage `selection`, task 0: a NumPy `SeedSequence` built from `project.seed` and the CRC-32 checksum of the stage name, as in §8.8. Exactly **one number is drawn per candidate**, in candidate order, so the stream is a fixed function of the candidate list. Trajectory $k$ (0-based) will use the stream of the stage `dynamics`, task $k$, derived the same way; `trajectories.json` records it as `rng = {"stage": "dynamics", "task_index": k}` instead of an integer seed, so the random numbers of trajectory $k$ do not depend on how many other trajectories exist.
+
+**Assumptions and limits.**
+- The *vertical* excitation energy at a sample is used as the energy of the initial state; the nuclei start on the excited-state surface with the sampled geometry and velocities, with no further adjustment of the energy.
+- The rule treats every pair as independent: the same sample may supply S1 and S2 trajectories.
+- The adiabatic ordering is used at each geometry; if two states are close and cross between samples, the labels S1 and S2 of different samples may not describe the same electronic character.
+- With the TDA/TDDFT description of a very bright state the oscillator strength can be unreliable (§8.6.4); in that case the selection inherits the error.
+- **Low-energy bias of `f_over_dE2`.** $f/\Delta E^2=\tfrac23\lvert\mu\rvert^2/\Delta E$ (atomic units) grows without bound as $\Delta E\to0$, while $f$ itself goes to 0. A single sample near an S1/S0 seam (SA-CASSCF) or with a collapsed TDDFT root can therefore take over $w_{\max}$ and nearly empty the selection (see "The $w_{\max}$ pair and outliers" above). **Set `energy_window_eV` around the absorption band you want to excite** (read it from `spectrum.csv`): the window is applied before $w_{\max}$, so it removes such pairs. The `f` weighting does not have this bias.
+- Non-finite pairs and pairs with $\Delta E\le0$ cannot reach the selection (the `excitations` stage records such samples as failed, §8.9.1); the selection also skips them defensively.
+
+#### 8.9.4 Validation (measured)
+Both stages were compared with SHARC 4.1 as a black box (SHARC is only executed; its source is not read). The tools are in `tools/sharc_compare/` (`sharc_formats.py` writes and reads the SHARC text formats; `run_excite.py` drives `excite.py`; `run_sharc_pyscf.py` runs `SHARC_PYSCF.py`), the tests in `tests/validation/test_sharc_excitation_energies.py` and `tests/validation/test_sharc_excite.py` (marker `sharc`, run with `SHARC_HOME` and `SHARC_PYTHON`, never in CI).
+
+**Energies, dipoles and oscillator strengths against `SHARC_PYSCF.py`.** Water, SA3-CASSCF(4,4)/STO-3G (a state-averaged singlet CAS with three roots), the equilibrium geometry and two Wigner samples (RHF/STO-3G Hessian, $T=0$, seed 5), tight settings on both sides, a fresh backend per geometry. The same `QM.in` was given to SHARC's PySCF interface:
+
+| geometry | state | $\Delta E$ SHARC ($E_h$) | $\Delta E$ ours ($E_h$) | difference ($E_h$) | difference of $\lvert\boldsymbol\mu\rvert$ ($e\,a_0$) | difference of $f$ |
+|---|---|---|---|---|---|---|
+| 0 (reference) | S1 | 0.42680104 | 0.42680105 | $1.1\times10^{-8}$ | $3.2\times10^{-9}$ | $2.2\times10^{-10}$ |
+| 0 | S2 | 0.49404230 | 0.49404228 | $2.0\times10^{-8}$ | $2.2\times10^{-9}$ | $3.5\times10^{-12}$ |
+| 1 | S1 | 0.36747180 | 0.36747175 | $5.4\times10^{-8}$ | $8.2\times10^{-8}$ | $3.5\times10^{-9}$ |
+| 1 | S2 | 0.42178738 | 0.42178741 | $2.7\times10^{-8}$ | $3.8\times10^{-9}$ | $3.0\times10^{-11}$ |
+| 2 | S1 | 0.47953815 | 0.47953824 | $8.7\times10^{-8}$ | $1.2\times10^{-7}$ | $7.4\times10^{-9}$ |
+| 2 | S2 | 0.56282512 | 0.56282507 | $5.1\times10^{-8}$ | $2.8\times10^{-8}$ | $3.6\times10^{-11}$ |
+
+The worst differences are $8.7\times10^{-8}\ E_h$ in $\Delta E$ (limit $10^{-6}$), $1.2\times10^{-7}\ e\,a_0$ in $\lvert\boldsymbol\mu\rvert$ (the S1 value is about 0.09, so $1.3\times10^{-6}$ relative) and $7.4\times10^{-9}$ in $f$. The dipole vectors agree up to an overall sign. The SHARC-format files that the tools write (`QM.in`, `QM.out`, the `initconds` file) are read back by SHARC's own `excite.py`, which echoes our energies to $1.4\times10^{-7}$ eV and our oscillator strengths to $1.4\times10^{-8}$ (SHARC prints $f$ with 8 decimals).
+
+**The weighting exponents, measured.** Under a weight $w=f^a\,\Delta E^k$ normalized by the in-window maximum, a pair is selected with probability $p_i=w_i/\max_j w_j$. Two synthetic data sets of $N=3000$ samples isolate the exponents. In both, only S1 matters (S2 is dark, $f=0$, so it is never selected) and every pair lies inside the window $[0,20]$ eV; SHARC `excite.py` runs with seed 7.
+
+- **$\Delta E$ exponent:** constant $f_1=0.1$, $\Delta E_1\sim U(2,10)$ eV (a factor 5). SHARC selected 598 of the 3000 pairs.
+- **$f$ exponent:** constant $\Delta E_1=5$ eV, $f_1\sim U(0.01,0.4)$. SHARC selected 1527 pairs.
+
+The exponent is fitted by **maximum likelihood** from SHARC's per-pair `selected` flags $y_i$: the binomial log-likelihood $\ln L=\sum_i\bigl[y_i\ln p_i+(1-y_i)\ln(1-p_i)\bigr]$ is maximized (a grid scan, then a bounded one-dimensional optimization), and the standard error is $1/\sqrt{-\partial^2\ln L/\partial k^2}$ (the observed information, by a central finite difference). Results:
+
+| Exponent | Fitted value ± standard error | Expected for $f/\Delta E^2$ | $z$ |
+|---|---|---|---|
+| $k$ ($\Delta E$) | $-1.989\pm0.050$ | $-2$ | +0.21 |
+| $a$ ($f$) | $0.993\pm0.028$ | $1$ | −0.25 |
+
+The tests assert $\lvert\hat k+2\rvert<4\,\mathrm{SE}$ and $\lvert\hat a-1\rvert<4\,\mathrm{SE}$. So SHARC 4.1 uses $(f/\Delta E^2)/\max$; the alternatives $k=-1$ ($w\propto f/\Delta E\propto\lvert\mu\rvert^2$, about 20 standard errors from $\hat k$), $k=-1.5$ (about 10), $k=0$ ($w=f$) and $k=+2$ are excluded. For comparison, the expected counts of the $\Delta E$ data set are 357.9 ($k=-3$), 596.3 ($k=-2$), 825.0 ($k=-1.5$) and 1203.1 ($k=-1$), against the 598 observed.
+
+**Window semantics against `excite.py`.** 3000 synthetic samples with two excited states, an energy window $[4,8]$ eV, seed 7. The data include pairs *outside* the window with a larger $f/\Delta E^2$ than any pair inside it, so that the window maximum and the all-pairs maximum can be told apart. SHARC selected **370 (S1) and 699 (S2)**. The numbers each rule predicts, and the difference in standard deviations of the binomial distribution ($z$):
+
+| Rule | Expected S1 | Expected S2 | $z$ (S1) | $z$ (S2) |
+|---|---|---|---|---|
+| $f/\Delta E^2$, maximum over the **window** (our default) | 349.8 | 654.6 | +1.19 | +2.36 |
+| $f/\Delta E^2$, maximum over all pairs | 126.7 | 237.1 | +22.4 | +32.8 |
+| $f/\Delta E$ ($\propto\lvert\mu\rvert^2$), maximum over the window | 338.9 | 812.6 | +1.85 | −5.86 |
+| $f$, maximum over the window | 332.5 | 1026.7 | +2.25 | −17.8 |
+
+The test asserts only what these counts can decide: the default rule within 4 standard deviations, and the all-pairs maximum rejected (at least one state with $\lvert z\rvert>6$), so **the maximum is taken over the in-window pairs**. The other rows are reported only, because the counts of two states cannot pin an exponent down (the exponent is settled by the fits above). Our `select_bright` with the default rule on the same data gives 353 (S1) and 666 (S2), $z=+0.19$ and $+0.61$ against its own expectation. A two-sample Kolmogorov–Smirnov test of the $\Delta E$ of the selected S1 pairs, ours against SHARC's, gives $p=0.96$ (statistic 0.036). The comparison cannot say *why* SHARC uses $f/\Delta E^2$; hence the wording "determined by black-box comparison".
 
 ### 8.10 Nuclear motion (velocity Verlet)
 **[PLANNED, P7]** Nuclei move classically on the active surface $\lambda$:
@@ -1693,6 +2035,18 @@ $$
 | `Stage sampling: N mode(s) below the cutoff are not sampled (frequencies in cm^-1: …)` | **Warning**: modes below the cutoff, including small imaginary modes, stay at equilibrium with zero velocity (§8.8); the run continues | Lower `low_frequency_cutoff_cm1` if you want those modes sampled |
 | `The sampled harmonic energies are inconsistent with the Wigner distribution (mode …: sum of E/<E> over … samples = …, expected Gamma(…, 1); two-sided p = … < …); this indicates a program error — please report it` | The energy of one mode is outside the exact Gamma tail limit $10^{-9}/n_{\text{sampled}}$ (exit 4, §8.8). `samples.json` is written for diagnosis | Report it with the log |
 | `Total momentum was not removed from the samples (max |P| = …, max |L| = … a.u.); this indicates a program error — please report it` | The momentum check of §8.8 failed (exit 4) | Report it with the log |
+| `the excitations stage needs at least one excited state: [electronic] singlets must be >= 2` | `singlets = 1` (only S0) with the `excitations` stage (exit 2, found by `validate`) | Set `singlets` to at least 2 (§4.2) |
+| `Invalid input file …:` with `selection.…` text (for example `selection.states: S5 does not exist with [electronic] singlets = 3 (S0..S2)`, `selection.mode = 'fixed' needs exactly one state in selection.states`, `S0 cannot be selected: initial states are excited singlets`, `energy_window_eV needs finite values with 0 <= lo < hi`) | An inconsistent or out-of-range `[selection]` key; `[excitations]` keys out of range are reported the same way (exit 2, §4.2) | Correct the keys |
+| `Stage 'excitations' could not finalize its results: N of M samples failed, more than max_failed_fraction = 0.05: sample 7: …` | Too many samples failed (exit 4, §8.9.1); the first five failures are listed, and `excitations.json` (written before the stop) lists all | Read the messages and the `electronic.log` of the tasks (`04_excitations/tasks/`); fix the cause (geometry, active space, convergence; a changed input then needs the `--rerun-from` stage that the next run names), or raise `max_failed_fraction` and run again (it acts in the finalization only: no `--rerun-from` needed) |
+| `Stage excitations: sample N failed: …` | **Warning**: one sample's electronic structure failed; the task goes on (§8.9.1) | None, unless the final count exceeds `max_failed_fraction` |
+| `the equilibrium geometry itself failed: … Fix the electronic-structure settings first (then run with the --rerun-from stage that the next run names); … Or set [excitations] include_reference = false and run with --rerun-from excitations, which recomputes every sample.` | The reference calculation failed, or its result is unusable (exit 4; `excitations.json` is written first, with `reference_error`) | Fix the `[electronic]` settings (test with `single-point`) and rerun as the stale-stage message says, or set `include_reference = false` and run with `--rerun-from excitations` (all samples are recomputed) |
+| `Stage excitations: sample k failed: excitation energy of Sn is not positive (… eV)` / `… non-finite energy of Sn …` / `… non-finite transition dipole of Sn …` / `… non-finite oscillator strength of Sn …` | **Warning**: the sample's result cannot be used (an excited state at or below S0, or a NaN/inf value), so it counts as a failed sample (§8.9.1) | A few are tolerated by `max_failed_fraction`; many point to an unstable reference (TDA/TDDFT) or a poor active space |
+| `samples.h5 holds K samples but [sampling] n_samples = N; rerun the sampling stage with --rerun-from sampling` | `samples.h5` does not match the input (exit 4; not retried) | Run with `--rerun-from sampling` |
+| `samples.h5 is missing or unreadable …; rerun the sampling stage with --rerun-from sampling` / `samples.h5 is inconsistent: dataset … has shape …` / `excitations.h5 is missing or unreadable …; rerun the excitations stage with --rerun-from excitations` | An upstream HDF5 file was deleted, damaged or written by another version (exit 4; not retried) | Run the suggested `--rerun-from` command |
+| `Only K of N requested trajectories can be selected (candidates: …, accepted: …, f_max: …, weighting: …, window: …, states: …). Widen energy_window_eV, add states or lower n_trajectories (then run with --rerun-from selection); or increase [sampling] n_samples (then run with --rerun-from sampling, which recomputes the excitations of every sample); or set allow_fewer = true and run again (no --rerun-from needed). See …/selection_report.md.` | Fewer trajectories than requested can be selected (exit 4, §8.9.3). With zero selected the advice does not mention `allow_fewer`, because zero is always an error. If one pair dominates $w_{\max}$, a `Note: the w_max pair …` sentence is added | Follow the advice; read `selection_report.md`, which is written before the stop |
+| `Stage selection: the w_max pair (sample k, Sn, dE = … eV, f = …, w = …) is … times the 99th percentile of the candidate weights (…), so it suppresses the acceptance of every other pair; set [selection] energy_window_eV to exclude it (then run with --rerun-from selection).` | **Warning**: one low-gap pair sets the normalization of `f_over_dE2` (§8.9.3) | Set an `energy_window_eV` around the band you want to excite, then `--rerun-from selection` |
+| `excitations.h5 does not match [selection]: state Sn is not in the excitation data (excited singlets S1..Sm)` | `excitations.h5` has fewer states than `selection.states` asks for (exit 4; not retried; normally caught earlier by `validate`) | Run with `--rerun-from excitations` |
+| `Stage selection: only K of N requested trajectories were selected (allow_fewer = true)` | **Warning**: `allow_fewer = true` accepted a smaller number (§8.9.3) | Check that the number is enough for your study |
 | `Stage … results directory … is missing; recomputing` | **Warning**: you deleted a stage directory (§7.3) | None; the stage is computed again |
 | `Stage frequencies: small imaginary modes …` / `translation/rotation contamination …` / `not a stationary point …` | **Warnings** from `frequencies` (§8.7); the run continues | Check the geometry and the Hessian |
 | `internal error: …` | A program bug | Report it with `logs/gqteashmd.log` and the task's `result.json` |
@@ -1701,9 +2055,10 @@ $$
 
 ## 10. Known limitations
 
-- **Feature scope:** the stages `prepare`, `optimize`, `frequencies` and `sampling` exist. Excitations, initial-state selection, dynamics and analysis are planned (P6–P8), so the workflow ends with the Wigner samples today.
+- **Feature scope:** the stages `prepare`, `optimize`, `frequencies`, `sampling`, `excitations` and `selection` exist. Dynamics and analysis are planned (P7, P8), so the workflow ends with the selected initial conditions (`trajectories.json`) today. For that reason `pause_after = ["selection"]` has no effect yet: the last stage never pauses (§7.8); `pause_after = ["excitations"]` works.
 - **`sampling`:** harmonic and independent modes only (§8.8); no anharmonic or quasi-classical sampling, no sampling of an isotopically substituted molecule (the masses come from `frequencies`), samples are drawn on the S0 geometry of `frequencies` and not yet used by any later stage; the samples are not checked for chemical sense (very large amplitudes at high temperature or for floppy modes just above the cutoff are not detected).
 - **Electronic structure:** closed-shell singlet molecules with a restricted reference only; no triplet states; nonadiabatic couplings (SA-CASSCF only) and wavefunction overlaps exist only as a library and are not used by any command or stage yet (P7); the analytic Hessian exists for RHF/RKS only (SA-CASSCF uses finite differences, §8.7); TDA/TDDFT have no analytic couplings, and their overlaps use the excitation amplitudes X only (§8.6.8); the cost of the overlap engine grows with the number of determinants kept (`overlap_norm_kept`); overlap-based couplings carry noise of order $10^{-7}/\Delta t$ at default CASSCF convergence; no density fitting; no scratch-directory input key yet (the backend supports one, and writes no checkpoint file); TDDFT/TDA describe the S₁/S₀ crossing seam incorrectly (§8.6.4); DFT gradients omit the grid response, so use `grid_level` ≥ 5 for dynamics (§8.6.4). The SCF, CASSCF and TD calculations each have a retry ladder (§8.6.1, §8.6.8); a calculation that fails every rung stops.
+- **`excitations` and `selection`:** the spectrum is the vertical (nuclear-ensemble) spectrum with a Gaussian broadening: no vibronic structure, no refractive-index correction, no plot (`spectrum.csv` only), and it is not compared with an experiment. Each sample is computed from scratch (a full SCF and excited-state calculation per sample), with no parallelism inside a sample; the cost is $N_s+1$ calculations at the `[electronic]` level. The states are the adiabatic roots in order of energy at each geometry (no tracking between samples). Only singlets (S1, S2, ...) can be selected; no triplets. The bright-mode default `f_over_dE2` follows SHARC 4.1 `excite.py` as measured by black-box maximum likelihood (§8.9.4), not a published formula; it favours low-energy pairs, so one near-degenerate sample can dominate the normalization without an `energy_window_eV` (a warning is logged, §8.9.3). **SA-CASSCF:** every sample starts from SCF orbitals (`reset()` before each sample), so a displaced geometry can converge to a different active space than the reference, and nothing checks for this yet (a natural-occupation or energy-continuity check against `ref` is a P9 candidate); compare the per-state means in `excitations.json` with the reference values. The sample's total energy is not adjusted to the vertical excitation energy. Failed samples are excluded, which can bias the ensemble if failures cluster at certain geometries (the number of failures is in `excitations.json`).
 - **`optimize` and `frequencies`:** they work on the S0 surface of `[electronic]` only (no excited-state optimization, no constraints, no transition-state search). There is no input key for isotope masses, and no thermochemistry (zero-point energy, entropy), anharmonicity or frequency scaling. A finite-difference Hessian costs $1+6N_{\text{at}}$ gradients, which is large for SA-CASSCF with many atoms. The check of the project directory covers the scratch space; there is no separate check that the disk has room for PySCF's scratch files beyond `min_free_disk_mb`. A refused stale run still appends a provenance record (§7.5).
 - **Platform:** Linux only, with no batch-scheduler support. Runs are designed for a single workstation.
 - **Project-folder check:** the check for Windows drives and OneDrive (§7.9) looks at the text of the path. An absolute path that is a symbolic link into a Windows drive or a OneDrive folder is not detected.
@@ -1711,7 +2066,7 @@ $$
 
 ## 11. Roadmap
 
-P1 foundation (done) → P2 input schema and pre-run checks (done) → P3a PySCF backend (done: energies, gradients, transition dipoles, `single-point`) → P3b couplings, overlaps, phase tracking and restarts (done, library only) → P3c hardening sweep (done) → P4 optimization, frequencies and Hessian (done: `optimize` and `frequencies` stages) → P5 Wigner sampling (done: `sampling` stage, validated against SHARC `wigner.py`) → **P6 excitations and initial states (next)** → P7 dynamics → P8 analysis → P9 systematic validation against SHARC 4.1. This manual is updated with each step. Sections marked [PLANNED] become [IMPLEMENTED] when their sub-project is finished and validated.
+P1 foundation (done) → P2 input schema and pre-run checks (done) → P3a PySCF backend (done: energies, gradients, transition dipoles, `single-point`) → P3b couplings, overlaps, phase tracking and restarts (done, library only) → P3c hardening sweep (done) → P4 optimization, frequencies and Hessian (done: `optimize` and `frequencies` stages) → P5 Wigner sampling (done: `sampling` stage, validated against SHARC `wigner.py`) → P6 excitations and initial states (done: `excitations` and `selection` stages, compared with SHARC `SHARC_PYSCF.py` and `excite.py`) → **P7 dynamics (next)** → P8 analysis → P9 systematic validation against SHARC 4.1. This manual is updated with each step. Sections marked [PLANNED] become [IMPLEMENTED] when their sub-project is finished and validated.
 
 ## 12. References
 1. J. C. Tully, *J. Chem. Phys.* **93**, 1061 (1990): fewest-switches surface hopping.
@@ -1724,3 +2079,5 @@ P1 foundation (done) → P2 input schema and pre-run checks (done) → P3a PySCF
 7. CODATA 2018 recommended values of the fundamental physical constants.
 8. E. B. Wilson, J. C. Decius, P. C. Cross, *Molecular Vibrations* (McGraw-Hill, 1955): normal-coordinate analysis.
 9. C. Eckart, *Phys. Rev.* **47**, 552 (1935): the translation and rotation conditions.
+10. R. Crespo-Otero, M. Barbatti, *Theor. Chem. Acc.* **131**, 1237 (2012): spectrum simulation and decomposition with the nuclear ensemble (§8.9.2).
+11. M. Barbatti et al., *J. Photochem. Photobiol. A* **190**, 228 (2007): initial conditions for surface-hopping dynamics and the oscillator-strength criterion for the choice of the initial state (§8.9.3).

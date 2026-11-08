@@ -69,6 +69,14 @@ class Stage(ABC):
     def enabled(self, config: ShmdConfig) -> bool:
         return True
 
+    def check_config(self, config: ShmdConfig) -> list[str]:
+        """Input problems specific to this stage (called only when the stage is enabled).
+
+        Returns messages; ``check_stage_inputs`` turns them into a ConfigError before anything
+        is computed.
+        """
+        return []
+
     def fingerprint_inputs(self, ctx: StageContext) -> dict[str, Any]:
         """Inputs that decide whether stored results are still valid.
 

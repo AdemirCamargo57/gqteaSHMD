@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
-from math import comb
 from pathlib import Path
 from typing import Literal
 
@@ -120,7 +120,7 @@ class WorkflowSection(_Section):
 def n_singlet_csfs(ncas: int, nelecas: int) -> int:
     """Number of singlet CSFs of a CAS(nelecas, ncas) space (Weyl formula, nelecas even)."""
     n, half = ncas, nelecas // 2
-    return comb(n + 1, half) * comb(n + 1, half + 1) // (n + 1)
+    return math.comb(n + 1, half) * math.comb(n + 1, half + 1) // (n + 1)
 
 
 class CasscfSection(_Section):
@@ -219,6 +219,58 @@ class SamplingSection(_Section):
     low_frequency_cutoff_cm1: float = Field(default=10.0, gt=0, allow_inf_nan=False)
 
 
+class ExcitationsSection(_Section):
+    include_reference: bool = True
+    samples_per_task: int = Field(default=1, ge=1)
+    max_failed_fraction: float = Field(default=0.05, ge=0, lt=1, allow_inf_nan=False)
+    broadening_fwhm_eV: float = Field(default=0.1, gt=0, allow_inf_nan=False)
+    spectrum_step_eV: float = Field(default=0.01, gt=0, allow_inf_nan=False)
+
+
+class SelectionSection(_Section):
+    mode: Literal["bright", "fixed"] = "bright"
+    # Only used by mode = "bright": acceptance weight f/dE^2 (SHARC excite.py-compatible) or f.
+    weighting: Literal["f_over_dE2", "f"] = "f_over_dE2"
+    states: list[str] | None = None
+    energy_window_eV: tuple[float, float] | None = None
+    n_trajectories: int = Field(default=100, ge=1)
+    allow_fewer: bool = False
+
+    @field_validator("states")
+    @classmethod
+    def _states_are_excited_singlets(cls, value: list[str] | None) -> list[str] | None:
+        if value is None:
+            return None
+        from gqteashmd.core.states import StateLabel
+
+        labels: list[StateLabel] = []
+        for text in value:
+            try:
+                label = StateLabel.parse(text)
+            except ValueError as exc:
+                raise ValueError(f"invalid state label {text!r}: {exc}") from exc
+            if label.multiplicity != 1:
+                raise ValueError(f"{label} is a triplet; only excited singlets can be selected")
+            if label.index == 0:
+                raise ValueError("S0 cannot be selected: initial states are excited singlets")
+            if label in labels:
+                raise ValueError(f"duplicate state {label} in selection.states")
+            labels.append(label)
+        if not labels:
+            raise ValueError("selection.states must not be empty (omit it to use all)")
+        return [str(label) for label in labels]
+
+    @field_validator("energy_window_eV")
+    @classmethod
+    def _window_is_ordered(cls, value: tuple[float, float] | None) -> tuple[float, float] | None:
+        if value is None:
+            return None
+        lo, hi = value
+        if not (math.isfinite(lo) and math.isfinite(hi)) or not 0 <= lo < hi:
+            raise ValueError("energy_window_eV needs finite values with 0 <= lo < hi")
+        return value
+
+
 class ShmdConfig(_Section):
     schema_version: Literal[1] = 1
     project: ProjectSection
@@ -230,6 +282,8 @@ class ShmdConfig(_Section):
     optimize: OptimizeSection = Field(default_factory=OptimizeSection)
     frequencies: FrequenciesSection = Field(default_factory=FrequenciesSection)
     sampling: SamplingSection = Field(default_factory=SamplingSection)
+    excitations: ExcitationsSection = Field(default_factory=ExcitationsSection)
+    selection: SelectionSection = Field(default_factory=SelectionSection)
 
     @model_validator(mode="after")
     def _consistent(self) -> ShmdConfig:
@@ -248,6 +302,20 @@ class ShmdConfig(_Section):
                 "frequencies.method = 'analytic': there is no analytic SA-CASSCF Hessian in "
                 "PySCF; use 'auto' or 'finite_difference'"
             )
+        if self.electronic is not None and self.selection.states is not None:
+            from gqteashmd.core.states import StateLabel
+
+            singlets = self.electronic.singlets
+            for text in self.selection.states:
+                if StateLabel.parse(text).index >= singlets:
+                    problems.append(
+                        f"selection.states: {text} does not exist with [electronic] "
+                        f"singlets = {singlets} (S0..S{singlets - 1})"
+                    )
+        if self.selection.mode == "fixed" and (
+            self.selection.states is None or len(self.selection.states) != 1
+        ):
+            problems.append("selection.mode = 'fixed' needs exactly one state in selection.states")
         if problems:
             raise ValueError("; ".join(problems))
         return self

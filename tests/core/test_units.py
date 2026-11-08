@@ -19,3 +19,8 @@ def test_boltzmann_constant():
     assert units.BOLTZMANN_HARTREE_PER_K == 3.1668115634556e-06
     # 300 K is about 208.5 cm^-1
     assert abs(300 * units.BOLTZMANN_HARTREE_PER_K * units.HARTREE_IN_CM1 - 208.51) < 0.01
+
+
+def test_speed_of_light_and_avogadro():
+    assert units.SPEED_OF_LIGHT_AU == 137.035999084
+    assert units.AVOGADRO == 6.02214076e23
