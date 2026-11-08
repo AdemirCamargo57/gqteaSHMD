@@ -143,3 +143,40 @@ def test_module_check_treats_import_errors_as_missing(monkeypatch):
 
     monkeypatch.setattr(importlib.util, "find_spec", broken)
     assert preflight._module_available("anything") is False
+
+
+def _needy_stage(requirement):
+    from gqteashmd.stages.base import Stage
+
+    class Needy(Stage):
+        name = "needy"
+        required_modules = (requirement,)
+
+        def plan(self, ctx):
+            return []
+
+        def run_task(self, ctx, task, task_dir):
+            return {}
+
+        def finalize(self, ctx, results):
+            pass
+
+    return Needy()
+
+
+def test_module_versions_are_checked(tmp_path, write_input, monkeypatch):
+    from importlib import metadata
+
+    cfg = _with_directory(load_config(write_input(tmp_path)).config, tmp_path / "run")
+    machine = MachineInfo(None, None)
+    with pytest.raises(ConfigError, match=r"needs numpy >= 999.0; version .* is installed"):
+        run_preflight(cfg, [_needy_stage("numpy>=999.0")], machine=machine)
+    run_preflight(cfg, [_needy_stage("numpy>=1.0")], machine=machine)
+    with pytest.raises(ValueError, match="requirement"):
+        run_preflight(cfg, [_needy_stage("numpy>>1")], machine=machine)
+
+    def unknown(name):
+        raise metadata.PackageNotFoundError(name)
+
+    monkeypatch.setattr(metadata, "version", unknown)
+    run_preflight(cfg, [_needy_stage("numpy>=999.0")], machine=machine)  # unknown version: skip

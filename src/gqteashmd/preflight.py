@@ -8,6 +8,7 @@ import re
 import shutil
 from collections.abc import Sequence
 from dataclasses import dataclass
+from importlib import metadata
 from pathlib import Path
 
 from gqteashmd.config.schema import ShmdConfig
@@ -57,6 +58,20 @@ def _module_available(name: str) -> bool:
         return importlib.util.find_spec(name) is not None
     except (ImportError, ValueError):
         return False
+
+
+_REQUIREMENT = re.compile(r"([A-Za-z0-9_.\-]+)(?:>=([0-9]+(?:\.[0-9]+)*))?")
+
+
+def _parse_requirement(text: str) -> tuple[str, str | None]:
+    match = _REQUIREMENT.fullmatch(text.strip())
+    if match is None:
+        raise ValueError(f"invalid module requirement {text!r}; use 'name' or 'name>=X.Y'")
+    return match.group(1), match.group(2)
+
+
+def _version_tuple(text: str) -> tuple[int, ...]:
+    return tuple(int(part) for part in re.findall(r"\d+", text)[:3])
 
 
 _WSL_DRIVE = re.compile(r"^/mnt/[A-Za-z](/|$)")
@@ -127,10 +142,22 @@ def run_preflight(
     for stage in stages:
         if not stage.enabled(config):
             continue
-        for module in stage.required_modules:
-            if not _module_available(module):
+        for requirement in stage.required_modules:
+            name, minimum_version = _parse_requirement(requirement)
+            if not _module_available(name):
                 raise ConfigError(
-                    f"Stage '{stage.name}' needs the Python module '{module}', which is not "
+                    f"Stage '{stage.name}' needs the Python module '{name}', which is not "
                     "installed in this environment."
+                )
+            if minimum_version is None:
+                continue
+            try:
+                installed = metadata.version(name)
+            except metadata.PackageNotFoundError:
+                continue
+            if _version_tuple(installed) < _version_tuple(minimum_version):
+                raise ConfigError(
+                    f"Stage '{stage.name}' needs {name} >= {minimum_version}; version "
+                    f"{installed} is installed. Update the conda environment (environment.yml)."
                 )
     return warnings
