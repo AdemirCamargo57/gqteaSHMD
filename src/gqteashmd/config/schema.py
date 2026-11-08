@@ -78,18 +78,21 @@ class ResourcesSection(_Section):
             )
         ]
         checks += [(f"[resources.stages.{name}]", self.for_stage(name)) for name in self.stages]
+        problems: list[str] = []
         for label, eff in checks:
             p, t, m = eff.max_parallel_tasks, eff.threads_per_task, eff.memory_mb_per_task
             if p * t > self.total_cores:
-                raise ValueError(
+                problems.append(
                     f"{label}: max_parallel_tasks × threads_per_task = {p} × {t} = {p * t} "
                     f"exceeds total_cores = {self.total_cores}"
                 )
             if p * m > self.total_memory_mb:
-                raise ValueError(
+                problems.append(
                     f"{label}: max_parallel_tasks × memory_mb_per_task = {p} × {m} = {p * m} MB "
                     f"exceeds total_memory_mb = {self.total_memory_mb}"
                 )
+        if problems:
+            raise ValueError("; ".join(problems))
         return self
 
     @field_validator("stages")
@@ -128,13 +131,16 @@ class CasscfSection(_Section):
 
     @model_validator(mode="after")
     def _singlet_active_space(self) -> CasscfSection:
+        problems: list[str] = []
         if self.nelecas % 2:
-            raise ValueError("electronic.casscf.nelecas must be even for singlet states")
+            problems.append("electronic.casscf.nelecas must be even for singlet states")
         if self.nelecas > 2 * self.ncas:
-            raise ValueError(
+            problems.append(
                 f"electronic.casscf.nelecas = {self.nelecas} must be at most 2 × ncas = "
                 f"{2 * self.ncas}"
             )
+        if problems:
+            raise ValueError("; ".join(problems))
         return self
 
 
@@ -153,34 +159,58 @@ class ElectronicSection(_Section):
 
     @model_validator(mode="after")
     def _method_options(self) -> ElectronicSection:
+        problems: list[str] = []
         if self.triplets:
-            raise ValueError(
+            problems.append(
                 "electronic.triplets > 0 is not supported yet (planned together with "
                 "intersystem crossing); set triplets = 0"
             )
         if self.method == "casscf":
             if self.casscf is None:
-                raise ValueError(
+                problems.append(
                     "method = 'casscf' needs an [electronic.casscf] table with ncas and nelecas"
                 )
             if self.functional is not None:
-                raise ValueError("electronic.functional is not used by method = 'casscf'")
-            available = n_singlet_csfs(self.casscf.ncas, self.casscf.nelecas)
-            if self.singlets > available:
-                raise ValueError(
-                    f"electronic.singlets = {self.singlets} exceeds the {available} singlet "
-                    f"states of CAS({self.casscf.nelecas},{self.casscf.ncas}) "
-                    f"(nelecas = {self.casscf.nelecas}, ncas = {self.casscf.ncas})"
-                )
+                problems.append("electronic.functional is not used by method = 'casscf'")
+            if self.casscf is not None:
+                available = n_singlet_csfs(self.casscf.ncas, self.casscf.nelecas)
+                if self.singlets > available:
+                    problems.append(
+                        f"electronic.singlets = {self.singlets} exceeds the {available} singlet "
+                        f"states of CAS({self.casscf.nelecas},{self.casscf.ncas}) "
+                        f"(nelecas = {self.casscf.nelecas}, ncas = {self.casscf.ncas})"
+                    )
         else:
             if self.functional is None:
-                raise ValueError(
+                problems.append(
                     f"electronic.functional is required for method = '{self.method}' "
                     "(use 'hf' for CIS/TDHF)"
                 )
             if self.casscf is not None:
-                raise ValueError("[electronic.casscf] is only used by method = 'casscf'")
+                problems.append("[electronic.casscf] is only used by method = 'casscf'")
+        if problems:
+            raise ValueError("; ".join(problems))
         return self
+
+
+class OptimizeSection(_Section):
+    enabled: bool = True
+    max_steps: int = Field(default=100, ge=1)
+    convergence: Literal[
+        "GAU",
+        "GAU_LOOSE",
+        "GAU_TIGHT",
+        "GAU_VERYTIGHT",
+        "NWCHEM_LOOSE",
+        "TURBOMOLE",
+        "INTERFRAG_TIGHT",
+    ] = "GAU"
+
+
+class FrequenciesSection(_Section):
+    method: Literal["auto", "analytic", "finite_difference"] = "auto"
+    fd_step_bohr: float = Field(default=0.005, gt=0, le=0.1)
+    imaginary_cutoff_cm1: float = Field(default=20.0, ge=0)
 
 
 class ShmdConfig(_Section):
@@ -191,12 +221,26 @@ class ShmdConfig(_Section):
     execution: ExecutionSection = Field(default_factory=ExecutionSection)
     workflow: WorkflowSection = Field(default_factory=WorkflowSection)
     electronic: ElectronicSection | None = None
+    optimize: OptimizeSection = Field(default_factory=OptimizeSection)
+    frequencies: FrequenciesSection = Field(default_factory=FrequenciesSection)
 
     @model_validator(mode="after")
-    def _closed_shell_for_electronic_structure(self) -> ShmdConfig:
+    def _consistent(self) -> ShmdConfig:
+        problems: list[str] = []
         if self.electronic is not None and self.molecule.multiplicity != 1:
-            raise ValueError(
+            problems.append(
                 "the PySCF backend supports closed-shell singlet molecules only "
                 "(molecule.multiplicity = 1)"
             )
+        if (
+            self.electronic is not None
+            and self.electronic.method == "casscf"
+            and self.frequencies.method == "analytic"
+        ):
+            problems.append(
+                "frequencies.method = 'analytic': there is no analytic SA-CASSCF Hessian in "
+                "PySCF; use 'auto' or 'finite_difference'"
+            )
+        if problems:
+            raise ValueError("; ".join(problems))
         return self

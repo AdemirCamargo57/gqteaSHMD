@@ -63,15 +63,30 @@ min_free_disk_mb = 1000      # refuse to start with less free disk space (MB)
 [workflow]
 pause_after = []              # stage names to pause after for review, e.g. ["selection"]
 
-# Electronic structure (needed by the quantum-chemistry stages and `gqteashmd single-point`):
+# Electronic structure (used by optimize, frequencies and the later quantum-chemistry stages):
+[electronic]
+method = "tda"                # "casscf" | "tda" | "tddft"
+basis = "def2-svp"
+functional = "b3lyp"          # not used by method = "casscf"; use "hf" for CIS/TDHF
+singlets = 3                  # number of singlet states INCLUDING S0
+# CASSCF alternative (replace the block above):
 # [electronic]
-# method = "casscf"             # "casscf" | "tda" | "tddft"
+# method = "casscf"
 # basis = "6-31g*"
-# singlets = 2                  # number of singlet states INCLUDING S0
+# singlets = 2
 # [electronic.casscf]
 # ncas = 2                      # active orbitals
 # nelecas = 2                   # active electrons
-"""
+
+[optimize]
+enabled = true                # false: use the input geometry as it is
+max_steps = 100
+convergence = "GAU"           # geomeTRIC set: GAU, GAU_LOOSE, GAU_TIGHT, GAU_VERYTIGHT, ...
+
+[frequencies]
+method = "auto"               # "auto" | "analytic" | "finite_difference" (no analytic for casscf)
+fd_step_bohr = 0.005          # displacement for finite differences
+imaginary_cutoff_cm1 = 20.0   # imaginary modes above this wavenumber are errors"""
 
 
 def _cmd_init(args: argparse.Namespace) -> int:

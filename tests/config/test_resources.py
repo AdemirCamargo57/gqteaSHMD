@@ -75,3 +75,16 @@ def test_memory_message_shows_the_factors(tmp_path, write_input):
     path = write_input(tmp_path, resources="max_parallel_tasks = 3\nmemory_mb_per_task = 2000")
     with pytest.raises(ConfigError, match="= 3 × 2000 = 6000 MB exceeds total_memory_mb = 4000"):
         load_config(path)
+
+
+def test_every_resource_violation_is_reported(tmp_path, write_input):
+    path = write_input(
+        tmp_path,
+        total_cores=2,
+        total_memory_mb=1000,
+        resources="max_parallel_tasks = 4\nmemory_mb_per_task = 500",
+    )
+    with pytest.raises(ConfigError) as info:
+        load_config(path)
+    text = str(info.value)
+    assert "exceeds total_cores" in text and "exceeds total_memory_mb" in text
