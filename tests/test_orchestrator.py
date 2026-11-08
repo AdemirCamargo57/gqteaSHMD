@@ -349,20 +349,38 @@ def test_a_done_stage_whose_directory_was_deleted_is_recomputed(project, behavio
     assert "is missing; recomputing" in caplog.text
 
 
-def test_a_refused_run_changes_nothing(project, behaviour):
-    """Disabling a completed optional stage is refused before any file or record is written."""
-    assert _run(project).completed == ALL
-    config_json = _run_dir(project) / ".gqteashmd" / "config.json"
+def _records(path):
+    with _state(path) as state:
+        return {n: (state.get_stage(n).status, state.get_stage(n).fingerprint) for n in ALL}
+
+
+def test_a_refused_run_changes_nothing(tmp_path, write_input, behaviour):
+    """A stale run is refused before any file or stage record is written."""
+    path = write_input(tmp_path, execution=FAST)
+    assert _run(path).completed == ALL
+    config_json = _run_dir(path) / ".gqteashmd" / "config.json"
     snapshot = config_json.read_bytes()
-    with _state(project) as state:
-        before = {n: state.get_stage(n) for n in ALL}
-    behaviour(skip_optimize=True)
+    before = _records(path)
+    path = write_input(tmp_path, execution=FAST, molecule="charge = 2")
     with pytest.raises(StaleStageError):
-        _run(project)
+        _run(path)
     assert config_json.read_bytes() == snapshot
-    with _state(project) as state:
-        assert state.get_stage("optimize").status == StageStatus.DONE
-        assert {n: state.get_stage(n) for n in ALL} == before
+    assert _records(path) == before
+
+
+def test_disabling_then_reenabling_a_finished_stage_keeps_its_results(project, behaviour):
+    # In the fake pipeline nothing depends on "optimize", so disabling it is not stale.
+    assert _run(project).completed == ALL
+    before = _records(project)
+    behaviour(skip_optimize=True)
+    summary = _run(project)
+    assert summary.skipped == ["optimize"]
+    assert _records(project) == before
+    assert _records(project)["optimize"][0] == StageStatus.DONE
+    behaviour()
+    summary = _run(project)
+    assert "optimize" in summary.up_to_date
+    assert summary.completed == []
 
 
 def test_a_pending_stage_with_done_tasks_and_a_deleted_directory_is_recomputed(

@@ -20,7 +20,7 @@ from gqteashmd.preflight import run_preflight
 from gqteashmd.project.layout import ProjectLayout
 from gqteashmd.project.lock import ProjectLock
 from gqteashmd.project.provenance import append_provenance, collect_provenance
-from gqteashmd.project.state import StageStatus, StateStore, TaskRecord, TaskStatus
+from gqteashmd.project.state import StageRecord, StageStatus, StateStore, TaskRecord, TaskStatus
 from gqteashmd.stages.base import Stage, StageContext, TaskSpec
 from gqteashmd.stages.pipeline import (
     DEFAULT_PIPELINE,
@@ -157,8 +157,15 @@ class Orchestrator:
             )
             if not stage.enabled(self.config):
                 fingerprints[stage.name] = SKIPPED_FINGERPRINT
-                state.set_stage(stage.name, StageStatus.SKIPPED, fingerprint=SKIPPED_FINGERPRINT)
+                old = state.get_stage(stage.name)
                 summary.skipped.append(stage.name)
+                if old is not None and self._has_results(state, stage, old):
+                    log.info(
+                        "Stage %s: skipped (disabled in the input file; earlier results kept)",
+                        stage.name,
+                    )
+                    continue
+                state.set_stage(stage.name, StageStatus.SKIPPED, fingerprint=SKIPPED_FINGERPRINT)
                 log.info("Stage %s: skipped (disabled in the input file)", stage.name)
                 continue
             fp = self._stage_fingerprint(stage, ctx, fingerprints)
@@ -239,7 +246,7 @@ class Orchestrator:
         )
 
     @staticmethod
-    def _has_results(state: StateStore, stage: Stage, record: Any) -> bool:
+    def _has_results(state: StateStore, stage: Stage, record: StageRecord) -> bool:
         if state.task_counts(stage.name)[TaskStatus.DONE] > 0:
             return True
         return bool(record.status in (StageStatus.DONE, StageStatus.RUNNING))
@@ -252,14 +259,6 @@ class Orchestrator:
         for index, stage in enumerate(self.stages):
             if not stage.enabled(self.config):
                 fingerprints[stage.name] = SKIPPED_FINGERPRINT
-                record = state.get_stage(stage.name)
-                if (
-                    stage.name not in exempt
-                    and record is not None
-                    and record.fingerprint != SKIPPED_FINGERPRINT
-                    and self._has_results(state, stage, record)
-                ):
-                    raise self._stale_error(stage)
                 continue
             ctx = StageContext(
                 self.config, self.layout, self.layout.stage_dir(index, stage.name), {}
