@@ -39,7 +39,7 @@ def test_casscf_frequencies_by_finite_differences(tmp_path, write_input):
     cas = (
         '[electronic]\nmethod = "casscf"\nbasis = "sto-3g"\nsinglets = 2\n'
         "[electronic.casscf]\nncas = 2\nnelecas = 2\n[optimize]\nenabled = false\n"
-        "[frequencies]\nimaginary_cutoff_cm1 = 10000.0\n"
+        "[frequencies]\nimaginary_cutoff_cm1 = 10000.0\n" + FEW
     )
     path = write_input(tmp_path, extra=cas)
     (tmp_path / "water.xyz").write_text(ethylene)  # write_input points [molecule] at water.xyz
