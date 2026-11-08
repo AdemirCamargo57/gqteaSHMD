@@ -47,7 +47,7 @@ def _write_frequencies(directory):
     return analysis
 
 
-def _context(tmp_path, write_input, extra="", seed=7, symbols_dir=None):
+def _context(tmp_path, write_input, extra="", seed=7):
     tmp_path.mkdir(parents=True, exist_ok=True)
     path = write_input(tmp_path, extra=extra)
     path.write_text(path.read_text().replace('name = "test"', f'name = "test"\nseed = {seed}'))
@@ -160,4 +160,13 @@ def test_inconsistent_energy_is_reported_as_a_program_error(tmp_path, write_inpu
     ctx = _context(tmp_path, write_input)
     stage, results = _run(ctx)
     with pytest.raises(StageFailedError, match="program error"):
+        stage.finalize(ctx, results)
+
+
+def test_residual_momentum_is_reported_as_a_program_error(tmp_path, write_input):
+    ctx = _context(tmp_path, write_input)
+    stage, results = _run(ctx)
+    for result in results.values():
+        result["max_linear_momentum_au"] = 1.0
+    with pytest.raises(StageFailedError, match="Total momentum was not removed"):
         stage.finalize(ctx, results)
