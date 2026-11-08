@@ -70,3 +70,29 @@ def test_bad_hessians(hess, message):
     masses, coords, _ = _diatomic()
     with pytest.raises(ValueError, match=message):
         harmonic_analysis(masses, coords, hess)
+
+
+def _bent_co2(angle_deg, bond=2.19):
+    half = np.radians(angle_deg) / 2.0
+    coords = np.array(
+        [
+            [0.0, 0.0, 0.0],
+            [bond * np.sin(half), 0.0, bond * np.cos(half)],
+            [-bond * np.sin(half), 0.0, bond * np.cos(half)],
+        ]
+    )
+    return np.array([12.0, 15.994915, 15.994915]), coords
+
+
+def test_near_linear_triatomic_is_treated_as_linear():
+    masses, coords = _bent_co2(179.9)
+    result = harmonic_analysis(masses, coords, np.zeros((9, 9)))
+    assert result.linear and result.n_external == 5
+    assert result.frequencies_cm1.shape == (4,)
+
+
+def test_clearly_bent_triatomic_is_nonlinear():
+    masses, coords = _bent_co2(120.0)
+    result = harmonic_analysis(masses, coords, np.zeros((9, 9)))
+    assert not result.linear and result.n_external == 6
+    assert result.frequencies_cm1.shape == (3,)

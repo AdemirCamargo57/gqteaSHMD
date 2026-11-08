@@ -12,6 +12,7 @@ from gqteashmd.chem.xyz import Geometry, format_xyz
 from gqteashmd.config.schema import ShmdConfig
 from gqteashmd.core.units import BOHR_IN_ANGSTROM
 from gqteashmd.electronic.base import Request
+from gqteashmd.electronic.factory import ground_state_fingerprint
 from gqteashmd.errors import TaskError
 from gqteashmd.geomopt import optimize_geometry
 from gqteashmd.stages.base import Stage, StageContext, TaskSpec
@@ -36,6 +37,14 @@ class OptimizeStage(Stage):
 
     def enabled(self, config: ShmdConfig) -> bool:
         return config.optimize.enabled
+
+    def fingerprint_inputs(self, ctx: StageContext) -> dict[str, Any]:
+        """Only what determines S0 (not the excited-state response settings) and [optimize]."""
+        electronic = ctx.config.electronic
+        return {
+            "electronic": None if electronic is None else ground_state_fingerprint(electronic),
+            "optimize": ctx.config.optimize.model_dump(mode="json"),
+        }
 
     def plan(self, ctx: StageContext) -> list[TaskSpec]:
         return [TaskSpec("optimize")]

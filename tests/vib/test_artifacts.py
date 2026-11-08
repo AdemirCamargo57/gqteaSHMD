@@ -27,4 +27,6 @@ def test_frequencies_h5_round_trip(tmp_path):
         assert f["frequencies"].attrs["units"] == "cm^-1"
         assert f["hessian"].attrs["units"] == "hartree/bohr^2"
         assert f["coordinates"].attrs["units"] == "bohr"
+        assert bool(f.attrs["linear"]) is True
+        assert int(f.attrs["n_external"]) == 5
     assert sorted(p.name for p in tmp_path.iterdir()) == ["frequencies.h5"]

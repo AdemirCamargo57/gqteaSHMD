@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 from gqteashmd.config.schema import ElectronicSection, ShmdConfig
 from gqteashmd.electronic.base import ElectronicBackend, MoleculeSpec
@@ -15,6 +16,19 @@ def ground_state_settings(settings: ElectronicSection) -> ElectronicSection:
     if settings.method == "casscf":
         return settings
     return settings.model_copy(update={"singlets": 1})
+
+
+def ground_state_fingerprint(settings: ElectronicSection) -> dict[str, Any]:
+    """The settings that determine the S0 surface, as JSON-compatible data (for fingerprints).
+
+    Response-only keys (`td_conv_tol`, `overlap_norm_kept`, and `singlets` for the non-CASSCF
+    methods) do not change S0 and are left out."""
+    dumped = ground_state_settings(settings).model_dump(mode="json")
+    for key in ("td_conv_tol", "overlap_norm_kept"):
+        dumped.pop(key, None)
+    if settings.method != "casscf":
+        dumped.pop("singlets", None)
+    return dumped
 
 
 def make_backend(

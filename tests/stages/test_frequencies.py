@@ -59,6 +59,10 @@ def test_analytic_and_finite_difference_agree(tmp_path, write_input):
     assert len(fa["frequencies_cm1"]) == 3 and fa["imaginary_modes"] == []
     np.testing.assert_allclose(fa["frequencies_cm1"], ff["frequencies_cm1"], atol=1.0)
     assert fa["geometry_source"] == "prepare" and fa["method"] == "analytic"
+    assert fa["fd_consistency_residual_hartree_per_bohr"] is None
+    residual = ff["fd_consistency_residual_hartree_per_bohr"]
+    print("water FD consistency residual (Eh/bohr):", residual)
+    assert residual < 1e-5
     with h5py.File(ctx_a.stage_dir / "frequencies.h5", "r") as f:
         np.testing.assert_allclose(f["frequencies"][()], fa["frequencies_cm1"])
     assert "[FR-NORM-COORD]" in (ctx_a.stage_dir / "frequencies.molden").read_text()
@@ -79,3 +83,49 @@ def test_casscf_resolves_to_finite_differences(tmp_path, write_input):
     )
     cfg = load_config(write_input(tmp_path, extra=cas)).config
     assert resolved_method(cfg) == "finite_difference"
+
+
+def test_inconsistent_finite_difference_energy_stops_the_stage(tmp_path, write_input):
+    _, ctx, stage, results = _run_stage(
+        tmp_path, write_input, '[frequencies]\nmethod = "finite_difference"\n', WATER_MIN
+    )
+    broken = {name: dict(value) for name, value in results.items()}
+    broken["fd_004_plus"]["energy_hartree"] += 1e-3  # another electronic solution
+    with pytest.raises(StageFailedError, match=r"coordinate 4 \(atom H2, y\)"):
+        stage.finalize(ctx, broken)
+    data = json.loads((ctx.stage_dir / "frequencies.json").read_text())
+    assert data["fd_consistency_residual_hartree_per_bohr"] > 1e-4
+    assert not (ctx.stage_dir / "frequencies.h5").exists()
+
+
+def _optimize_dir(ctx, energy, coords_bohr):
+    directory = ctx.layout.stage_dir(1, "optimize")
+    directory.mkdir(parents=True)
+    (directory / "optimize.json").write_text(
+        json.dumps({"energy_hartree": energy, "coords_bohr": np.asarray(coords_bohr).tolist()})
+    )
+    return directory
+
+
+def test_energy_at_the_optimized_geometry_is_checked(tmp_path, write_input):
+    from gqteashmd.stages.geometry import prepared_molecule
+
+    _, ctx, stage, results = _run_stage(tmp_path, write_input, "", WATER_MIN)
+    _, coords = prepared_molecule(ctx.upstream_dir("prepare"))
+    energy = results["hessian"]["energy_hartree"]
+    good = StageContext(
+        ctx.config,
+        ctx.layout,
+        ctx.stage_dir,
+        {**ctx.upstream, "optimize": _optimize_dir(ctx, energy + 2e-8, coords)},
+    )
+    stage.finalize(good, results)
+    data = json.loads((ctx.stage_dir / "frequencies.json").read_text())
+    assert data["geometry_source"] == "optimize"
+    assert data["optimized_energy_difference_hartree"] == pytest.approx(2e-8, abs=1e-9)
+    bad_dir = ctx.layout.stage_dir(1, "optimize")
+    (bad_dir / "optimize.json").write_text(
+        json.dumps({"energy_hartree": energy + 1e-3, "coords_bohr": coords.tolist()})
+    )
+    with pytest.raises(StageFailedError, match="not the optimized one"):
+        stage.finalize(good, results)

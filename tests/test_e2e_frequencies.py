@@ -44,3 +44,6 @@ def test_casscf_frequencies_by_finite_differences(tmp_path, write_input):
     layout = ProjectLayout(load_config(path).config.project.directory)
     freq = json.loads((layout.stage_dir(2, "frequencies") / "frequencies.json").read_text())
     assert freq["method"] == "finite_difference" and len(freq["frequencies_cm1"]) == 12
+    residual = freq["fd_consistency_residual_hartree_per_bohr"]
+    print("ethylene SA-CASSCF FD consistency residual (Eh/bohr):", residual)
+    assert residual < 1e-4

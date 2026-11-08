@@ -30,6 +30,8 @@ def write_frequencies_h5(
         with h5py.File(tmp, "w") as f:
             f.attrs["schema_version"] = 1
             f.attrs["gqteashmd_version"] = __version__
+            f.attrs["linear"] = bool(analysis.linear)
+            f.attrs["n_external"] = int(analysis.n_external)
             f.create_dataset("symbols", data=np.array(list(symbols), dtype=h5py.string_dtype()))
             for name, data, units in (
                 ("masses", masses_amu, "amu"),
