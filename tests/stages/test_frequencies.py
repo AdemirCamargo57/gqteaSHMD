@@ -57,7 +57,7 @@ def test_analytic_and_finite_difference_agree(tmp_path, write_input):
     fa = json.loads((ctx_a.stage_dir / "frequencies.json").read_text())
     ff = json.loads((ctx_f.stage_dir / "frequencies.json").read_text())
     assert len(fa["frequencies_cm1"]) == 3 and fa["imaginary_modes"] == []
-    np.testing.assert_allclose(fa["frequencies_cm1"], ff["frequencies_cm1"], atol=1.0)
+    np.testing.assert_allclose(fa["frequencies_cm1"], ff["frequencies_cm1"], atol=0.3)
     assert fa["geometry_source"] == "prepare" and fa["method"] == "analytic"
     assert fa["fd_consistency_residual_hartree_per_bohr"] is None
     residual = ff["fd_consistency_residual_hartree_per_bohr"]

@@ -57,4 +57,4 @@ def test_frequencies_match_orca(tmp_path):
     ours = harmonic_analysis(orca_masses, coords, backend.ground_state_hessian(coords))
     theirs = orca_freqs[orca_freqs != 0.0]
     print("ORCA", theirs, "ours", ours.frequencies_cm1, "diff", ours.frequencies_cm1 - theirs)
-    np.testing.assert_allclose(ours.frequencies_cm1, theirs, atol=0.5)
+    np.testing.assert_allclose(ours.frequencies_cm1, theirs, atol=0.2)

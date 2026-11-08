@@ -259,8 +259,7 @@ The template's `[electronic]` block is active (TDA-B3LYP/def2-SVP with S0 and tw
 | `optimize.convergence` | str | `"GAU"` | `"GAU"`, `"GAU_LOOSE"`, `"GAU_TIGHT"`, `"GAU_VERYTIGHT"`, `"NWCHEM_LOOSE"`, `"TURBOMOLE"`, `"INTERFRAG_TIGHT"` | Name of the geomeTRIC convergence set. `"GAU"` uses Gaussian-style thresholds on forces and displacements |
 | `frequencies.method` | str | `"auto"` | `"auto"`, `"analytic"`, `"finite_difference"` | How the S0 Hessian is obtained (§8.7). `"auto"` is `"analytic"` for `tda`/`tddft` and `"finite_difference"` for `casscf`. `"analytic"` with `casscf` is an input error |
 | `frequencies.fd_step_bohr` | float | 0.005 | > 0 and ≤ 0.1 | Cartesian displacement $h$ of the central differences (bohr); used only by `"finite_difference"` |
-| `frequencies.imaginary_cutoff_cm1` | float | 20.0 | ≥ 0 | An imaginary mode with $	ilde
-u < -$ this value stops the workflow; smaller ones only warn (§8.7) |
+| `frequencies.imaginary_cutoff_cm1` | float | 20.0 | ≥ 0 | An imaginary mode with $\tilde\nu < -$ this value stops the workflow; smaller ones only warn (§8.7). It is a check on the finished results only: changing it does not recompute anything (§8.3) |
 
 **Hardware keys.** `total_cores` and `total_memory_mb` are required, so that the input file records which machine the settings were written for. The input is rejected if the settings do not fit inside them (see the rules below and §8.4). The program also detects the real machine; if your values exceed it, `run` only **warns** (§7.9).
 
@@ -616,7 +615,7 @@ Stage directories are numbered by the position of the stage in the pipeline and 
 │   ├── optimize.json           # see below
 │   └── tasks/optimize/         # task.json, result.json, worker.log, electronic.log (PySCF output),
 │                               #   scratch/ (PySCF temporary files), geometric/ (geomeTRIC's log and
-│                               #   trajectory), and last.xyz if the optimization did not converge
+│                               #   trajectory), and best.xyz if the optimization did not converge
 └── 02_frequencies/             # [IMPLEMENTED, P4]
     ├── frequencies.h5          # arrays with units, see below
     ├── frequencies.molden      # for viewers; also read by SHARC's wigner.py
@@ -649,8 +648,11 @@ A disabled `optimize` stage still occupies number 01, so `frequencies` stays in 
 | `geometry_source` | `"optimize"` or `"prepare"`: where the geometry came from | — |
 | `energy_hartree` | S0 energy at that geometry | $E_h$ |
 | `max_gradient_hartree_per_bohr` | Largest absolute gradient component there (stationarity check, §8.7) | $E_h/a_0$ |
-| `linear` | `true` if the molecule was found to be linear (5 external motions) | — |
+| `linear` | `true` if the molecule was treated as linear ($I_{\min}/I_{\max} < 10^{-3}$, 5 external motions, §8.7) | — |
 | `n_external` | Number of translations and rotations projected out: 6, 5 (linear) or 3 (one atom) | — |
+| `fd_consistency_residual_hartree_per_bohr` | Largest $\lvert(E_{+k}-E_{-k})/2h - g_k\rvert$ over the coordinates (finite differences; `null` for the analytic route, §8.7) | $E_h/a_0$ |
+| `optimized_energy_difference_hartree` | $\lvert E_{\text{frequencies}} - E_{\text{optimize}}\rvert$ at the optimized geometry (`null` if the geometry did not come from `optimize`) | $E_h$ |
+| `consistency_problems` | The messages of failed consistency checks; non-empty only when the stage failed | — |
 | `external_residual_cm1` | Largest $\lvert\tilde\nu\rvert$ of the projected-out motions (§8.7) | cm⁻¹ |
 | `frequencies_cm1` | Vibrational wavenumbers, ascending; **imaginary modes are negative** | cm⁻¹ |
 | `reduced_masses_amu` | Reduced mass of each mode (§8.7 convention) | amu |
@@ -658,7 +660,7 @@ A disabled `optimize` stage still occupies number 01, so `frequencies` stays in 
 | `small_imaginary_modes` | The same for $-$cutoff $\le \tilde\nu < 0$ | cm⁻¹ |
 | `warnings` | The warning messages issued (§8.7); empty if none | — |
 
-**`frequencies.h5`** [IMPLEMENTED] (HDF5; file attributes `schema_version` = 1 and `gqteashmd_version`). Every numeric dataset has a string attribute `units`. $N$ is the number of atoms and $n$ the number of vibrational modes ($3N - n_{\text{ext}}$):
+**`frequencies.h5`** [IMPLEMENTED] (HDF5; file attributes `schema_version` = 1, `gqteashmd_version`, `linear` (bool) and `n_external` (int)). Every numeric dataset has a string attribute `units`. $N$ is the number of atoms and $n$ the number of vibrational modes ($3N - n_{\text{ext}}$):
 
 | Dataset | Shape | Unit | Meaning |
 |---|---|---|---|
@@ -902,7 +904,7 @@ $$
 - **Inputs:**
   - $\text{inputs}_s$ are the input-file values the stage uses.
   - For `prepare`: `charge`, `multiplicity` and the SHA-256 of the geometry file's **contents**. The path is not included, so moving the file does not invalidate results, but editing it does.
-- For `optimize`: the whole `[electronic]` section and the `[optimize]` section. For `frequencies`: the whole `[electronic]` section and the `[frequencies]` section. These stages read no upstream file when the fingerprint is computed; they depend on `prepare` (and on `optimize`) only through the upstream fingerprints. A disabled `optimize` counts as "skipped" in the fingerprint of `frequencies`.
+- For `optimize` and `frequencies`: only what determines the S0 surface, namely the `[electronic]` keys that enter the ground-state calculation, plus the stage's own section. The keys that matter only for excited states are left out: `td_conv_tol` and `overlap_norm_kept` always, and `singlets` for `tda` and `tddft` (for `casscf`, `singlets` defines the state average and **is** included). Changing them therefore does not redo `optimize` or `frequencies`. For `frequencies` the key `imaginary_cutoff_cm1` is also left out, because it is only checked after the calculation: if the stage stopped on a too-large imaginary mode and you change the cutoff, the next run repeats only the finalization from the stored task results. Changing `basis`, `functional`, the active space or `fd_step_bohr` does recompute. These stages read no upstream file when the fingerprint is computed; they depend on `prepare` (and on `optimize`) only through the upstream fingerprints. A disabled `optimize` counts as "skipped" in the fingerprint of `frequencies`.
 - **Canonical form:** JSON is written with sorted keys and fixed separators, so the same inputs always give the same $F_s$.
 - **Chaining:** a fingerprint includes the fingerprints of the stages it depends on. A change therefore invalidates every later stage that depends on it.
 - **Interpreting it:** you never see $F_s$ directly. It produces the "results produced from different inputs" message in §7.5.
@@ -1289,7 +1291,7 @@ $$
 \left(\mathbf R_a\right)_A = \sqrt{m_A}\;\hat{\mathbf e}_a \times (\mathbf r_A - \mathbf r_{\text{cm}}) .
 $$
 
-The six vectors are orthonormalized by a singular-value decomposition, and singular values smaller than $10^{-6}$ times the largest are discarded. This leaves $n_{\text{ext}} = 6$ vectors for a nonlinear molecule, 5 for a linear one (found automatically) and 3 for a single atom; they form the columns of $\mathbf D$. An orthonormal basis $\mathbf Q$ of the complement of $\mathbf D$ is built by QR decomposition. The vibrational problem is then
+Whether the molecule is linear is decided physically, from the principal moments of inertia $I_1\le I_2\le I_3$ of the mass-weighted, centred coordinates: the molecule is treated as **linear when $I_1/I_3 < 10^{-3}$**, and as a single atom when all moments vanish. For a linear (or nearly linear) molecule the rotation about the principal axis with the small moment is dropped, and the rotations about the other two axes are kept; for a nonlinear molecule all three are kept. This gives $n_{\text{ext}} = 6$ vectors for a nonlinear molecule, 5 for a linear one and 3 for a single atom. The vectors are orthonormalized by a singular-value decomposition and form the columns of $\mathbf D$. A slightly bent triatomic such as CO₂ at 179.9° therefore keeps its 4 vibrational modes (measured with RHF/STO-3G: 566.4, 566.4, 1435.1 and 2535.4 cm⁻¹, external residual 11 cm⁻¹), where a rank threshold on the rotation vectors would have lost the second bending mode. An orthonormal basis $\mathbf Q$ of the complement of $\mathbf D$ is built by QR decomposition. The vibrational problem is then
 
 $$
 \left(\mathbf Q^{\mathsf T} H^{\text{mw}} \mathbf Q\right)\mathbf v_k = \lambda_k \mathbf v_k ,
@@ -1312,7 +1314,7 @@ $$
 
 For example, the stretch of H₂ gets $\mu = 1.0078$ amu, not the textbook $m/2 = 0.504$ amu, so reduced masses can be compared directly with Gaussian and PySCF output. The water modes in §5.4 have $\mu \approx 1.05$–$1.08$ amu.
 
-**External residual.** The motions removed in Step 3 would have zero frequency for an exact Hessian at a stationary point. The program also diagonalizes $\mathbf D^{\mathsf T}H^{\text{mw}}\mathbf D$ and reports the largest $\lvert\tilde\nu\rvert$ (same conversion) as `external_residual_cm1`. It measures how far the Hessian is from rotational and translational invariance. At optimized geometries we measured 25–41 cm⁻¹ with RHF and about 22 cm⁻¹ with B3LYP on the default grid (`grid_level` 3). These values are not errors in the vibrational frequencies, because the external motions are projected out before diagonalization.
+**External residual.** The motions removed in Step 3 would have zero frequency for an exact Hessian at a stationary point. The program also diagonalizes $\mathbf D^{\mathsf T}H^{\text{mw}}\mathbf D$ and reports the largest $\lvert\tilde\nu\rvert$ (same conversion) as `external_residual_cm1`. It measures how far the Hessian is from rotational and translational invariance. At optimized geometries we measured 25–41 cm⁻¹ with RHF and about 22 cm⁻¹ with B3LYP on the default grid (`grid_level` 3). The external motions are projected out before diagonalization, so a small residual does not contaminate the frequencies. A large residual means the Hessian or the geometry is inaccurate. The number of modes itself depends on the linearity decision above: for a molecule between the two cases (a bent molecule with $I_1/I_3$ just above $10^{-3}$) one of the modes is a genuine, very soft bending vibration.
 
 **Masses [IMPLEMENTED, P4; open item O5 resolved].** The masses $m_i$ are those of the **most abundant isotope** of each element, in amu, for H to Rn (module `gqteashmd.chem.masses`; values from the NIST atomic weights and isotopic compositions as tabulated in PySCF; for Tc, Pm, Po, At and Rn, which have no stable isotope, the isotope listed in the module). Examples: H 1.007825, C 12.000000, N 14.003074, O 15.994915. They are stored in `frequencies.h5` (`masses`). There is no input key for isotopic substitution yet. The Wigner sampling of P5 will use the same masses.
 
@@ -1330,7 +1332,13 @@ For example, the stretch of H₂ gets $\mu = 1.0078$ amu, not the textbook $m/2 
 | `external_residual_cm1` > 100 cm⁻¹ | **Warning** `translation/rotation contamination up to … cm^-1 (Hessian or geometry inaccurate)` |
 | Largest absolute gradient component > $10^{-3}\,E_h/a_0$ | **Warning** `max |gradient| = … Eh/bohr: not a stationary point; frequencies are approximate` |
 
-Warnings reach the console, `logs/gqteashmd.log` and the `warnings` list of `frequencies.json`; the run continues. The master plan's earlier idea of stopping on a wrong number of near-zero modes was replaced by the external-residual warning, because the projected frequencies are not affected.
+Warnings reach the console, `logs/gqteashmd.log` and the `warnings` list of `frequencies.json`; the run continues. The master plan's earlier idea of stopping on a wrong number of near-zero modes was replaced by the external-residual warning, together with the physical linearity criterion above, which fixes the mode count.
+
+**Console form of the imaginary-mode stop.** The controller prefixes the stage message, so the line you see is `gqteashmd: error: Stage 'frequencies' could not finalize its results: The structure is not a minimum: 2 imaginary mode(s) beyond 20 cm^-1 (mode 1: -2329.0 cm^-1, mode 2: -2329.0 cm^-1). Re-optimize …` (exit code 4).
+
+**Consistency checks of the finite-difference route.** For `finite_difference` the stage returns the energy of every displaced calculation as well, and checks, before writing the vibrational files, that the energies and the gradients describe the same surface: for every Cartesian coordinate $k$ it compares $(E_{+k}-E_{-k})/2h$ with the reference gradient $g_k$. If the largest difference exceeds $10^{-4}\,E_h/a_0$ the stage fails (exit code 4) and the message names the worst coordinate (atom and axis). The usual cause is that a displaced SA-CASSCF calculation converged to a different electronic solution; check the active space, or reduce `fd_step_bohr`. When the geometry comes from `optimize`, the stage also requires the S0 energy at that geometry to agree with the energy recorded by `optimize` to within $10^{-6}\,E_h$ (for both the analytic and the finite-difference route); otherwise it fails because the frequencies would not belong to the optimized surface. In both failure cases only `frequencies.json` is written, with the measured numbers. The measured values are always recorded in `frequencies.json` (`fd_consistency_residual_hartree_per_bohr`, `optimized_energy_difference_hartree`, `consistency_problems`). Measured: water RHF/STO-3G, $h = 0.005\,a_0$, $2.8\times10^{-6}\,E_h/a_0$; SA-CASSCF(2,2)/STO-3G ethylene, $4.6\times10^{-6}\,E_h/a_0$.
+
+**One atom.** `optimize` writes its outputs without calling geomeTRIC (the geometry is unchanged, `n_gradients` is 1); `frequencies` returns 0 modes (`n_external` = 3) without an error.
 
 **Cost.** Analytic: one SCF plus one Hessian. Finite differences: $1 + 6N_{\text{at}}$ SA-CASSCF gradient tasks; in the test suite, SA-CASSCF(2,2)/STO-3G ethylene (37 tasks) takes about 84 s. `optimize` for water at HF/STO-3G needed 5 gradient evaluations (about 0.9 s of computation).
 
@@ -1342,7 +1350,7 @@ Warnings reach the console, `logs/gqteashmd.log` and the `warnings` list of `fre
 |---|---|
 | Our harmonic analysis vs PySCF `thermo.harmonic_analysis` for the same Hessian, geometry and masses (water; linear CO₂) | Frequencies agree to $10^{-6}$ cm⁻¹ |
 | Analytic SCF Hessian vs finite differences of analytic gradients ($h = 10^{-3}$; water, HF/STO-3G) | Largest difference $6.0\times10^{-7}\,E_h/a_0^2$ |
-| `frequencies` stage, water RHF/STO-3G at a tightly optimized geometry (largest gradient $1.7\times10^{-7}\,E_h/a_0$): analytic vs finite differences ($h = 0.005\,a_0$) | Analytic 2170.05, 4140.00, 4391.07 cm⁻¹; finite differences 2170.00, 4140.02, 4391.08 cm⁻¹ |
+| `frequencies` stage, water RHF/STO-3G at a tightly optimized geometry (largest gradient $1.7\times10^{-7}\,E_h/a_0$): analytic vs finite differences ($h = 0.005\,a_0$) | Analytic 2170.05, 4140.00, 4391.07 cm⁻¹; finite differences 2170.00, 4140.02, 4391.08 cm⁻¹ (test tolerance 0.3 cm⁻¹; measured difference 0.05 cm⁻¹) |
 | ORCA 6.1.1, water RHF/6-31G\*, fixed geometry, ORCA's masses | Ours 1825.981, 4055.472, 4173.836 cm⁻¹; ORCA 1826.02, 4055.42, 4173.83 cm⁻¹ (differences −0.039, +0.052, +0.006 cm⁻¹) |
 | Linear water (a saddle point of the bend) | Two imaginary bending modes at −2329.0 cm⁻¹; the stage stops as designed |
 | SHARC 4.1 `wigner.py` (run as a black box) reading our `frequencies.molden` | Accepted unchanged |
@@ -1517,7 +1525,9 @@ $$
 | `The wavefunction overlap failed: MemoryError: The wavefunction overlap would exceed the memory limit of … GiB: estimated … GiB; lower overlap_norm_kept or the active space` | The overlap between two geometries would need more than 2 GiB (raised as a retryable `ElectronicStructureError` by a library call; not reachable from the CLI) | Lower `electronic.overlap_norm_kept` or the active space |
 | `The wavefunction overlap failed: …` | The truncation, overlap or tracking step failed (`ElectronicStructureError`, not retried; library call, not reachable from the CLI) | Read the message; report it if the geometry is ordinary |
 | `The SA-CASSCF gradient of … failed` / `… gradient of … failed` / `The transition dipole calculation failed` | PySCF failed in a derivative or dipole step (exit 4) | Read the `--log` file; report if the SCF itself converged |
-| `The geometry optimization did not converge in N steps (convergence = '…'). Increase [optimize] max_steps, start from a better geometry, or loosen [optimize] convergence; the last geometry is in …/last.xyz` | The `optimize` task failed (not retried); the stage stops with `Stage 'optimize' failed: 1 of 1 tasks did not succeed` (exit 4) | Follow the advice. `optimization_path.xyz` and `last.xyz` are in the task directory |
+| `The geometry optimization did not converge in N steps (convergence = '…'). Increase [optimize] max_steps, start from a better geometry, or loosen [optimize] convergence; the lowest-energy geometry found is in …/best.xyz` | The `optimize` task failed (not retried); the stage stops with `Stage 'optimize' failed: 1 of 1 tasks did not succeed` (exit 4) | Follow the advice. `optimization_path.xyz` and `best.xyz` (the lowest-energy geometry evaluated, not necessarily the last) are in the task directory |
+| `The geometry optimizer (geomeTRIC) failed: … Check the starting geometry …` | geomeTRIC itself failed (internal coordinates, structure); not retried (exit 4). Errors from the electronic-structure calculation are reported as such, not with this message | Check the starting geometry, or disable `[optimize]` and provide an optimized geometry |
+| `The finite-difference energies disagree with the reference gradient by … Eh/bohr` / `the energy at the optimized geometry … differs from the optimize stage's energy` | The consistency checks of `frequencies` (§8.7) failed (exit 4, `Stage 'frequencies' could not finalize its results: …`) | Check the active space, reduce `fd_step_bohr`, or re-run from `optimize` |
 | `The structure is not a minimum: N imaginary mode(s) beyond 20 cm^-1 (mode 1: -2329.0 cm^-1, …). Re-optimize …` | `frequencies` found imaginary modes beyond the cutoff (exit 4, §8.7). The files are written first | Re-optimize with a tighter `convergence`, check the starting structure, or raise `imaginary_cutoff_cm1` |
 | `The analytic SCF Hessian failed: …` | PySCF failed in the Hessian step (exit 4; retried only for `MemoryError`/`OSError`) | Read `electronic.log` in the task directory; try `frequencies.method = "finite_difference"` |
 | `Stage … results directory … is missing; recomputing` | **Warning**: you deleted a stage directory (§7.3) | None; the stage is computed again |
