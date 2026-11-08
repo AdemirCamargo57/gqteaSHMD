@@ -91,7 +91,12 @@ convergence = "GAU"           # geomeTRIC set: GAU, GAU_LOOSE, GAU_TIGHT, GAU_VE
 [frequencies]
 method = "auto"               # "auto" | "analytic" | "finite_difference" (no analytic for casscf)
 fd_step_bohr = 0.005          # displacement for finite differences
-imaginary_cutoff_cm1 = 20.0   # imaginary modes above this wavenumber are errors"""
+imaginary_cutoff_cm1 = 20.0   # imaginary modes above this wavenumber are errors
+
+[sampling]
+n_samples = 200               # number of Wigner-sampled initial geometries and velocities
+temperature_K = 0.0           # 0 = zero-point (vibrational ground state) distribution
+low_frequency_cutoff_cm1 = 10.0   # modes below this wavenumber are not sampled"""
 
 
 def _cmd_init(args: argparse.Namespace) -> int:
