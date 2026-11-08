@@ -538,17 +538,17 @@ Run `gqteashmd run input.toml`. It finishes with exit code 0 and prints `Workflo
 Simply **run the same command again**:
 - Stages that are already done are skipped ("up to date").
 - An interrupted stage continues where it stopped.
-- A stage that was done but whose results directory you deleted by hand is **computed again**, with a warning (`results directory … is missing; recomputing`).
+- A stage that was done but whose results directory you deleted by hand is **computed again**, with a warning (`results directory … is missing; recomputing`). Downstream stages that are done are kept, and a recomputed stage listed in `workflow.pause_after` pauses again. This rule covers **done** stages only: a pending or failed stage that has done tasks whose directory was deleted stops with "missing or corrupt; run with --rerun-from".
 - Temporary files (`.…tmp`) left in `.gqteashmd/` by a crashed controller are removed when the next run starts.
 - Tasks that were running when the controller died are checked. Finished ones are kept. Left-over processes are terminated and the tasks are run again.
 
 ### 7.4 Stopping and resuming
 `gqteashmd stop input.toml`, or Ctrl-C in the terminal running the controller, does the following:
 1. No new tasks start.
-2. Running tasks get SIGTERM, then SIGKILL after `stop_grace_period_s`.
+2. Running tasks get SIGTERM, then SIGKILL after `stop_grace_period_s`. The grace period applies to the worker (the group leader); as soon as the leader has exited, the rest of its process group is killed at once.
 3. The run ends with exit code 5 and the message `Stopped. Run the same command again to resume.`
 
-Ctrl-C at any other moment (for example while the command is starting) prints `gqteashmd: interrupted` and also exits with code 5.
+A stop (`gqteashmd stop`, SIGTERM or Ctrl-C) that arrives while the command is starting, after the project lock is taken, is handled the same way: no stage starts, the lock is released, and the run ends with `Stopped. Run the same command again to resume.` and exit code 5. Ctrl-C at any other moment prints `gqteashmd: interrupted` and also exits with code 5.
 
 Interrupted tasks are not counted as failed attempts.
 
@@ -579,7 +579,7 @@ Fix the cause, here `multiplicity`, and run again. Because the input changed and
 ### 7.7 Two controllers
 Only one controller can run per project. A second `gqteashmd run` on the same project exits with code 3. The error names the process id of the first controller, or says `pid unknown` when it cannot be read. The program tries the lock twice, 0.2 s apart, so a `status` command that is looking at the lock at that moment does not cause a false refusal. `status` can be used at any time.
 
-The lock is taken before anything else is created. A run that the lock refuses therefore creates nothing except the `.gqteashmd/` directory (for the lock file), and writes no log and no provenance record. A worker's whole process group is killed when it is stopped or when the worker ends, so no stray child process survives.
+The lock is taken before anything else is created. A run that the lock refuses therefore creates nothing except the `.gqteashmd/` directory (for the lock file), and writes no log and no provenance record. A worker's whole process group is killed when it is stopped or when the worker ends: children that stay in the worker's process group are killed while the controller is running. Children that call `setsid`/`setpgid`, and strays of a worker that finished while the controller was dead, are not.
 
 ### 7.8 Review pauses
 **[IMPLEMENTED]** `[workflow] pause_after` lists stages after which the run stops so that you can inspect their results:

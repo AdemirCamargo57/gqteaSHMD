@@ -197,7 +197,7 @@ Task:   PENDING ─► RUNNING ─► DONE
 - **Concurrency.** `resources.max_parallel_tasks` tasks run at a time, each with `threads_per_task` threads. The controller sets `OMP_NUM_THREADS`, `OPENBLAS_NUM_THREADS`, `MKL_NUM_THREADS` and `PYSCF_MAX_MEMORY` for each worker. **Per-stage overrides** (P2), e.g. `[resources.stages.frequencies] threads_per_task = 32`, let single-task stages use the whole machine.
 - **Stopping.** SIGINT/SIGTERM or `gqteashmd stop` triggers a graceful stop:
   1. no new tasks are started;
-  2. running workers get SIGTERM, then SIGKILL after `stop_grace_period_s`;
+  2. running workers get SIGTERM, then SIGKILL after `stop_grace_period_s`. The grace period applies to the worker (the group leader); once the leader has exited, the rest of its process group is killed at once with SIGKILL;
   3. interrupted tasks go back to PENDING, and the interruption does not count as an attempt.
 
   Dynamics tasks write a restart file every step, so at most one step is lost.
@@ -356,7 +356,11 @@ pause_after = ["selection"]          # review spectrum before dynamics
 | `StageFailedError` | Too many failed tasks, imaginary frequencies, too few bright samples | Controller (`finalize`) | Stage FAILED; workflow stops | 4 |
 | Trajectory outcome | Energy drift above limit, electronic-structure failure mid-trajectory | Dynamics worker | Task DONE with `outcome` recorded; analysis decides whether to include it | — |
 | Unexpected exception (bug) | `KeyError` in our code | Worker | Non-retryable; full traceback in `result.json` and `worker.log` | — |
-| Stopped by user | SIGINT/SIGTERM, `gqteashmd stop` | CLI | State saved; resumable | 5 |
+| Stopped by user | SIGINT/SIGTERM, `gqteashmd stop` (also during start-up, once the lock is held) | CLI | State saved; resumable | 5 |
+| Interrupted (Ctrl-C outside the run loop) | KeyboardInterrupt while starting | CLI | Lock released; resumable | 5 |
+| Unreadable `task.json` | `OSError` reading it / malformed or missing keys | Worker | `OSError`: retryable (the controller rewrites the file before each attempt); others: not retryable | — |
+| File locking unavailable | `flock` fails (e.g. ENOLCK) on the project filesystem | Controller, `status`, `stop` | `ProjectError` ("File locking is not available for …") | 3 |
+| State database failure at query time | `sqlite3.Error` in a query | Controller | `ProjectError` (check disk space and other programs holding the database) | 3 |
 
 ### 6.2 Rules
 
