@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import math
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -33,6 +34,30 @@ def _chunks(config: ShmdConfig) -> list[list[int]]:
 
 def _task_id(first: int) -> str:
     return f"s{first:05d}"
+
+
+def _invalid_excitations(
+    labels: list[str],
+    energies: list[float],
+    dipoles: list[list[float]],
+    strengths: list[float],
+) -> str | None:
+    """Why a computed sample cannot be used (non-finite values, an excited state at or below
+    S0), or None. Such a sample is recorded as failed, so ``dE > 0`` and finite values hold for
+    every OK row downstream (the spectrum and the selection weights rely on it)."""
+    for label, energy in zip(labels, energies, strict=True):
+        if not math.isfinite(energy):
+            return f"non-finite energy of {label} ({energy!r} Eh)"
+    for j, label in enumerate(labels[1:]):
+        if not all(math.isfinite(x) for x in dipoles[j]):
+            return f"non-finite transition dipole of {label} ({dipoles[j]!r} e a0)"
+        if not math.isfinite(strengths[j]):
+            return f"non-finite oscillator strength of {label} ({strengths[j]!r})"
+    for j, label in enumerate(labels[1:]):
+        de_ev = (energies[j + 1] - energies[0]) * HARTREE_IN_EV
+        if de_ev <= 0.0:
+            return f"excitation energy of {label} is not positive ({de_ev:.6g} eV)"
+    return None
 
 
 class ExcitationsStage(Stage):
@@ -76,10 +101,19 @@ class ExcitationsStage(Stage):
 
     def run_task(self, ctx: StageContext, task: TaskSpec, task_dir: Path) -> dict[str, Any]:
         molecule, _ = prepared_molecule(ctx.upstream_dir("prepare"))
+        samples_path = ctx.upstream_dir("sampling") / "samples.h5"
         try:
-            data = read_samples_h5(ctx.upstream_dir("sampling") / "samples.h5")
+            data = read_samples_h5(samples_path)
         except ValueError as exc:
             raise TaskError(str(exc), retryable=False) from exc
+        expected = ctx.config.sampling.n_samples
+        if data["n_samples"] != expected:
+            raise TaskError(
+                f"samples.h5 holds {data['n_samples']} samples but [sampling] n_samples = "
+                f"{expected}; rerun the sampling stage with --rerun-from sampling "
+                f"({samples_path})",
+                retryable=False,
+            )
         backend = stage_backend(ctx, self.name, molecule, task_dir, settings=ctx.config.electronic)
         if task.task_id == "ref":
             jobs = [(0, np.asarray(data["equilibrium_bohr"], dtype=float))]
@@ -109,6 +143,11 @@ class ExcitationsStage(Stage):
                 log.warning("Stage excitations: sample %d failed: %s", sample, exc)
                 rows.append({"sample": sample, "ok": False, "error": str(exc)})
                 continue
+            problem = _invalid_excitations([str(s) for s in states], energies, dipoles, strengths)
+            if problem is not None:
+                log.warning("Stage excitations: sample %d failed: %s", sample, problem)
+                rows.append({"sample": sample, "ok": False, "error": problem})
+                continue
             rows.append(
                 {
                     "sample": sample,
@@ -128,6 +167,10 @@ class ExcitationsStage(Stage):
         labels = [str(s) for s in states_from_counts(electronic.singlets)]
         n_states = len(labels)
         n_samples = config.sampling.n_samples
+        try:
+            samples = read_samples_h5(ctx.upstream_dir("sampling") / "samples.h5")
+        except ValueError as exc:
+            raise StageFailedError(str(exc)) from exc
 
         rows: dict[int, dict[str, Any]] = {}
         for task in self.plan(ctx):
@@ -143,26 +186,56 @@ class ExcitationsStage(Stage):
             rows.setdefault(k, {"sample": k, "ok": False, "error": "no result"})
 
         failed = [rows[k] for k in range(1, n_samples + 1) if not rows[k]["ok"]]
+
+        def summary(per_state: dict[str, Any] | None, error: str | None) -> None:
+            write_json_atomic(
+                ctx.stage_dir / "excitations.json",
+                {
+                    "schema_version": 1,
+                    "n_samples": n_samples,
+                    "n_ok": n_samples - len(failed),
+                    "failed": [{"sample": r["sample"], "error": r["error"]} for r in failed],
+                    "reference_error": (
+                        rows[0]["error"]
+                        if options.include_reference and not rows[0]["ok"]
+                        else None
+                    ),
+                    "state_labels": labels,
+                    "states": per_state,
+                    "include_reference": options.include_reference,
+                    "broadening_fwhm_eV": options.broadening_fwhm_eV,
+                    "spectrum_step_eV": options.spectrum_step_eV,
+                    "error": error,
+                },
+            )
+
         if len(failed) / n_samples > self.max_failed_fraction:
             shown = "; ".join(f"sample {r['sample']}: {r['error']}" for r in failed[:5])
             more = f" (and {len(failed) - 5} more)" if len(failed) > 5 else ""
-            raise StageFailedError(
+            message = (
                 f"{len(failed)} of {n_samples} samples failed, more than "
                 f"max_failed_fraction = {self.max_failed_fraction:g}: {shown}{more}. "
-                "Fix the cause (see the task logs in the excitations stage directory), or "
-                "raise [excitations] max_failed_fraction."
+                "Fix the cause (see the task logs in the excitations stage directory; after a "
+                "changed input, run with the --rerun-from stage that the next run names), or "
+                "raise [excitations] max_failed_fraction and run again (it acts in finalize "
+                "only, so no --rerun-from is needed)."
             )
+            summary(None, message)
+            raise StageFailedError(message)
         reference: dict[str, Any] | None = None
         if options.include_reference:
             ref_row = rows[0]
             if not ref_row["ok"]:
-                raise StageFailedError(
+                message = (
                     "the equilibrium geometry itself failed: "
-                    f"{ref_row['error']}. Fix the electronic-structure settings first; the "
-                    "reference is needed to judge the sampled spectrum "
-                    "(or set [excitations] include_reference = false)."
+                    f"{ref_row['error']}. Fix the electronic-structure settings first (then run "
+                    "with the --rerun-from stage that the next run names); the reference is "
+                    "needed to judge the sampled spectrum. Or set [excitations] "
+                    "include_reference = false and run with --rerun-from excitations, which "
+                    "recomputes every sample."
                 )
-            samples = read_samples_h5(ctx.upstream_dir("sampling") / "samples.h5")
+                summary(None, message)
+                raise StageFailedError(message)
             reference = {
                 "energies_hartree": np.asarray([ref_row["energies_hartree"]]),
                 "transition_dipoles_au": np.asarray([ref_row["transition_dipoles_au"]]),
@@ -182,11 +255,9 @@ class ExcitationsStage(Stage):
                 energies[k - 1] = row["energies_hartree"]
                 dipoles[k - 1] = row["transition_dipoles_au"]
                 strengths[k - 1] = row["oscillator_strengths"]
-        sampling_dir = ctx.upstream_dir("sampling")
-        symbols = read_samples_h5(sampling_dir / "samples.h5")["symbols"]
         write_excitations_h5(
             ctx.stage_dir / "excitations.h5",
-            symbols=symbols,
+            symbols=samples["symbols"],
             state_labels=labels,
             sample_indices=np.arange(1, n_samples + 1),
             ok=ok,
@@ -240,17 +311,4 @@ class ExcitationsStage(Stage):
                 entry["std_oscillator_strength"],
                 int(ok.sum()),
             )
-        write_json_atomic(
-            ctx.stage_dir / "excitations.json",
-            {
-                "schema_version": 1,
-                "n_samples": n_samples,
-                "n_ok": int(ok.sum()),
-                "failed": [{"sample": r["sample"], "error": r["error"]} for r in failed],
-                "state_labels": labels,
-                "states": per_state,
-                "include_reference": options.include_reference,
-                "broadening_fwhm_eV": options.broadening_fwhm_eV,
-                "spectrum_step_eV": options.spectrum_step_eV,
-            },
-        )
+        summary(per_state, None)

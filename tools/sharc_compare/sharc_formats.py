@@ -142,9 +142,14 @@ def parse_initconds_excited(text: str) -> dict[str, Any]:
     while i < len(lines):
         fields = lines[i].split()
         if len(fields) == 2 and fields[0] == "Index":
+            j = i + 2 + natom
+            if j + n_states >= len(lines):
+                raise ValueError(
+                    f"initconds.excited: truncated block for {lines[i].strip()!r} "
+                    f"(line {i + 1}): {len(lines)} lines, {j + n_states + 1} needed"
+                )
             if lines[i + 1].strip() != "Atoms":
                 raise ValueError(f"initconds.excited: expected 'Atoms' after line {i + 1}")
-            j = i + 2 + natom
             if lines[j].split()[:1] != ["States"]:
                 raise ValueError(f"initconds.excited: expected 'States' at line {j + 1}")
             rows = []

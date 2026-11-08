@@ -22,6 +22,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from qmout import parse_qm_out  # noqa: E402
 
+GEOMETRY_TIMEOUT_S = 1800
+
 TEMPLATE = """ncas {ncas}
 nelecas {nelecas}
 roots {roots}
@@ -59,14 +61,19 @@ def run_geometry(
         env["SHARC"] = str(sharc_home / "bin")
         # PYTHONPATH is replaced, not extended (see run()).
         env["PYTHONPATH"] = f"{sharc_home / 'lib'}:{sharc_home / 'pysharc'}"
-        proc = subprocess.run(
-            [python, str(sharc_home / "bin" / "SHARC_PYSCF.py"), "QM.in"],
-            cwd=work,
-            env=env,
-            capture_output=True,
-            text=True,
-            timeout=1800,
-        )
+        try:
+            proc = subprocess.run(
+                [python, str(sharc_home / "bin" / "SHARC_PYSCF.py"), "QM.in"],
+                cwd=work,
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=GEOMETRY_TIMEOUT_S,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise SystemExit(
+                f"SHARC_PYSCF.py did not finish within {GEOMETRY_TIMEOUT_S} s at one geometry"
+            ) from exc
         if proc.returncode != 0 or not (work / "QM.out").is_file():
             raise SystemExit(f"SHARC_PYSCF.py failed ({proc.returncode}):\n{proc.stderr[-2000:]}")
         return parse_qm_out((work / "QM.out").read_text())

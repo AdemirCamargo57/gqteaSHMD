@@ -43,3 +43,23 @@ def test_average_over_samples_and_state_split():
     assert s.energies_eV[0] <= one.energies_eV[0]
     with pytest.raises(ValueError):
         broadened_spectrum(np.zeros((0, 2)), np.zeros((0, 2)), fwhm_eV=0.1, step_eV=0.01)
+
+
+@pytest.mark.parametrize(
+    "de, first, last",
+    [
+        # s = 0.1 / 2.35482 = 0.042466, 4 s = 0.169864: e0 = 0.01 floor(483.01) = 4.83,
+        # last = first grid point >= 7.169864
+        ([[5.0, 7.0]], 4.83, 7.17),
+        # (0.1 - 4 s) / step < 0, so the floor max(step, ...) gives e0 = step (never E = 0)
+        ([[0.1]], 0.01, 0.27),
+    ],
+)
+def test_grid_rule(de, first, last):
+    de = np.array(de)
+    spec = broadened_spectrum(de, np.full_like(de, 0.1), fwhm_eV=0.1, step_eV=0.01)
+    e = spec.energies_eV
+    assert e[0] == pytest.approx(first, abs=1e-12)
+    assert e[-1] == pytest.approx(last, abs=1e-9)
+    assert np.allclose(np.diff(e), 0.01)
+    assert e[-2] < de.max() + 4 * 0.1 / (2 * math.sqrt(2 * math.log(2))) <= e[-1]

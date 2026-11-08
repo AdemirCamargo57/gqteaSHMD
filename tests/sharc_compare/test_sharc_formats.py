@@ -2,6 +2,7 @@ import importlib.util
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 TOOLS = ROOT / "tools" / "sharc_compare"
@@ -117,3 +118,9 @@ def test_parse_initconds_excited():
     np.testing.assert_allclose(row["dipole"], [0.08877556, 0.0, 0.0])
     assert parsed["states"][0][2]["selected"] and parsed["states"][1][1]["selected"]
     assert parsed["states"][0][2]["dipole"][2] == 0.5
+
+
+def test_parse_initconds_excited_rejects_a_truncated_file():
+    truncated = "\n".join(EXCITED.splitlines()[:-1]) + "\n"  # the last state line is missing
+    with pytest.raises(ValueError, match="truncated block for 'Index     2'"):
+        formats.parse_initconds_excited(truncated)

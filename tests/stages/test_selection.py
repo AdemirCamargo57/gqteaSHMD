@@ -5,7 +5,8 @@ import numpy as np
 import pytest
 
 from gqteashmd.config.loader import load_config
-from gqteashmd.errors import StageFailedError
+from gqteashmd.core.units import HARTREE_IN_EV
+from gqteashmd.errors import StageFailedError, TaskError
 from gqteashmd.excite.artifacts import write_excitations_h5
 from gqteashmd.project.layout import ProjectLayout
 from gqteashmd.stages.base import StageContext
@@ -40,7 +41,7 @@ def _write_excitations(directory):
     )
 
 
-def _context(tmp_path, write_input, selection="", seed=7):
+def _context(tmp_path, write_input, selection="", seed=7, writer=None):
     tmp_path.mkdir(parents=True, exist_ok=True)
     text = (
         '[electronic]\nmethod = "tda"\nbasis = "sto-3g"\nfunctional = "hf"\nsinglets = 3\n'
@@ -51,7 +52,7 @@ def _context(tmp_path, write_input, selection="", seed=7):
     cfg = load_config(path).config
     layout = ProjectLayout(cfg.project.directory)
     exc_dir = layout.stage_dir(4, "excitations")
-    _write_excitations(exc_dir)
+    (writer or _write_excitations)(exc_dir)
     stage_dir = layout.stage_dir(5, "selection")
     stage_dir.mkdir(parents=True)
     return StageContext(cfg, layout, stage_dir, {"excitations": exc_dir})
@@ -144,7 +145,15 @@ def test_report_files(tmp_path, write_input):
     assert "| state | candidates | accepted | selected | mean" in md
     assert "../04_excitations/spectrum.csv" in md
     assert "t00001" in md
-    assert md.rstrip().endswith("Review, then run `gqteashmd run` again to continue.")
+    assert "Review, then run" not in md
+    assert md.rstrip().endswith("then run `gqteashmd run` again to continue.")
+    assert 'pause_after = ["selection"]' in md
+    assert report["stage_failed"] is False and report["weight_outlier"] is False
+    pair = report["weight_max_pair"]
+    assert pair["weight"] == pytest.approx(report["weight_max"])
+    expected = pair["oscillator_strength"] / pair["excitation_energy_eV"] ** 2
+    assert pair["weight"] == pytest.approx(expected)
+    assert f"- w_max pair: sample {pair['sample']}, {pair['state']}" in md
 
 
 def test_weighting_reaches_the_rule_and_the_reports(tmp_path, write_input):
@@ -163,3 +172,118 @@ def test_weighting_reaches_the_rule_and_the_reports(tmp_path, write_input):
     assert out["f"]["weight_max"] == pytest.approx(out["f"]["f_max"])
     assert out["f_over_dE2"]["weight_max"] < out["f"]["weight_max"]
     assert out["f"]["accepted"] != out["f_over_dE2"]["accepted"]
+
+
+def _strict_json(path):
+    def _reject(constant):
+        raise AssertionError(f"{path.name} contains {constant}")
+
+    return json.loads(path.read_text(), parse_constant=_reject)
+
+
+def test_fingerprint_excludes_allow_fewer_and_fixed_mode_weighting(tmp_path, write_input):
+    stage = SelectionStage()
+
+    def fp(name, sel):
+        return stage.fingerprint_inputs(_context(tmp_path / name, write_input, sel))
+
+    base = fp("a", "[selection]\nn_trajectories = 10\n")
+    assert fp("b", "[selection]\nn_trajectories = 10\nallow_fewer = true\n") == base
+    assert fp("c", "[selection]\nn_trajectories = 11\n") != base
+    assert fp("d", '[selection]\nn_trajectories = 10\nweighting = "f"\n') != base
+    assert "allow_fewer" not in base["selection"]
+    fixed = '[selection]\nmode = "fixed"\nstates = ["S2"]\nn_trajectories = 5\n'
+    fixed_fp = fp("e", fixed)
+    assert "weighting" not in fixed_fp["selection"]
+    assert fp("f", fixed + 'weighting = "f"\n') == fixed_fp
+    assert fp("g", fixed + "allow_fewer = true\n") == fixed_fp
+
+
+def test_too_few_names_the_rerun_from_remedies_and_still_writes_the_reports(tmp_path, write_input):
+    sel = '[selection]\nmode = "fixed"\nstates = ["S2"]\nn_trajectories = 500\n'
+    ctx = _context(tmp_path, write_input, sel)
+    stage, results = _run(ctx)
+    with pytest.raises(StageFailedError) as info:
+        stage.finalize(ctx, results)
+    message = str(info.value)
+    assert "--rerun-from selection" in message and "--rerun-from sampling" in message
+    assert "allow_fewer = true and run again (no --rerun-from needed)" in message
+    assert not (ctx.stage_dir / "trajectories.json").exists()
+    report = _strict_json(ctx.stage_dir / "selection_report.json")
+    assert report["stage_failed"] is True and report["n_selected"] == 49
+    assert report["weight_max_pair"] is None and report["weight_p99"] is None  # fixed mode
+    assert "**The stage failed" in (ctx.stage_dir / "selection_report.md").read_text()
+
+
+def _write_low_gap_outlier(directory):
+    """The reviewer's scenario: 200 samples with S1 at 5 eV (f 0.05) and S2 at 7 eV (f 0.3),
+    plus one sample whose S1 is at 0.05 eV with |mu| = 1 a.u."""
+    directory.mkdir(parents=True)
+    n = 201
+    de_ev = np.tile([5.0, 7.0], (n, 1))
+    f = np.tile([0.05, 0.3], (n, 1))
+    de_ev[100, 0] = 0.05
+    f[100, 0] = (2.0 / 3.0) * (0.05 / HARTREE_IN_EV) * 1.0
+    energies = np.full((n, 3), -75.0)
+    energies[:, 1:] += de_ev / HARTREE_IN_EV
+    write_excitations_h5(
+        directory / "excitations.h5",
+        symbols=("O", "H", "H"),
+        state_labels=("S0", "S1", "S2"),
+        sample_indices=np.arange(1, n + 1),
+        ok=np.ones(n, dtype=bool),
+        energies_hartree=energies,
+        transition_dipoles_au=np.zeros((n, 2, 3)),
+        oscillator_strengths=f,
+    )
+
+
+def test_a_low_gap_outlier_is_reported_and_warned_about(tmp_path, write_input, caplog):
+    sel = "[selection]\nn_trajectories = 5\n"
+    ctx = _context(tmp_path / "a", write_input, sel, writer=_write_low_gap_outlier)
+    stage, results = _run(ctx)
+    with caplog.at_level(logging.WARNING, logger="gqteashmd.stages.selection"):
+        stage.finalize(ctx, results)
+    warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+    assert any("w_max pair (sample 101, S1, dE = 0.05 eV" in m for m in warnings), warnings
+    assert any("energy_window_eV" in m and "--rerun-from selection" in m for m in warnings)
+    report = _strict_json(ctx.stage_dir / "selection_report.json")
+    pair = report["weight_max_pair"]
+    assert (pair["sample"], pair["state"]) == (101, "S1")
+    assert pair["excitation_energy_eV"] == pytest.approx(0.05)
+    assert pair["weight"] > 10 * report["weight_p99"] and report["weight_outlier"] is True
+    assert report["accepted"] < 10  # the outlier suppresses almost every acceptance
+    assert "**Warning:** the w_max pair" in (ctx.stage_dir / "selection_report.md").read_text()
+
+    caplog.clear()
+    windowed = sel + "energy_window_eV = [1.0, 10.0]\n"
+    ctx = _context(tmp_path / "b", write_input, windowed, writer=_write_low_gap_outlier)
+    stage, results = _run(ctx)
+    with caplog.at_level(logging.WARNING, logger="gqteashmd.stages.selection"):
+        stage.finalize(ctx, results)
+    assert not any("w_max pair" in r.getMessage() for r in caplog.records)
+    report = _strict_json(ctx.stage_dir / "selection_report.json")
+    assert report["weight_outlier"] is False and report["accepted"] > 200
+
+
+def test_unknown_state_in_the_data_is_a_non_retryable_task_error(tmp_path, write_input):
+    def _two_states(directory):
+        directory.mkdir(parents=True)
+        write_excitations_h5(
+            directory / "excitations.h5",
+            symbols=("O", "H", "H"),
+            state_labels=("S0", "S1"),
+            sample_indices=np.arange(1, 3),
+            ok=np.ones(2, dtype=bool),
+            energies_hartree=np.array([[-75.0, -74.8], [-75.0, -74.8]]),
+            transition_dipoles_au=np.zeros((2, 1, 3)),
+            oscillator_strengths=np.full((2, 1), 0.1),
+        )
+
+    ctx = _context(tmp_path, write_input, '[selection]\nstates = ["S2"]\n', writer=_two_states)
+    task = SelectionStage().plan(ctx)[0]
+    task_dir = ctx.layout.task_dir(ctx.stage_dir, task.task_id)
+    task_dir.mkdir(parents=True)
+    with pytest.raises(TaskError, match="S2 is not in the excitation data") as info:
+        SelectionStage().run_task(ctx, task, task_dir)
+    assert info.value.retryable is False

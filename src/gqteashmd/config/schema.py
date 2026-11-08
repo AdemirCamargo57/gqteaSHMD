@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from math import comb
 from pathlib import Path
 from typing import Literal
 
@@ -121,7 +120,7 @@ class WorkflowSection(_Section):
 def n_singlet_csfs(ncas: int, nelecas: int) -> int:
     """Number of singlet CSFs of a CAS(nelecas, ncas) space (Weyl formula, nelecas even)."""
     n, half = ncas, nelecas // 2
-    return comb(n + 1, half) * comb(n + 1, half + 1) // (n + 1)
+    return math.comb(n + 1, half) * math.comb(n + 1, half + 1) // (n + 1)
 
 
 class CasscfSection(_Section):

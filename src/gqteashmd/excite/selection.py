@@ -12,14 +12,19 @@ Two weightings are offered:
 * ``f``: ``w = f`` (acceptance ``f / f_max``, the Newton-X-style rule; Barbatti et al.,
   J. Photochem. Photobiol. A 190, 228 (2007)).
 
-``w_max <= 0`` selects nothing. Exactly one random number is drawn per candidate, in candidate
-order (sample-major, then S1, S2, ...), so the stream is a fixed function of the candidate list.
+``f / dE**2`` is ``(2/3) |mu|^2 / dE`` (``dE`` in hartree), so it favours low-energy pairs: one
+pair with a very small ``dE`` can set ``w_max`` and suppress every other acceptance. An energy
+window avoids this (the selection stage reports the ``w_max`` pair and warns about such
+outliers). ``w_max <= 0`` selects nothing. Exactly one random number is drawn per candidate,
+in candidate order (sample-major, then S1, S2, ...), so the stream is a fixed function of the
+candidate list.
 The first ``n`` accepted pairs are kept. ``fixed`` mode takes the first ``n`` candidates of one
 state.
 """
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Literal
 
@@ -53,26 +58,54 @@ def candidates_from(
     states: list[str],
     window: tuple[float, float] | None,
 ) -> list[Candidate]:
-    """Candidates, sample-major then S1, S2, ...; columns of the arrays are S1, S2, ..."""
-    columns = sorted({StateLabel.parse(s).index for s in states})
+    """Candidates, sample-major then S1, S2, ...; columns of the arrays are S1, S2, ...
+
+    Pairs with a non-finite energy or oscillator strength, or with ``dE <= 0``, are skipped
+    (defensive: the excitations stage already records such samples as failed). ``states`` must
+    name distinct excited singlets that exist in the arrays; otherwise ``ValueError``.
+    """
+    de = np.asarray(excitation_energies_eV, dtype=float)
+    f = np.asarray(oscillator_strengths, dtype=float)
+    if de.ndim != 2 or f.shape != de.shape or np.shape(ok) != de.shape[:1]:
+        raise ValueError(
+            f"inconsistent shapes: energies {de.shape}, oscillator strengths {f.shape}, "
+            f"ok {np.shape(ok)}"
+        )
+    labels = [StateLabel.parse(s) for s in states]
+    if len(set(labels)) != len(labels):
+        raise ValueError(f"duplicate state in {states}")
+    for label in labels:
+        if label.multiplicity != 1 or not 1 <= label.index <= de.shape[1]:
+            raise ValueError(
+                f"state {label} is not in the excitation data (excited singlets S1..S{de.shape[1]})"
+            )
+    columns = sorted(label.index for label in labels)
     result: list[Candidate] = []
-    for i in range(excitation_energies_eV.shape[0]):
+    for i in range(de.shape[0]):
         if not ok[i]:
             continue
         for index in columns:
-            energy = float(excitation_energies_eV[i, index - 1])
+            energy = float(de[i, index - 1])
+            strength = float(f[i, index - 1])
+            if not (math.isfinite(energy) and math.isfinite(strength)) or energy <= 0.0:
+                continue
             if window is not None and not window[0] <= energy <= window[1]:
                 continue
-            result.append(
-                Candidate(i + 1, f"S{index}", energy, float(oscillator_strengths[i, index - 1]))
-            )
+            result.append(Candidate(i + 1, f"S{index}", energy, strength))
     return result
 
 
-def _weight(candidate: Candidate, weighting: str) -> float:
+def candidate_weight(candidate: Candidate, weighting: str) -> float:
+    """The acceptance weight ``f / dE**2`` (``f_over_dE2``) or ``f`` (``f``) of a pair."""
+    de, f = candidate.excitation_energy_eV, candidate.oscillator_strength
+    if not (math.isfinite(de) and math.isfinite(f)) or de <= 0.0:
+        raise ValueError(
+            f"sample {candidate.sample} {candidate.state}: the excitation energy must be finite "
+            f"and positive and the oscillator strength finite (dE = {de!r} eV, f = {f!r})"
+        )
     if weighting == "f":
-        return candidate.oscillator_strength
-    return candidate.oscillator_strength / candidate.excitation_energy_eV**2
+        return f
+    return f / de**2
 
 
 def select_bright(
@@ -87,7 +120,7 @@ def select_bright(
         raise ValueError(f"unknown weighting {weighting!r}")
     f_max = max((c.oscillator_strength for c in candidates), default=0.0)
     draws = [float(rng.random()) for _ in candidates]
-    weights = [_weight(c, weighting) for c in candidates]
+    weights = [candidate_weight(c, weighting) for c in candidates]
     w_max = max(weights, default=0.0)
     if w_max <= 0.0:
         return Selection((), len(candidates), max(f_max, 0.0), 0, 0.0)

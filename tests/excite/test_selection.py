@@ -1,7 +1,13 @@
 import numpy as np
 import pytest
 
-from gqteashmd.excite.selection import candidates_from, select_bright, select_fixed
+from gqteashmd.excite.selection import (
+    Candidate,
+    candidate_weight,
+    candidates_from,
+    select_bright,
+    select_fixed,
+)
 
 E = np.array([[5.0, 7.0], [5.5, 9.5], [4.0, 6.5]])
 F = np.array([[0.2, 0.4], [0.1, 0.8], [0.0, 0.3]])
@@ -97,3 +103,40 @@ def test_bright_consumes_one_draw_per_candidate():
     ref = np.random.default_rng(11)
     ref.random(len(c))
     assert rng.random() == ref.random()
+
+
+def test_candidates_skip_non_finite_and_non_positive_pairs():
+    e = np.array([[5.0, 0.0], [-0.3, np.nan], [np.inf, 6.0], [5.0, 6.0]])
+    f = np.array([[0.1, 0.2], [0.1, 0.2], [0.1, np.nan], [0.1, 0.2]])
+    c = candidates_from(e, f, np.ones(4, bool), ["S1", "S2"], None)
+    assert [(x.sample, x.state) for x in c] == [(1, "S1"), (4, "S1"), (4, "S2")]
+    sel = select_bright(c, 10, np.random.default_rng(0))  # no ZeroDivisionError, finite w_max
+    assert np.isfinite(sel.weight_max) and sel.weight_max == pytest.approx(0.2 / 36.0)
+
+
+@pytest.mark.parametrize(
+    "states, match",
+    [
+        (["S3"], "S3 is not in the excitation data"),
+        (["S1", "S1"], "duplicate state"),
+        (["T1"], "T1 is not in the excitation data"),
+    ],
+)
+def test_candidates_reject_unknown_or_duplicate_states(states, match):
+    with pytest.raises(ValueError, match=match):
+        candidates_from(E, F, OK, states, None)
+
+
+def test_candidates_reject_inconsistent_shapes():
+    with pytest.raises(ValueError, match="inconsistent shapes"):
+        candidates_from(E, F[:, :1], OK, ["S1"], None)
+
+
+@pytest.mark.parametrize("de", [0.0, -1.0, float("nan")])
+def test_candidate_weight_rejects_bad_energies(de):
+    bad = Candidate(1, "S1", de, 0.1)
+    for weighting in ("f_over_dE2", "f"):
+        with pytest.raises(ValueError, match="finite and positive"):
+            candidate_weight(bad, weighting)
+    with pytest.raises(ValueError, match="sample 1 S1"):
+        select_bright([bad], 1, np.random.default_rng(0))

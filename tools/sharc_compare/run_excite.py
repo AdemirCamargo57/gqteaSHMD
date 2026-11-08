@@ -10,6 +10,8 @@ import os
 import subprocess
 from pathlib import Path
 
+TIMEOUT_S = 600
+
 
 def run_excite(
     sharc_home: Path, python: str, work_dir: Path, *, window_eV: tuple[float, float], seed: int
@@ -31,15 +33,21 @@ def run_excite(
     env["SHARC"] = str(sharc_home / "bin")
     # PYTHONPATH is replaced, not extended: SHARC's own conda environment must not see ours.
     env["PYTHONPATH"] = f"{sharc_home / 'lib'}:{sharc_home / 'pysharc'}"
-    proc = subprocess.run(
-        [python, str(sharc_home / "bin" / "excite.py")],
-        input="\n".join(answers) + "\n" + "\n" * 10,
-        cwd=work_dir,
-        env=env,
-        capture_output=True,
-        text=True,
-        timeout=600,
-    )
+    try:
+        proc = subprocess.run(
+            [python, str(sharc_home / "bin" / "excite.py")],
+            input="\n".join(answers) + "\n" + "\n" * 10,
+            cwd=work_dir,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=TIMEOUT_S,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise SystemExit(
+            f"excite.py did not finish within {TIMEOUT_S} s in {work_dir} "
+            "(a prompt may have changed: check the answers in run_excite.py)"
+        ) from exc
     out = work_dir / "initconds.excited"
     if proc.returncode != 0 or not out.is_file():
         tail = (proc.stdout[-1500:] + "\n" + proc.stderr[-1500:]).strip()

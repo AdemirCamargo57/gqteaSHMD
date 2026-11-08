@@ -129,7 +129,7 @@ def test_excitations_match_sharc_pyscf():
                 max(worst_mu, d_mu),
                 max(worst_f, d_f),
             )
-            assert d_de < 1e-5
+            assert d_de < 1e-6  # measured worst case 8.7e-8 Eh
             assert d_mu <= 1e-4 * np.linalg.norm(mu_sharc) + 1e-7
             assert d_f <= 1e-4 * f_sharc + 1e-7
             # the transition dipole vectors agree up to an overall sign

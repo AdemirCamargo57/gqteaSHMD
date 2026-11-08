@@ -1,4 +1,5 @@
 import json
+import re
 
 import h5py
 import numpy as np
@@ -37,11 +38,12 @@ def _hessian():
 
 
 class FakeBackend:
-    def __init__(self, settings, fail_on=(), retryable_on=()):
+    def __init__(self, settings, fail_on=(), retryable_on=(), bad=None):
         self.states = states_from_counts(settings.singlets)
         self.log = []
         self.fail_on = fail_on
         self.retryable_on = retryable_on
+        self.bad = bad or {}
 
     def reset(self):
         self.log.append("reset")
@@ -55,12 +57,25 @@ class FakeBackend:
             raise ElectronicStructureError("disk full", retryable=True)
         energies = {s: -75.0 + 0.2 * i + 0.01 * i * x0 for i, s in enumerate(self.states)}
         mu = {s: np.array([0.1 * i, 0.0, 0.05]) for i, s in enumerate(self.states) if i > 0}
+        kind = self.bad.get(x0)
+        if kind == "below_s0":
+            energies[self.states[2]] = -75.1
+        elif kind == "degenerate":
+            energies[self.states[1]] = energies[self.states[0]]
+        elif kind == "nan_energy":
+            energies[self.states[1]] = float("nan")
+        elif kind == "nan_dipole":
+            mu[self.states[1]] = np.array([np.nan, 0.0, 0.0])
         return ElectronicResult(self.states, energies, transition_dipoles=mu)
 
 
-def _context(tmp_path, write_input, extra="", singlets=3, n_samples=5):
+def _context(tmp_path, write_input, extra="", singlets=3, n_samples=5, electronic=""):
+    """`electronic` holds extra lines of the [electronic] section (e.g. a basis override)."""
     tmp_path.mkdir(parents=True, exist_ok=True)
-    text = ELECTRONIC.format(n=singlets) + f"[sampling]\nn_samples = {n_samples}\n" + extra
+    section = ELECTRONIC.format(n=singlets)
+    if "basis" in electronic:
+        section = section.replace('basis = "sto-3g"\n', "")
+    text = section + electronic + f"[sampling]\nn_samples = {n_samples}\n" + extra
     cfg = load_config(write_input(tmp_path, extra=text)).config
     layout = ProjectLayout(cfg.project.directory)
     prep_dir = layout.stage_dir(0, "prepare")
@@ -93,10 +108,10 @@ def _context(tmp_path, write_input, extra="", singlets=3, n_samples=5):
 
 @pytest.fixture
 def fake(monkeypatch):
-    holder = {"backends": [], "fail_on": (), "retryable_on": ()}
+    holder = {"backends": [], "fail_on": (), "retryable_on": (), "bad": {}}
 
     def factory(ctx, stage_name, molecule, task_dir, *, settings=None):
-        backend = FakeBackend(settings, holder["fail_on"], holder["retryable_on"])
+        backend = FakeBackend(settings, holder["fail_on"], holder["retryable_on"], holder["bad"])
         holder["backends"].append(backend)
         holder["settings"] = settings
         return backend
@@ -235,9 +250,11 @@ def test_fingerprint(tmp_path, write_input):
     assert fp("[excitations]\nmax_failed_fraction = 0.5\n") == base
     assert fp("[excitations]\nspectrum_step_eV = 0.05\n") == base
     assert fp(n_samples=6) != base
-    other = stage.fingerprint_inputs(_context(tmp_path / "o", write_input))
-    other["electronic"]["basis"] = "6-31g"
-    assert other != base
+    assert fp(electronic='basis = "6-31g"\n') != base
+    assert fp(electronic="overlap_norm_kept = 0.99\n") == base
+    assert "overlap_norm_kept" not in base["electronic"]
+    assert fp(singlets=4) != base
+    assert fp("[excitations]\ninclude_reference = false\n") != base
 
 
 def test_singlets_below_two_is_a_config_error(tmp_path, write_input):
@@ -246,3 +263,85 @@ def test_singlets_below_two_is_a_config_error(tmp_path, write_input):
         check_stage_inputs(ctx.config, [ExcitationsStage()])
     ok = _context(tmp_path / "ok", write_input, singlets=2)
     check_stage_inputs(ok.config, [ExcitationsStage()])
+
+
+def _strict_json(path):
+    def _reject(constant):
+        raise AssertionError(f"{path.name} contains {constant}")
+
+    return json.loads(path.read_text(), parse_constant=_reject)
+
+
+def _x0(ctx, sample):
+    return round(float(_samples(ctx)["positions_bohr"][sample - 1, 0, 2]), 6)
+
+
+@pytest.mark.parametrize(
+    "kind, message",
+    [
+        ("below_s0", r"excitation energy of S2 is not positive \(-2\.7\d* eV\)"),
+        ("degenerate", r"excitation energy of S1 is not positive \(0 eV\)"),
+        ("nan_energy", "non-finite energy of S1"),
+        ("nan_dipole", "non-finite transition dipole of S1"),
+    ],
+)
+def test_unusable_sample_is_recorded_as_failed(tmp_path, write_input, fake, kind, message):
+    ctx = _context(tmp_path, write_input, "[excitations]\nsamples_per_task = 5\n", n_samples=20)
+    fake["bad"] = {_x0(ctx, 2): kind}
+    stage, results = _run(ctx, ExcitationsStage(max_failed_fraction=0.1))
+    rows = results["s00001"]["samples"]
+    assert [r["ok"] for r in rows] == [True, False, True, True, True]
+    assert re.search(message, rows[1]["error"]), rows[1]["error"]
+    json.dumps(results, allow_nan=False)  # the task result itself is valid JSON
+    stage.finalize(ctx, results)
+    summary = _strict_json(ctx.stage_dir / "excitations.json")
+    assert summary["n_ok"] == 19 and summary["failed"][0]["sample"] == 2
+    assert summary["error"] is None and summary["reference_error"] is None
+    with h5py.File(ctx.stage_dir / "excitations.h5", "r") as f:
+        assert f["ok"][()].tolist()[1] == 0
+    assert "nan" not in (ctx.stage_dir / "spectrum.csv").read_text().lower()
+
+
+def test_unusable_reference_fails_the_stage(tmp_path, write_input, fake):
+    ctx = _context(tmp_path, write_input, n_samples=5)
+    fake["bad"] = {round(float(COORDS[0, 2]), 6): "below_s0"}
+    stage, results = _run(ctx)
+    assert "is not positive" in results["ref"]["samples"][0]["error"]
+    with pytest.raises(StageFailedError, match="equilibrium geometry itself failed") as info:
+        stage.finalize(ctx, results)
+    assert "include_reference = false and run with --rerun-from excitations" in str(info.value)
+    assert "recomputes every sample" in str(info.value)
+    summary = _strict_json(ctx.stage_dir / "excitations.json")  # written before the raise
+    assert "is not positive" in summary["reference_error"]
+    assert summary["states"] is None and "equilibrium geometry" in summary["error"]
+    assert not (ctx.stage_dir / "excitations.h5").exists()
+
+
+def test_failure_fraction_writes_the_summary_before_raising(tmp_path, write_input, fake):
+    ctx = _context(tmp_path, write_input, "[excitations]\nsamples_per_task = 2\n", n_samples=5)
+    stage, results = _run(ctx, skip=("s00001",))
+    with pytest.raises(StageFailedError, match="no --rerun-from is needed"):
+        stage.finalize(ctx, results)
+    summary = _strict_json(ctx.stage_dir / "excitations.json")
+    assert summary["n_ok"] == 3 and [r["sample"] for r in summary["failed"]] == [1, 2]
+    assert summary["states"] is None and "max_failed_fraction" in summary["error"]
+
+
+def test_undersized_samples_file_is_a_non_retryable_task_error(tmp_path, write_input, fake):
+    ctx = _context(tmp_path, write_input, "[excitations]\nsamples_per_task = 3\n", n_samples=5)
+    sampling = ctx.config.sampling.model_copy(update={"n_samples": 6})
+    bigger = StageContext(
+        ctx.config.model_copy(update={"sampling": sampling}),
+        ctx.layout,
+        ctx.stage_dir,
+        dict(ctx.upstream),
+    )
+    stage = ExcitationsStage()
+    task = stage.plan(bigger)[-1]
+    assert task.payload["samples"] == [4, 5, 6]
+    task_dir = ctx.layout.task_dir(ctx.stage_dir, task.task_id)
+    task_dir.mkdir(parents=True)
+    with pytest.raises(TaskError, match="holds 5 samples but") as info:
+        stage.run_task(bigger, task, task_dir)
+    assert info.value.retryable is False and "--rerun-from sampling" in str(info.value)
+    assert fake["backends"] == []  # nothing was computed

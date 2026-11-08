@@ -31,13 +31,9 @@ def test_excitations_and_selection_end_to_end(tmp_path, write_input):
     col = header.index("cross_section_A2")
     assert max(float(r.split(",")[col]) for r in lines[1:]) > 0
     sel = layout.stage_dir(5, "selection")
-    entries = json.loads((sel / "trajectories.json").read_text())
-    entries = (
-        entries
-        if isinstance(entries, list)
-        else next(v for v in entries.values() if isinstance(v, list))
-    )
-    assert 1 <= len(entries) <= 2
+    data = json.loads((sel / "trajectories.json").read_text())
+    entries = data["trajectories"]
+    assert 1 <= len(entries) <= 2 and data["n_trajectories"] == len(entries)
     assert main(["run", str(path)]) == 0  # up to date
 
 

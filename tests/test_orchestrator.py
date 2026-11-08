@@ -410,3 +410,33 @@ def test_two_runs_in_one_session_append_one_provenance_record(project, behaviour
         orch.run()
     runs = read_json(orch.layout.provenance_file)["runs"]
     assert len(runs) == 1
+
+
+CANNED = "gqteashmd.testing.pipelines:canned_selection"
+
+
+def test_o20_stop_then_allow_fewer_reruns_selection_finalize_only(tmp_path, write_input):
+    sel = '[selection]\nmode = "fixed"\nstates = ["S2"]\nn_trajectories = 50\n'
+    path = write_input(tmp_path, execution=FAST, extra=sel)
+    with pytest.raises(StageFailedError, match="allow_fewer = true and run again"):
+        Orchestrator(load_config(path), pipeline_ref=CANNED).run()
+    with _state(path) as state:
+        assert state.get_stage("selection").status == StageStatus.FAILED
+        assert state.get_task("selection", "select").status == TaskStatus.DONE
+    # The documented remedy: a finalize-only key, so no StaleStageError (exit 3).
+    path = write_input(tmp_path, execution=FAST, extra=sel + "allow_fewer = true\n")
+    summary = Orchestrator(load_config(path), pipeline_ref=CANNED).run()
+    assert summary.completed == ["selection"]
+    with _state(path) as state:
+        assert state.get_task("selection", "select").attempts == 1  # the task did not rerun
+    (stage_dir,) = _run_dir(path).glob("*_selection")
+    assert read_json(stage_dir / "trajectories.json")["n_trajectories"] == 20
+    # A key that changes the selected pairs needs --rerun-from selection, as the advice says.
+    path = write_input(
+        tmp_path, execution=FAST, extra=sel.replace("= 50", "= 10") + "allow_fewer = true\n"
+    )
+    with pytest.raises(StaleStageError, match="--rerun-from selection"):
+        Orchestrator(load_config(path), pipeline_ref=CANNED).run()
+    summary = Orchestrator(load_config(path), pipeline_ref=CANNED, rerun_from="selection").run()
+    assert summary.completed == ["selection"]
+    assert read_json(stage_dir / "trajectories.json")["n_trajectories"] == 10
