@@ -57,20 +57,46 @@ def write_frequencies_h5(
 
 
 def read_frequencies_h5(path: Path) -> dict[str, Any]:
-    """Read the parts of ``frequencies.h5`` that the sampler needs."""
+    """Read the parts of ``frequencies.h5`` that the sampler needs.
+
+    A missing, unreadable or inconsistent file raises ``ValueError`` whose message names the
+    path and says how to recompute it.
+    """
     import h5py
 
-    with h5py.File(Path(path), "r") as f:
-        symbols = tuple(s.decode() if isinstance(s, bytes) else str(s) for s in f["symbols"][()])
-        return {
-            "symbols": symbols,
-            "masses_amu": np.asarray(f["masses"][()], dtype=float),
-            "coords_bohr": np.asarray(f["coordinates"][()], dtype=float),
-            "frequencies_cm1": np.asarray(f["frequencies"][()], dtype=float),
-            "modes_mass_weighted": np.asarray(f["modes_mass_weighted"][()], dtype=float),
-            "linear": bool(f.attrs["linear"]),
-            "n_external": int(f.attrs["n_external"]),
-        }
+    path = Path(path)
+    advice = f"; rerun the frequencies stage with --rerun-from frequencies ({path})"
+    try:
+        with h5py.File(path, "r") as f:
+            symbols = tuple(
+                s.decode() if isinstance(s, bytes) else str(s) for s in f["symbols"][()]
+            )
+            data: dict[str, Any] = {
+                "symbols": symbols,
+                "masses_amu": np.asarray(f["masses"][()], dtype=float),
+                "coords_bohr": np.asarray(f["coordinates"][()], dtype=float),
+                "frequencies_cm1": np.asarray(f["frequencies"][()], dtype=float),
+                "modes_mass_weighted": np.asarray(f["modes_mass_weighted"][()], dtype=float),
+                "linear": bool(f.attrs["linear"]),
+                "n_external": int(f.attrs["n_external"]),
+            }
+    except (OSError, KeyError) as exc:
+        raise ValueError(f"frequencies.h5 is missing or unreadable ({exc!r}){advice}") from exc
+    n = len(data["symbols"])
+    k = data["frequencies_cm1"].size
+    expected = {
+        "masses": (data["masses_amu"].shape, (n,)),
+        "coordinates": (data["coords_bohr"].shape, (n, 3)),
+        "frequencies": (data["frequencies_cm1"].ndim, 1),
+        "modes_mass_weighted": (data["modes_mass_weighted"].shape, (3 * n, k)),
+    }
+    for name, (got, want) in expected.items():
+        if got != want:
+            raise ValueError(
+                f"frequencies.h5 is inconsistent: dataset '{name}' has shape/rank {got}, "
+                f"expected {want}{advice}"
+            )
+    return data
 
 
 def write_samples_h5(

@@ -66,7 +66,7 @@ def parse_initconds(text: str) -> dict[str, Any]:
     while i < len(lines):
         fields = lines[i].split()
         if len(fields) == 2 and fields[0] == "Index":
-            if lines[i + 1].strip() != "Atoms":
+            if i + 1 >= len(lines) or lines[i + 1].strip() != "Atoms":
                 raise ValueError(f"initconds: expected 'Atoms' after line {i + 1}")
             rows = _atom_rows(lines, i + 2, natom, f"Index {fields[1]}")
             positions.append([_floats(r, 2, 5, f"Index {fields[1]}") for r in rows])

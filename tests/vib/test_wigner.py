@@ -172,6 +172,16 @@ def test_linear_molecule_and_single_atom():
         rng=np.random.default_rng(6),
     )
     assert np.all(np.isfinite(s.velocities_au))
+    assert s.sampled_modes.sum() == 4  # 3N - 5
+    m_me = masses * DALTON_IN_ME
+    linear_p = np.linalg.norm((m_me[None, :, None] * s.velocities_au).sum(axis=1), axis=1)
+    centre = (m_me[None, :, None] * s.positions_bohr).sum(axis=1, keepdims=True) / m_me.sum()
+    ang = np.linalg.norm(
+        (m_me[None, :, None] * np.cross(s.positions_bohr - centre, s.velocities_au)).sum(axis=1),
+        axis=1,
+    )
+    assert linear_p.max() < 1e-10 and ang.max() < 1e-8
+    assert np.all(s.removed_kinetic_energy_hartree >= -1e-14)
     atom = sample_wigner(
         np.array([4.002603]),
         np.zeros((1, 3)),

@@ -32,6 +32,17 @@ class WignerSamples:
     sampled_modes: np.ndarray
     expected_mean_energy_hartree: float
     expected_energy_std_hartree: float
+    omega_au: np.ndarray  # angular frequencies of the sampled modes
+    expected_mode_energy_hartree: np.ndarray  # <E_k> of the sampled modes
+
+    def mode_energy_ratio_sums(self) -> np.ndarray:
+        """S_k = sum over samples of E_k / <E_k>, per sampled mode.
+
+        For a correct sampler E_k / <E_k> is Exp(1) and independent between modes and samples,
+        so S_k follows Gamma(shape = n_samples, scale = 1) exactly, whatever T and omega.
+        """
+        energy = 0.5 * (self.p**2 + (self.omega_au * self.q) ** 2)
+        return np.asarray((energy / self.expected_mode_energy_hartree).sum(axis=0))
 
 
 def _occupation_factor(omega: np.ndarray, temperature_K: float) -> np.ndarray:
@@ -112,4 +123,6 @@ def sample_wigner(
         sampled_modes=sampled,
         expected_mean_energy_hartree=float(mean_per_mode.sum()),
         expected_energy_std_hartree=float(np.sqrt((mean_per_mode**2).sum())),
+        omega_au=omega,
+        expected_mode_energy_hartree=mean_per_mode,
     )

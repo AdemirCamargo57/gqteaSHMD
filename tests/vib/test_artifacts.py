@@ -127,3 +127,47 @@ def test_format_samples_xyz():
     assert "E_harm" in lines[1] and "Eh" in lines[1]
     assert float(lines[3].split()[2]) == pytest.approx(1.4 * BOHR_IN_ANGSTROM, abs=1e-9)
     assert float(lines[9].split()[3]) == pytest.approx(pos[1, 2, 2] * BOHR_IN_ANGSTROM, abs=1e-9)
+
+
+def _write_h2(path):
+    masses = np.array([1.007825, 1.007825])
+    coords = np.array([[0.0, 0.0, -0.7], [0.0, 0.0, 0.7]])
+    e = np.array([0, 0, -1, 0, 0, 1]) / np.sqrt(2)
+    hess = np.outer(e, e)
+    write_frequencies_h5(
+        path,
+        symbols=("H", "H"),
+        masses_amu=masses,
+        coords_bohr=coords,
+        hessian=hess,
+        analysis=harmonic_analysis(masses, coords, hess),
+    )
+
+
+def test_read_frequencies_h5_missing_file_names_the_path_and_the_remedy(tmp_path):
+    from gqteashmd.vib.artifacts import read_frequencies_h5
+
+    path = tmp_path / "frequencies.h5"
+    with pytest.raises(ValueError, match="--rerun-from frequencies") as info:
+        read_frequencies_h5(path)
+    assert str(path) in str(info.value)
+
+
+def test_read_frequencies_h5_missing_dataset_and_bad_shape(tmp_path):
+    from gqteashmd.vib.artifacts import read_frequencies_h5
+
+    path = tmp_path / "frequencies.h5"
+    _write_h2(path)
+    with h5py.File(path, "r+") as f:
+        del f["modes_mass_weighted"]
+    with pytest.raises(ValueError, match="missing or unreadable"):
+        read_frequencies_h5(path)
+    _write_h2(path)
+    with h5py.File(path, "r+") as f:
+        del f["masses"]
+        f.create_dataset("masses", data=np.ones(3))
+    with pytest.raises(ValueError, match="inconsistent.*masses"):
+        read_frequencies_h5(path)
+    path.write_bytes(b"not an hdf5 file")
+    with pytest.raises(ValueError, match="missing or unreadable"):
+        read_frequencies_h5(path)

@@ -215,8 +215,8 @@ class FrequenciesSection(_Section):
 
 class SamplingSection(_Section):
     n_samples: int = Field(default=200, ge=1)
-    temperature_K: float = Field(default=0.0, ge=0)
-    low_frequency_cutoff_cm1: float = Field(default=10.0, gt=0)
+    temperature_K: float = Field(default=0.0, ge=0, allow_inf_nan=False)
+    low_frequency_cutoff_cm1: float = Field(default=10.0, gt=0, allow_inf_nan=False)
 
 
 class ShmdConfig(_Section):

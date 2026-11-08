@@ -12,7 +12,7 @@ from typing import Any
 import numpy as np
 
 from gqteashmd.core.units import DALTON_IN_ME
-from gqteashmd.errors import StageFailedError
+from gqteashmd.errors import StageFailedError, TaskError
 from gqteashmd.stages.base import Stage, StageContext, TaskSpec
 from gqteashmd.util.fileio import write_json_atomic
 from gqteashmd.util.seeds import task_rng
@@ -22,7 +22,16 @@ from gqteashmd.vib.wigner import sample_wigner
 log = logging.getLogger("gqteashmd.stages.sampling")
 LINEAR_MOMENTUM_TOLERANCE = 1e-8  # a.u.
 ANGULAR_MOMENTUM_TOLERANCE = 1e-6  # a.u.
-SIGMA_LIMIT = 5.0
+ENERGY_FALSE_ALARM_PROBABILITY = 1e-9  # total, for a correct program, whatever N
+
+
+def mode_energy_p_values(ratio_sums: Any, n_samples: int) -> np.ndarray:
+    """Two-sided tail probability of S_k ~ Gamma(n_samples, 1), per sampled mode."""
+    from scipy.stats import gamma
+
+    sums = np.asarray(ratio_sums, dtype=float)
+    p = 2.0 * np.minimum(gamma.cdf(sums, n_samples), gamma.sf(sums, n_samples))
+    return np.where(np.isfinite(sums), np.minimum(p, 1.0), 0.0)
 
 
 def _momenta(
@@ -57,7 +66,10 @@ class SamplingStage(Stage):
     def run_task(self, ctx: StageContext, task: TaskSpec, task_dir: Path) -> dict[str, Any]:
         options = ctx.config.sampling
         seed = ctx.config.project.seed
-        data = read_frequencies_h5(ctx.upstream_dir("frequencies") / "frequencies.h5")
+        try:
+            data = read_frequencies_h5(ctx.upstream_dir("frequencies") / "frequencies.h5")
+        except ValueError as exc:
+            raise TaskError(str(exc), retryable=False) from exc
         rng = task_rng(seed, self.name, 0)
         samples = sample_wigner(
             data["masses_amu"],
@@ -69,6 +81,18 @@ class SamplingStage(Stage):
             low_frequency_cutoff_cm1=options.low_frequency_cutoff_cm1,
             rng=rng,
         )
+        if not (
+            np.all(np.isfinite(samples.positions_bohr))
+            and np.all(np.isfinite(samples.velocities_au))
+            and np.all(np.isfinite(samples.harmonic_energy_hartree))
+        ):
+            raise TaskError(
+                "The sampler produced non-finite positions, velocities or energies "
+                f"(temperature_K = {options.temperature_K:g}, "
+                f"low_frequency_cutoff_cm1 = {options.low_frequency_cutoff_cm1:g}); "
+                "check the [sampling] values and frequencies.h5",
+                retryable=False,
+            )
         write_samples_h5(
             task_dir / "samples.h5",
             symbols=data["symbols"],
@@ -104,6 +128,7 @@ class SamplingStage(Stage):
             "mean_removed_kinetic_energy_hartree": float(
                 samples.removed_kinetic_energy_hartree.mean()
             ),
+            "mode_energy_ratio_sums": samples.mode_energy_ratio_sums().tolist(),
             "unsampled_frequencies_cm1": freqs[~samples.sampled_modes].tolist(),
         }
 
@@ -128,7 +153,10 @@ class SamplingStage(Stage):
         n = int(summary["n_samples"])
         measured = float(summary["mean_energy_hartree"])
         expected = float(summary["expected_mean_energy_hartree"])
-        tolerance = SIGMA_LIMIT * float(summary["expected_energy_std_hartree"]) / np.sqrt(n)
+        ratio_sums = [float(x) for x in summary["mode_energy_ratio_sums"]]
+        p_values = mode_energy_p_values(ratio_sums, n)
+        threshold = ENERGY_FALSE_ALARM_PROBABILITY / max(len(ratio_sums), 1)
+        min_p = float(p_values.min()) if ratio_sums else None
         task_dir = ctx.layout.task_dir(ctx.stage_dir, "samples")
         for name in ("samples.h5", "samples.xyz"):
             tmp = ctx.stage_dir / f".{name}.{os.getpid()}.tmp"
@@ -145,17 +173,22 @@ class SamplingStage(Stage):
                 "temperature_K": options.temperature_K,
                 "low_frequency_cutoff_cm1": options.low_frequency_cutoff_cm1,
                 "project_seed": ctx.config.project.seed,
+                "mode_energy_min_p_value": min_p,
+                "mode_energy_p_value_threshold": threshold if ratio_sums else None,
             },
         )
-        if abs(measured - expected) > tolerance:
+        if min_p is not None and not min_p >= threshold:
+            k = int(np.argmin(p_values))
             raise StageFailedError(
-                "The sampled harmonic energy is inconsistent with the Wigner distribution "
-                f"({measured:.8e} vs {expected:.8e} Eh, allowed deviation {tolerance:.2e}); "
+                "The sampled harmonic energies are inconsistent with the Wigner distribution "
+                f"(mode {k}: sum of E/<E> over {n} samples = {ratio_sums[k]:.6g}, expected "
+                f"Gamma({n}, 1); two-sided p = {p_values[k]:.2e} < {threshold:.1e}; mean "
+                f"{measured:.8e} vs expected {expected:.8e} Eh); "
                 "this indicates a program error — please report it"
             )
-        if (
-            summary["max_linear_momentum_au"] > LINEAR_MOMENTUM_TOLERANCE
-            or summary["max_angular_momentum_au"] > ANGULAR_MOMENTUM_TOLERANCE
+        if not (
+            summary["max_linear_momentum_au"] <= LINEAR_MOMENTUM_TOLERANCE
+            and summary["max_angular_momentum_au"] <= ANGULAR_MOMENTUM_TOLERANCE
         ):
             raise StageFailedError(
                 "Total momentum was not removed from the samples (max |P| = "

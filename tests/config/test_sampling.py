@@ -29,6 +29,9 @@ def test_defaults_and_values(tmp_path, write_input):
         ("[sampling]\nlow_frequency_cutoff_cm1 = -5.0\n", "low_frequency_cutoff_cm1"),
         ("[sampling]\nlow_frequency_cutoff_cm1 = 0.0\n", "low_frequency_cutoff_cm1"),
         ("[sampling]\nseed = 3\n", "seed"),
+        ("[sampling]\ntemperature_K = inf\n", "temperature_K"),
+        ("[sampling]\ntemperature_K = nan\n", "temperature_K"),
+        ("[sampling]\nlow_frequency_cutoff_cm1 = inf\n", "low_frequency_cutoff_cm1"),
     ],
 )
 def test_invalid(tmp_path, write_input, extra, message):

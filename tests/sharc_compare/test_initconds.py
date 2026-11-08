@@ -78,3 +78,21 @@ def test_missing_header_and_bad_atom_row():
         initconds.parse_initconds(SAMPLE.replace("Eharm", "Eh"))
     with pytest.raises(ValueError, match="malformed"):
         initconds.parse_initconds(SAMPLE.replace("0.28377702  15.99491500", "0.28377702"))
+
+
+def test_file_ending_right_after_an_index_line_is_a_value_error():
+    truncated = SAMPLE.split("Index     1")[0] + "Index     1"
+    with pytest.raises(ValueError, match="Atoms"):
+        initconds.parse_initconds(truncated)
+
+
+def test_run_wigner_rejects_a_bare_string_as_extra_args(tmp_path):
+    spec = importlib.util.spec_from_file_location(
+        "run_wigner", ROOT / "tools" / "sharc_compare" / "run_wigner.py"
+    )
+    run_wigner = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(run_wigner)
+    with pytest.raises(TypeError, match="sequence"):
+        run_wigner.run_wigner(
+            tmp_path, "python", tmp_path / "x.molden", 1, tmp_path / "out", extra_args="-r 7"
+        )

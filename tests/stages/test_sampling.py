@@ -6,13 +6,14 @@ import numpy as np
 import pytest
 
 from gqteashmd.config.loader import load_config
-from gqteashmd.errors import StageFailedError
+from gqteashmd.errors import StageFailedError, TaskError
 from gqteashmd.project.layout import ProjectLayout
 from gqteashmd.stages import sampling as sampling_module
 from gqteashmd.stages.base import StageContext
 from gqteashmd.stages.sampling import SamplingStage
 from gqteashmd.vib.artifacts import write_frequencies_h5
 from gqteashmd.vib.harmonic import harmonic_analysis
+from gqteashmd.vib.wigner import sample_wigner
 
 SYMBOLS = ("O", "H", "H")
 MASSES = np.array([15.9949146, 1.00782503, 1.00782503])
@@ -94,9 +95,8 @@ def test_plan_run_finalize_writes_artifacts(tmp_path, write_input):
     for key in ("temperature_K", "low_frequency_cutoff_cm1", "project_seed", "n_samples"):
         assert key in summary
     assert summary["project_seed"] == 7 and summary["n_samples"] == 400
-    assert abs(summary["mean_energy_hartree"] - summary["expected_mean_energy_hartree"]) < (
-        5 * summary["expected_energy_std_hartree"] / np.sqrt(400)
-    )
+    assert summary["mode_energy_min_p_value"] >= summary["mode_energy_p_value_threshold"]
+    assert len(summary["mode_energy_ratio_sums"]) == 3
     assert summary["max_linear_momentum_au"] < 1e-8
     assert summary["max_angular_momentum_au"] < 1e-6
     assert (ctx.stage_dir / "samples.xyz").read_text().count("sample ") == 400
@@ -146,21 +146,92 @@ def test_single_atom_samples_the_equilibrium(tmp_path, write_input):
 
 
 def test_inconsistent_energy_is_reported_as_a_program_error(tmp_path, write_input, monkeypatch):
-    """Inject a +1 Eh shift into the harmonic energies returned by `sample_wigner` (patched in
-    the stage module), so run_task's summary carries the wrong mean and finalize must catch it."""
+    """Scale the coordinates and momenta of the sampled modes by 2 in `sample_wigner` (patched in
+    the stage module), so the per-mode energy sums are wrong and finalize must catch it."""
     real = sampling_module.sample_wigner
 
-    def shifted(*args, **kwargs):
+    def too_wide(*args, **kwargs):
         samples = real(*args, **kwargs)
         return dataclasses.replace(
-            samples, harmonic_energy_hartree=samples.harmonic_energy_hartree + 1.0
+            samples,
+            q=2.0 * samples.q,
+            p=2.0 * samples.p,
+            harmonic_energy_hartree=4.0 * samples.harmonic_energy_hartree,
         )
 
-    monkeypatch.setattr(sampling_module, "sample_wigner", shifted)
+    monkeypatch.setattr(sampling_module, "sample_wigner", too_wide)
     ctx = _context(tmp_path, write_input)
     stage, results = _run(ctx)
     with pytest.raises(StageFailedError, match="program error"):
         stage.finalize(ctx, results)
+    summary = json.loads((ctx.stage_dir / "samples.json").read_text())
+    assert summary["mode_energy_min_p_value"] < summary["mode_energy_p_value_threshold"]
+
+
+def _diatomic_samples(seed, n, scale=1.0, temperature_K=0.0):
+    masses = np.array([12.0, 15.9949146])
+    coords = np.array([[0.0, 0.0, 0.0], [0.0, 0.0, 2.13]])
+    h = np.zeros((6, 6))
+    h[2, 2] = h[5, 5] = 0.5
+    h[2, 5] = h[5, 2] = -0.5
+    analysis = harmonic_analysis(masses, coords, h)
+    s = sample_wigner(
+        masses,
+        coords,
+        analysis.frequencies_cm1,
+        analysis.modes_mass_weighted,
+        n_samples=n,
+        temperature_K=temperature_K,
+        low_frequency_cutoff_cm1=10.0,
+        rng=np.random.default_rng(seed),
+    )
+    return dataclasses.replace(s, q=scale * s.q, p=scale * s.p)
+
+
+def test_correct_sampler_never_trips_the_energy_check_at_one_sample():
+    threshold = sampling_module.ENERGY_FALSE_ALARM_PROBABILITY
+    for seed in range(200):
+        s = _diatomic_samples(seed, 1, temperature_K=300.0 if seed % 2 else 0.0)
+        p = sampling_module.mode_energy_p_values(s.mode_energy_ratio_sums(), 1)
+        assert p.min() >= threshold, f"seed {seed}"
+
+
+def test_a_ten_percent_width_error_in_one_mode_is_detected():
+    s = _diatomic_samples(3, 2000, scale=1.1)
+    p = sampling_module.mode_energy_p_values(s.mode_energy_ratio_sums(), 2000)
+    assert p.min() < sampling_module.ENERGY_FALSE_ALARM_PROBABILITY
+    ok = _diatomic_samples(3, 2000)
+    p_ok = sampling_module.mode_energy_p_values(ok.mode_energy_ratio_sums(), 2000)
+    assert p_ok.min() >= sampling_module.ENERGY_FALSE_ALARM_PROBABILITY
+
+
+def test_non_finite_energy_sums_fail_the_check():
+    p = sampling_module.mode_energy_p_values([float("nan")], 10)
+    assert p[0] == 0.0
+
+
+def test_missing_frequencies_file_is_a_non_retryable_task_error(tmp_path, write_input):
+    ctx = _context(tmp_path, write_input)
+    (ctx.upstream["frequencies"] / "frequencies.h5").unlink()
+    stage = SamplingStage()
+    task_dir = ctx.layout.task_dir(ctx.stage_dir, "samples")
+    task_dir.mkdir(parents=True)
+    with pytest.raises(TaskError, match="--rerun-from frequencies") as info:
+        stage.run_task(ctx, stage.plan(ctx)[0], task_dir)
+    assert info.value.retryable is False
+
+
+def test_small_imaginary_mode_is_listed_and_warned_about(tmp_path, write_input, caplog):
+    ctx = _context(tmp_path, write_input)
+    with h5py.File(ctx.upstream["frequencies"] / "frequencies.h5", "r+") as f:
+        f["frequencies"][0] = -7.5
+    stage, results = _run(ctx)
+    with caplog.at_level("WARNING", logger="gqteashmd.stages.sampling"):
+        stage.finalize(ctx, results)
+    summary = json.loads((ctx.stage_dir / "samples.json").read_text())
+    assert summary["unsampled_frequencies_cm1"] == [-7.5]
+    assert summary["n_sampled_modes"] == 2
+    assert "-7.5" in caplog.text and "not sampled" in caplog.text
 
 
 def test_residual_momentum_is_reported_as_a_program_error(tmp_path, write_input):

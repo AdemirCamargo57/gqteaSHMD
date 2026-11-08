@@ -26,6 +26,8 @@ def run_wigner(
     extra_args: Sequence[str] = (),
 ) -> list[Path]:
     """Execute ``wigner.py -n N [extra_args] molden`` in ``out_dir``; return the new files."""
+    if isinstance(extra_args, str):
+        raise TypeError("extra_args must be a sequence of strings, not a single string")
     out_dir.mkdir(parents=True, exist_ok=True)
     before = set(os.listdir(out_dir))
     env = dict(os.environ)
