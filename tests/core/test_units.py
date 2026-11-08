@@ -13,3 +13,9 @@ def test_codata_2018_values():
 
 def test_angstrom_to_bohr_is_the_inverse():
     assert math.isclose(units.ANGSTROM_TO_BOHR * units.BOHR_IN_ANGSTROM, 1.0, rel_tol=1e-15)
+
+
+def test_boltzmann_constant():
+    assert units.BOLTZMANN_HARTREE_PER_K == 3.1668115634556e-06
+    # 300 K is about 208.5 cm^-1
+    assert abs(300 * units.BOLTZMANN_HARTREE_PER_K * units.HARTREE_IN_CM1 - 208.51) < 0.01

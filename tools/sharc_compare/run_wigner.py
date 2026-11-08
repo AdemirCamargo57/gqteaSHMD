@@ -13,11 +13,21 @@ from __future__ import annotations
 import argparse
 import os
 import subprocess
+from collections.abc import Sequence
 from pathlib import Path
 
 
-def run_wigner(sharc_home: Path, python: str, molden: Path, n: int, out_dir: Path) -> list[Path]:
-    """Execute ``wigner.py -n N molden`` in ``out_dir``; return the files it created."""
+def run_wigner(
+    sharc_home: Path,
+    python: str,
+    molden: Path,
+    n: int,
+    out_dir: Path,
+    extra_args: Sequence[str] = (),
+) -> list[Path]:
+    """Execute ``wigner.py -n N [extra_args] molden`` in ``out_dir``; return the new files."""
+    if isinstance(extra_args, str):
+        raise TypeError("extra_args must be a sequence of strings, not a single string")
     out_dir.mkdir(parents=True, exist_ok=True)
     before = set(os.listdir(out_dir))
     env = dict(os.environ)
@@ -25,7 +35,14 @@ def run_wigner(sharc_home: Path, python: str, molden: Path, n: int, out_dir: Pat
     # PYTHONPATH is replaced, not extended: SHARC's own conda environment must not see ours.
     env["PYTHONPATH"] = f"{sharc_home / 'lib'}:{sharc_home / 'pysharc'}"
     proc = subprocess.run(
-        [python, str(sharc_home / "bin" / "wigner.py"), "-n", str(n), str(molden.resolve())],
+        [
+            python,
+            str(sharc_home / "bin" / "wigner.py"),
+            "-n",
+            str(n),
+            *extra_args,
+            str(molden.resolve()),
+        ],
         cwd=out_dir,
         env=env,
         capture_output=True,
@@ -44,9 +61,20 @@ def main() -> None:
     p.add_argument("--molden", required=True)
     p.add_argument("--n", type=int, required=True, help="number of geometries to sample")
     p.add_argument("--out-dir", required=True)
+    p.add_argument(
+        "--extra",
+        nargs=argparse.REMAINDER,
+        default=[],
+        help="extra wigner.py arguments, e.g. --extra -r 7 -t 300 (must come last)",
+    )
     args = p.parse_args()
     created = run_wigner(
-        Path(args.sharc_home), args.python, Path(args.molden), args.n, Path(args.out_dir)
+        Path(args.sharc_home),
+        args.python,
+        Path(args.molden),
+        args.n,
+        Path(args.out_dir),
+        args.extra,
     )
     for path in created:
         print(path)

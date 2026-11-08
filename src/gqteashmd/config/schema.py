@@ -213,6 +213,12 @@ class FrequenciesSection(_Section):
     imaginary_cutoff_cm1: float = Field(default=20.0, ge=0)
 
 
+class SamplingSection(_Section):
+    n_samples: int = Field(default=200, ge=1)
+    temperature_K: float = Field(default=0.0, ge=0, allow_inf_nan=False)
+    low_frequency_cutoff_cm1: float = Field(default=10.0, gt=0, allow_inf_nan=False)
+
+
 class ShmdConfig(_Section):
     schema_version: Literal[1] = 1
     project: ProjectSection
@@ -223,6 +229,7 @@ class ShmdConfig(_Section):
     electronic: ElectronicSection | None = None
     optimize: OptimizeSection = Field(default_factory=OptimizeSection)
     frequencies: FrequenciesSection = Field(default_factory=FrequenciesSection)
+    sampling: SamplingSection = Field(default_factory=SamplingSection)
 
     @model_validator(mode="after")
     def _consistent(self) -> ShmdConfig:

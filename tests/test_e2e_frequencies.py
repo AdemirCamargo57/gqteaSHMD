@@ -47,3 +47,27 @@ def test_casscf_frequencies_by_finite_differences(tmp_path, write_input):
     residual = freq["fd_consistency_residual_hartree_per_bohr"]
     print("ethylene SA-CASSCF FD consistency residual (Eh/bohr):", residual)
     assert residual < 1e-4
+
+
+def test_sampling_end_to_end_and_seed_change(tmp_path, write_input):
+    import h5py
+    import numpy as np
+
+    path = write_input(tmp_path, extra=HF + "[sampling]\nn_samples = 20\n")
+    seeded = 'name = "test"\nseed = {}'
+    original = path.read_text().replace('name = "test"', seeded.format(1))
+    path.write_text(original)
+    assert main(["run", str(path)]) == 0
+    layout = ProjectLayout(load_config(path).config.project.directory)
+    sdir = layout.stage_dir(3, "sampling")
+    with h5py.File(sdir / "samples.h5", "r") as f:
+        assert f["positions"].shape[0] == 20
+        first = f["positions"][()]
+    assert json.loads((sdir / "samples.json").read_text())["temperature_K"] == 0
+    assert main(["run", str(path)]) == 0  # up to date
+    path.write_text(original.replace(seeded.format(1), seeded.format(2)))
+    assert main(["run", str(path)]) == 3  # sampling is stale
+    assert main(["run", str(path), "--rerun-from", "sampling"]) == 0
+    with h5py.File(sdir / "samples.h5", "r") as f:
+        assert f["positions"].shape[0] == 20
+        assert not np.allclose(f["positions"][()], first)

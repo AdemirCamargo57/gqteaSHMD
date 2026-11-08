@@ -110,7 +110,12 @@ def test_default_pipeline_order(tmp_path, write_input):
     from gqteashmd.stages.registry import default_pipeline
 
     cfg = load_config(write_input(tmp_path)).config
-    assert [s.name for s in default_pipeline(cfg)] == ["prepare", "optimize", "frequencies"]
+    assert [s.name for s in default_pipeline(cfg)] == [
+        "prepare",
+        "optimize",
+        "frequencies",
+        "sampling",
+    ]
 
 
 def test_missing_electronic_section_is_reported(tmp_path, write_input):
