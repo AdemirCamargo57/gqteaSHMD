@@ -1,10 +1,10 @@
 # gqteashmd — User Manual
 
-**Version:** 0.1.0.dev0 (development snapshot, 2026-11-07)
+**Version:** 0.1.0.dev0 (development snapshot, 2026-11-08)
 **Program:** `gqteashmd`, automated surface-hopping molecular dynamics with PySCF
 **Licence:** MIT
 
-> **Read this first: what works today.** This is an early development version. The **workflow engine is complete**: input file (with hardware and per-stage resource settings), checks before a run (preflight), project management, parallel tasks, crash-safe resume, graceful stop, review pauses, change detection, and a record of the software used (provenance). Three stages exist: **`prepare`** (validates and stores the molecule), **`optimize`** (optional S0 geometry optimization with geomeTRIC) and **`frequencies`** (S0 Hessian, harmonic frequencies, normal modes, Molden file). The last two work at the level of the `[electronic]` input section. The **electronic-structure layer** (PySCF: SCF, SA-CASSCF, TDA, TDDFT, CIS, TDHF; energies, analytic gradients, transition dipoles, the S0 Hessian) is **implemented** and validated against SHARC 4.1 and other programs; you can also use it directly with **`gqteashmd single-point`** (§5.3). **Wigner sampling, initial conditions, dynamics and analysis are *planned*; so is the use of nonadiabatic couplings and wavefunction overlaps in dynamics** (SA-CASSCF couplings and the overlap engine exist as a library, §8.6.8, but no command reaches them). They are described in §8.8–§8.13 so that you can see in advance how results will be computed. Every section is marked:
+> **Read this first: what works today.** This is an early development version. The **workflow engine is complete**: input file (with hardware and per-stage resource settings), checks before a run (preflight), project management, parallel tasks, crash-safe resume, graceful stop, review pauses, change detection, and a record of the software used (provenance). Four stages exist: **`prepare`** (validates and stores the molecule), **`optimize`** (optional S0 geometry optimization with geomeTRIC), **`frequencies`** (S0 Hessian, harmonic frequencies, normal modes, Molden file) and **`sampling`** (harmonic Wigner sampling of initial geometries and velocities, from the frequencies). `optimize` and `frequencies` work at the level of the `[electronic]` input section. The **electronic-structure layer** (PySCF: SCF, SA-CASSCF, TDA, TDDFT, CIS, TDHF; energies, analytic gradients, transition dipoles, the S0 Hessian) is **implemented** and validated against SHARC 4.1 and other programs; you can also use it directly with **`gqteashmd single-point`** (§5.3). **Excitations, initial-state selection, dynamics and analysis are *planned*; so is the use of nonadiabatic couplings and wavefunction overlaps in dynamics** (SA-CASSCF couplings and the overlap engine exist as a library, §8.6.8, but no command reaches them). They are described in §8.9–§8.13 so that you can see in advance how results will be computed. Every section is marked:
 >
 > - **[IMPLEMENTED]**: available in this version.
 > - **[PLANNED]**: designed but not yet available; details may still change.
@@ -29,14 +29,14 @@
 
 ## 1. What the program does
 
-`gqteashmd` will run a complete photodynamics study from **one input file**. The stages run in this order:
+`gqteashmd` will run a complete photodynamics study from **one input file**; the first four stages below exist today. The stages run in this order:
 
 | Order | Stage | What it does | Status |
 |---|---|---|---|
 | 0 | `prepare` | Reads and checks the molecule (XYZ syntax, elements, charge and multiplicity); stores a normalized copy | **[IMPLEMENTED]** |
 | 1 | `optimize` (optional) | Ground-state (S0) geometry optimization with geomeTRIC, on the surface of the `[electronic]` section | **[IMPLEMENTED, P4]** |
 | 2 | `frequencies` | S0 Hessian, harmonic frequencies and normal modes (analytic Hessian or finite differences of gradients); Molden, HDF5 and JSON output | **[IMPLEMENTED, P4]** |
-| 3 | `sampling` | Wigner sampling of initial geometries and velocities | [PLANNED, P5] |
+| 3 | `sampling` | Harmonic Wigner sampling of initial geometries and velocities, at zero or finite temperature | **[IMPLEMENTED, P5]** |
 | 4 | `excitations` | Vertical excitation energies and oscillator strengths at each sampled geometry | [PLANNED, P6] |
 | 5 | `selection` | Choice of the initial electronic state for each trajectory | [PLANNED, P6] |
 | 6 | `dynamics` | Surface-hopping trajectories, run in parallel | [PLANNED, P7] |
@@ -92,7 +92,7 @@ H    0.000000    0.757200   -0.469200
 H    0.000000   -0.757200   -0.469200
 EOF
 gqteashmd validate input.toml              # checks the input; runs nothing
-gqteashmd run input.toml                   # runs prepare, optimize and frequencies (about 15 s here)
+gqteashmd run input.toml                   # runs prepare, optimize, frequencies and sampling (about 17 s here)
 gqteashmd status input.toml                # shows progress
 ```
 
@@ -109,22 +109,25 @@ Input file /home/you/gqteashmd-runs/water/input.toml is valid.
 Expected output of `run` (real output from a development machine; the dates and times differ):
 
 ```text
-2026-11-07 23:52:33 INFO    gqteashmd.orchestrator: Stage prepare: starting
-2026-11-07 23:52:36 INFO    gqteashmd.orchestrator: Stage prepare: done (1/1 tasks)
-2026-11-07 23:52:36 INFO    gqteashmd.orchestrator: Stage optimize: starting
-2026-11-07 23:52:41 INFO    gqteashmd.orchestrator: Stage optimize: done (1/1 tasks)
-2026-11-07 23:52:41 INFO    gqteashmd.orchestrator: Stage frequencies: starting
-2026-11-07 23:52:43 INFO    gqteashmd.orchestrator: Stage frequencies: done (1/1 tasks)
-Workflow complete: 3 stage(s) run, 0 already up to date, 0 skipped.
+2026-11-08 09:12:02 INFO    gqteashmd.orchestrator: Stage prepare: starting
+2026-11-08 09:12:03 INFO    gqteashmd.orchestrator: Stage prepare: done (1/1 tasks)
+2026-11-08 09:12:03 INFO    gqteashmd.orchestrator: Stage optimize: starting
+2026-11-08 09:12:06 INFO    gqteashmd.orchestrator: Stage optimize: done (1/1 tasks)
+2026-11-08 09:12:06 INFO    gqteashmd.orchestrator: Stage frequencies: starting
+2026-11-08 09:12:08 INFO    gqteashmd.orchestrator: Stage frequencies: done (1/1 tasks)
+2026-11-08 09:12:08 INFO    gqteashmd.orchestrator: Stage sampling: starting
+2026-11-08 09:12:10 INFO    gqteashmd.orchestrator: Stage sampling: done (1/1 tasks)
+Workflow complete: 4 stage(s) run, 0 already up to date, 0 skipped.
 ```
 
 Running the same command again recomputes nothing:
 
 ```text
-2026-11-07 23:52:46 INFO    gqteashmd.orchestrator: Stage prepare: up to date
-2026-11-07 23:52:46 INFO    gqteashmd.orchestrator: Stage optimize: up to date
-2026-11-07 23:52:46 INFO    gqteashmd.orchestrator: Stage frequencies: up to date
-Workflow complete: 0 stage(s) run, 3 already up to date, 0 skipped.
+2026-11-08 09:12:13 INFO    gqteashmd.orchestrator: Stage prepare: up to date
+2026-11-08 09:12:13 INFO    gqteashmd.orchestrator: Stage optimize: up to date
+2026-11-08 09:12:13 INFO    gqteashmd.orchestrator: Stage frequencies: up to date
+2026-11-08 09:12:13 INFO    gqteashmd.orchestrator: Stage sampling: up to date
+Workflow complete: 0 stage(s) run, 4 already up to date, 0 skipped.
 ```
 
 Expected output of `status`:
@@ -136,9 +139,10 @@ stage           status         done  failed  pending  running  message
 prepare         done              1       0        0        0  1/1 tasks succeeded
 optimize        done              1       0        0        0  1/1 tasks succeeded
 frequencies     done              1       0        0        0  1/1 tasks succeeded
+sampling        done              1       0        0        0  1/1 tasks succeeded
 ```
 
-The results are in `~/gqteashmd-runs/water/run/` (see §6). §5.4 shows what the files of this run contain.
+The results are in `~/gqteashmd-runs/water/run/` (see §6). §5.4 and §5.5 show what the files of this run contain. With the default input the `sampling` stage draws 200 samples; the captured output above and in §5.5 used `n_samples = 20` (the log lines do not show the number).
 
 ---
 
@@ -215,16 +219,21 @@ convergence = "GAU"           # geomeTRIC set: GAU, GAU_LOOSE, GAU_TIGHT, GAU_VE
 method = "auto"               # "auto" | "analytic" | "finite_difference" (no analytic for casscf)
 fd_step_bohr = 0.005          # displacement for finite differences
 imaginary_cutoff_cm1 = 20.0   # imaginary modes above this wavenumber are errors
+
+[sampling]
+n_samples = 200               # number of Wigner-sampled initial geometries and velocities
+temperature_K = 0.0           # 0 = zero-point (vibrational ground state) distribution
+low_frequency_cutoff_cm1 = 10.0   # modes below this wavenumber are not sampled
 ```
 
-The template's `[electronic]` block is active (TDA-B3LYP/def2-SVP with S0 and two excited states), because `optimize` and `frequencies` need it, and so does `single-point`; the CASSCF alternative is given as comments. `[optimize]` and `[frequencies]` show their defaults. The template omits one key, `execution.poll_interval_s` (default 0.5). The table lists every key:
+The template's `[electronic]` block is active (TDA-B3LYP/def2-SVP with S0 and two excited states), because `optimize` and `frequencies` need it, and so does `single-point`; the CASSCF alternative is given as comments. `[optimize]`, `[frequencies]` and `[sampling]` show their defaults. The template omits one key, `execution.poll_interval_s` (default 0.5). The table lists every key:
 
 | Key | Type | Default | Allowed | Meaning |
 |---|---|---|---|---|
 | `schema_version` | int | 1 | 1 | Input-format version |
 | `project.name` | str | — (required) | `[A-Za-z0-9_.-]+` | Name used in logs and file comments |
 | `project.directory` | path | — (required) | any local Linux disk | Where all results go (created if missing). Checked by preflight (§7.9) |
-| `project.seed` | int | 12345 | ≥ 0 | Master seed; every random choice will derive from it [used from P5] |
+| `project.seed` | int | 12345 | ≥ 0 | Master seed; every random choice derives from it. Since P5 it controls the Wigner samples (§8.8): the same input gives the same samples, another seed gives other samples. Changing it after `sampling` has run is a stale-input stop (§7.5) |
 | `molecule.geometry` | path | — (required) | existing XYZ file | Starting geometry |
 | `molecule.charge` | int | 0 | any integer | Total charge $q$ |
 | `molecule.multiplicity` | int | 1 | ≥ 1 | $M = 2S+1$; checked against the electron count (§8.2) |
@@ -260,6 +269,9 @@ The template's `[electronic]` block is active (TDA-B3LYP/def2-SVP with S0 and tw
 | `frequencies.method` | str | `"auto"` | `"auto"`, `"analytic"`, `"finite_difference"` | How the S0 Hessian is obtained (§8.7). `"auto"` is `"analytic"` for `tda`/`tddft` and `"finite_difference"` for `casscf`. `"analytic"` with `casscf` is an input error |
 | `frequencies.fd_step_bohr` | float | 0.005 | > 0 and ≤ 0.1 | Cartesian displacement $h$ of the central differences (bohr); used only by `"finite_difference"` |
 | `frequencies.imaginary_cutoff_cm1` | float | 20.0 | ≥ 0 | An imaginary mode with $\tilde\nu < -$ this value stops the workflow; smaller ones only warn (§8.7). It is a check on the finished results only: changing it does not recompute anything (§8.3) |
+| `sampling.n_samples` | int | 200 | ≥ 1 | Number $N_s$ of Wigner samples (initial geometries with velocities) to draw (§8.8) |
+| `sampling.temperature_K` | float | 0.0 | ≥ 0 | Temperature $T$ of the thermal Wigner distribution, in kelvin. `0` is the vibrational ground state (zero-point distribution) (§8.8) |
+| `sampling.low_frequency_cutoff_cm1` | float | 10.0 | > 0 | Modes with wavenumber $\tilde\nu$ below this value, including the small imaginary modes that `frequencies` accepts, are **not sampled**: they stay at the equilibrium coordinate with zero velocity, and a warning lists them (§8.8). `0` is not allowed |
 
 **Hardware keys.** `total_cores` and `total_memory_mb` are required, so that the input file records which machine the settings were written for. The input is rejected if the settings do not fit inside them (see the rules below and §8.4). The program also detects the real machine; if your values exceed it, `run` only **warns** (§7.9).
 
@@ -291,7 +303,7 @@ threads_per_task = 32
 
 - **Merge rule:** a key you leave out of an override takes the global value from `[resources]`. In the second example, `optimize` uses `memory_mb_per_task = 4000`.
 - **Fit rule:** for the global settings **and for every override** (after merging), the input must satisfy $n_p n_t \le N_{\text{cores}}$ and $n_p m \le M_{\text{total}}$ (§8.4). Otherwise the input is rejected, naming `[resources]` or `[resources.stages.<name>]` and the numbers. Note that an override that sets only `max_parallel_tasks` is also checked against the global `threads_per_task`.
-- **Stage names:** an override for a stage that does not exist is an input error (`[resources.stages] names unknown stage(s): …`). The stages in this version are `prepare`, `optimize` and `frequencies`.
+- **Stage names:** an override for a stage that does not exist is an input error (`[resources.stages] names unknown stage(s): …`). The stages in this version are `prepare`, `optimize`, `frequencies` and `sampling`.
 
 #### The `[electronic]` section
 **[IMPLEMENTED]** (P3a). A complete example for ethylene, SA2-CASSCF(2,2)/6-31G\*:
@@ -338,6 +350,14 @@ The rules, all checked when the input is loaded (`validate`, `run`, `single-poin
 - **`singlets`** does not change the S0 calculation of `tda` and `tddft` (only S0 is computed for the gradients and the Hessian). For `casscf` it does, because the state average defines the S0 surface (§8.7).
 - **Fingerprints (§8.3):** `optimize` depends on `[electronic]` and `[optimize]`; `frequencies` on `[electronic]` and `[frequencies]`. Changing a key of one of these sections after results exist is a stale-input stop (§7.5).
 
+#### The `[sampling]` section
+**[IMPLEMENTED]** (P5). The section is optional; if it is absent, the defaults of the table apply (200 samples, $T = 0$ K, cutoff 10 cm⁻¹).
+
+- **Requires `frequencies`.** `sampling` reads `frequencies.h5` of the stage before it; it needs no `[electronic]` key of its own.
+- **`project.seed` controls the samples.** The random numbers come from a generator that depends only on `project.seed` and on the stage (§8.8, seed hierarchy), so a project run twice with the same input gives identical samples, also after a crash and a restart.
+- **Fingerprint (§8.3):** `sampling` depends on `[sampling]`, `project.seed` and the fingerprint of `frequencies`. Changing any of them after results exist is a stale-input stop (§7.5): use `--rerun-from sampling` to draw new samples and keep the earlier stages.
+- **Input errors** (exit code 2, found by `validate`): `n_samples < 1`, `temperature_K < 0` or `low_frequency_cutoff_cm1 <= 0`.
+
 ### 4.3 The XYZ geometry file
 **[IMPLEMENTED]**
 
@@ -353,8 +373,8 @@ The rules, all checked when the input is loaded (`validate`, `run`, `single-poin
 - Every error message gives the line number, for example `line 3: expected 'symbol x y z'`.
 
 ### 4.4 Planned sections
-**[PLANNED]** Their key names and meanings are in the master plan §4.3 (`[optimize]` and `[frequencies]` are implemented, see above). Each sub-project adds the sections it needs, and this manual is updated each time. The sections for the later stages are not part of the input yet, because their keys depend on decisions that are still open:
-- `[sampling]` (P5); `[excitations]`, `[selection]` (P6); `[dynamics]` (P7); `[analysis]` (P8).
+**[PLANNED]** Their key names and meanings are in the master plan §4.3 (`[optimize]`, `[frequencies]` and `[sampling]` are implemented, see above). Each sub-project adds the sections it needs, and this manual is updated each time. The sections for the later stages are not part of the input yet, because their keys depend on decisions that are still open:
+- `[excitations]`, `[selection]` (P6); `[dynamics]` (P7); `[analysis]` (P8).
 - Additional `[electronic]` keys: density fitting, MC-PDFT, triplet states (with intersystem crossing).
 - A `scratch` directory key in the input file (the backend takes a scratch directory and has no checkpoint file since P3b, §8.6.8; the input key arrives with the stage that uses it).
 
@@ -580,6 +600,47 @@ The three frequencies are the bend (2170 cm⁻¹) and the two stretches of water
 gqteashmd: error: Stage 'frequencies' has results produced from different inputs (the input file or an earlier stage changed). Run `gqteashmd run /home/you/gqteashmd-runs/water/input.toml --rerun-from frequencies` to move the old results aside and recompute from this stage onward.
 ```
 
+### 5.5 Example: `sampling` on water
+**[IMPLEMENTED]** (P5). Real output from a development machine: the run of §3 (water, HF/STO-3G, analytic Hessian) with `[sampling] n_samples = 20`, otherwise the defaults ($T = 0$ K, `low_frequency_cutoff_cm1 = 10`, `project.seed = 12345`). All four stages took 8 s of computation in total; `sampling` itself took about 2 s, most of it Python start-up. The directory `03_sampling/` holds:
+
+| File | Contents | Units |
+|---|---|---|
+| `samples.h5` | Positions and velocities of all samples, the normal-mode coordinates and momenta behind them, energies; every dataset has a `units` attribute (§6) | bohr, bohr per atomic unit of time, $E_h$, ... |
+| `samples.xyz` | One XYZ frame per sample, for a viewer; the comment line holds the harmonic energy | Å ($E_h$ in the comment) |
+| `samples.json` | Summary and the numbers used by the checks (§6, §8.8) | $E_h$, a.u. |
+| `tasks/samples/` | `task.json`, `result.json`, `worker.log`, and the original `samples.h5` and `samples.xyz` of the task | |
+
+The first frame of `samples.xyz` (compare with the equilibrium geometry in §5.4: the O–H distances are 1.057 Å and 1.099 Å here instead of 0.989 Å, because each sample is a snapshot of the zero-point motion):
+
+```text
+3
+sample 1  E_harm = 0.0215368999 Eh
+O     -0.0000000000    0.0018898404    0.1563234572
+H     -0.0000000000    0.8130669794   -0.5215081833
+H      0.0000000000   -0.8430601202   -0.5466669159
+```
+
+`samples.json`:
+
+```json
+{"schema_version": 1, "n_samples": 20, "n_vibrations": 3, "n_sampled_modes": 3,
+ "unsampled_frequencies_cm1": [], "temperature_K": 0.0, "low_frequency_cutoff_cm1": 10.0,
+ "project_seed": 12345,
+ "mean_energy_hartree": 0.030444773642583044,
+ "expected_mean_energy_hartree": 0.024377109264918033,
+ "expected_energy_std_hartree": 0.014609203391788141,
+ "mean_kinetic_energy_hartree": 0.013506766656044491,
+ "mean_removed_kinetic_energy_hartree": 1.4501743702676359e-05,
+ "max_linear_momentum_au": 1.9860273225978185e-15,
+ "max_angular_momentum_au": 1.5543122344752192e-15}
+```
+
+(The file itself has its keys in alphabetical order.) How to read it:
+
+- The expected mean harmonic energy is the zero-point energy $\tfrac12\sum_k\hbar\omega_k = 0.024377\,E_h$ (the three frequencies of §5.4). The 20 samples average $0.030445\,E_h$. The stage accepts a deviation of up to $5\,\sigma_E/\sqrt{N_s} = 5\times0.014609/\sqrt{20} = 0.0163\,E_h$ (§8.8); the deviation here, $0.0061\,E_h$, is $1.9$ standard errors of the mean, which is ordinary statistical noise for 20 samples. With 200 samples the standard error is about 0.001 $E_h$.
+- The mean kinetic energy, $0.0135\,E_h$, scatters around half the zero-point energy, $\tfrac14\sum_k\hbar\omega_k = 0.0122\,E_h$, minus the energy removed with the translation and rotation of each sample ($1.5\times10^{-5}\,E_h$ on average, §8.8).
+- The total linear and angular momentum of every sample is zero to $2\times10^{-15}$ atomic units.
+
 ---
 
 ## 6. Project directory and output files
@@ -624,7 +685,17 @@ Stage directories are numbered by the position of the stage in the pipeline and 
                                 #   finite differences: reference/, fd_000_plus/, fd_000_minus/, ... fd_<3N-1>_minus/
 ```
 
-A disabled `optimize` stage still occupies number 01, so `frequencies` stays in `02_frequencies/`. In `fd_<k>_plus` and `fd_<k>_minus`, $k$ counts the Cartesian coordinates ($x,y,z$ of atom 1, then atom 2, ...) from 0. PySCF's temporary files of a task are written to its own `scratch/` directory inside the project, never to the system temporary directory.
+and, after `frequencies`:
+
+```text
+└── 03_sampling/                # [IMPLEMENTED, P5]
+    ├── samples.h5              # positions, velocities, normal-mode coordinates, energies (with units)
+    ├── samples.xyz             # one XYZ frame per sample, for a viewer
+    ├── samples.json            # summary and check values
+    └── tasks/samples/          # task.json, result.json, worker.log, and the task's own samples.h5 / samples.xyz
+```
+
+A disabled `optimize` stage still occupies number 01, so `frequencies` stays in `02_frequencies/` and `sampling` in `03_sampling/`. In `fd_<k>_plus` and `fd_<k>_minus`, $k$ counts the Cartesian coordinates ($x,y,z$ of atom 1, then atom 2, ...) from 0. PySCF's temporary files of a task are written to its own `scratch/` directory inside the project, never to the system temporary directory.
 
 **`optimize.json`** [IMPLEMENTED]:
 
@@ -674,6 +745,42 @@ A disabled `optimize` stage still occupies number 01, so `frequencies` stays in 
 | `reduced_masses` | $n$ | amu | Reduced masses |
 
 **`frequencies.molden`** [IMPLEMENTED]: Molden format with `[Atoms] AU`, `[FREQ]` (cm⁻¹), `[FR-COORD]` (bohr) and `[FR-NORM-COORD]` (the `modes_cartesian` columns, one `vibration k` block per mode). Imaginary modes appear as negative wavenumbers.
+
+**`samples.json`** [IMPLEMENTED]:
+
+| Field | Meaning | Unit |
+|---|---|---|
+| `schema_version` | File-format version (1) | — |
+| `n_samples` | Number of samples $N_s$ | — |
+| `n_vibrations` | Number $n$ of vibrational modes in `frequencies.h5` | — |
+| `n_sampled_modes` | Number of modes that were sampled (wavenumber $\ge$ `low_frequency_cutoff_cm1`) | — |
+| `unsampled_frequencies_cm1` | Wavenumbers of the modes that were not sampled (imaginary ones negative); empty if none | cm⁻¹ |
+| `temperature_K`, `low_frequency_cutoff_cm1`, `project_seed` | The `[sampling]` and `[project]` values used | K, cm⁻¹, — |
+| `mean_energy_hartree` | Mean over the samples of the harmonic energy $E_{\text{harm}}$ (§8.8) | $E_h$ |
+| `expected_mean_energy_hartree` | $\langle E\rangle$, the exact mean of the distribution (§8.8) | $E_h$ |
+| `expected_energy_std_hartree` | $\sigma_E$, the exact standard deviation of $E_{\text{harm}}$ of one sample (§8.8) | $E_h$ |
+| `mean_kinetic_energy_hartree` | Mean kinetic energy of the final velocities (after the momentum removal) | $E_h$ |
+| `mean_removed_kinetic_energy_hartree` | Mean of the kinetic energy removed with the translation and rotation | $E_h$ |
+| `max_linear_momentum_au`, `max_angular_momentum_au` | Largest $\lvert\mathbf P\rvert$ and $\lvert\mathbf L\rvert$ over the samples, from the final velocities | atomic units |
+
+**`samples.h5`** [IMPLEMENTED] (HDF5; file attributes `schema_version` = 1, `gqteashmd_version`, `temperature_K`, `low_frequency_cutoff_cm1`, `project_seed`, `n_samples` and `expected_mean_energy_hartree`). Every numeric dataset has a string attribute `units`. $N$ is the number of atoms, $n$ the number of vibrational modes and $N_s$ the number of samples. Dynamics will start from `positions` and `velocities`; `q` and `p` are kept for checks:
+
+| Dataset | Shape | Unit | Meaning |
+|---|---|---|---|
+| `symbols` | $N$ | — | Element symbols |
+| `masses` | $N$ | amu | Masses used (the same as in `frequencies.h5`) |
+| `equilibrium_coordinates` | $N\times3$ | bohr | The geometry that was sampled around |
+| `frequencies` | $n$ | cm⁻¹ | Wavenumbers of all modes |
+| `sampled_modes` | $n$ | 1 = sampled, 0 = not | Which modes were sampled |
+| `positions` | $N_s\times N\times3$ | bohr | Geometry of each sample |
+| `velocities` | $N_s\times N\times3$ | bohr per atomic unit of time | Velocity of each sample, translation and rotation removed |
+| `q` | $N_s\times n_s$ | $\sqrt{m_e}\,a_0$ | Mass-weighted normal coordinates $Q_k$ of the sampled modes ($n_s$ = `n_sampled_modes`) |
+| `p` | $N_s\times n_s$ | $\sqrt{m_e}\,a_0$ per atomic unit of time | Their conjugate momenta $P_k$ |
+| `harmonic_energy` | $N_s$ | $E_h$ | $E_{\text{harm}}$ of each sample, from $Q$ and $P$ before the momentum removal (§8.8) |
+| `kinetic_energy` | $N_s$ | $E_h$ | Kinetic energy of the final velocities |
+| `removed_kinetic_energy` | $N_s$ | $E_h$ | Kinetic energy taken away with the translation and rotation |
+
+**`samples.xyz`** [IMPLEMENTED]: the $N_s$ geometries in Å, one XYZ frame each; the comment line is `sample k  E_harm = … Eh`.
 
 **`provenance.json`** [IMPLEMENTED]. Every `gqteashmd run` appends one record once the controller holds the project lock and has opened `state.db` (one run is one record), so the file shows the software behind every run of the project. A run that is later refused because a stage is stale (`StaleStageError`, §7.5) has a record; a run refused by the preflight checks, by the lock, or by a corrupt `state.db` has none. Open it with any text editor, or with `python -m json.tool .gqteashmd/provenance.json`.
 
@@ -787,7 +894,7 @@ pause_after = ["optimize"]         # example: stop after the geometry optimizati
 
 - Review the results in the stage directory, then run **the same command again**. The finished stage is "up to date", so the run continues with the next stage and does not pause again.
 - A stage that was **skipped** (disabled in the input) never pauses. A stage that was already up to date from an earlier run does not pause either.
-- The **last** stage never pauses, because nothing follows it. In this version the stages are `prepare`, `optimize` and `frequencies`, so `pause_after = ["optimize"]` lets you inspect `optimized.xyz` before the frequencies are computed, while `pause_after = ["frequencies"]` has no effect until later stages exist.
+- The **last** stage never pauses, because nothing follows it. In this version the stages are `prepare`, `optimize`, `frequencies` and `sampling`, so `pause_after = ["optimize"]` lets you inspect `optimized.xyz` before the frequencies are computed, and `pause_after = ["frequencies"]` lets you inspect the frequencies and the Molden file before any samples are drawn, while `pause_after = ["sampling"]` has no effect until later stages exist.
 - A stage name that does not exist is an input error (`workflow.pause_after names unknown stage(s): …`), found before anything runs.
 
 ### 7.9 Checks before a run (preflight)
@@ -826,8 +933,8 @@ These two warnings appear when the values you entered exceed the cores or the RA
 ## 8. Computational methods and formulas
 
 This chapter defines every quantity the program computes or will compute.
-- **§8.1–§8.7** describe **what the current version does**.
-- **§8.8–§8.13** describe the **planned** methods. Those formulas document the intended implementation; they are not available yet, and details may change after validation against SHARC 4.1 and the literature.
+- **§8.1–§8.8** describe **what the current version does**.
+- **§8.9–§8.13** describe the **planned** methods. Those formulas document the intended implementation; they are not available yet, and details may change after validation against SHARC 4.1 and the literature.
 
 ### 8.1 Units and constants
 **[IMPLEMENTED]** for input and output:
@@ -837,7 +944,7 @@ This chapter defines every quantity the program computes or will compute.
 
 **[IMPLEMENTED]** in the electronic-structure layer (§8.6): coordinates are converted from Å to bohr once, when the XYZ file is read, using the CODATA 2018 values below. Energies are in $E_h$, gradients in $E_h/a_0$ and transition dipoles in $e\,a_0$; the only conversion on output is $E_h \to$ eV for the excitation energies. The vibrational analysis (§8.7) takes masses in amu and Hessians in $E_h/a_0^2$, and reports wavenumbers in cm⁻¹ with the conversion factors of the table below.
 
-**[PLANNED]** for the other calculations:
+**[IMPLEMENTED]** in the `sampling` stage (§8.8) and **[PLANNED]** for the other calculations:
 - All internal quantities will be in **Hartree atomic units**, where $\hbar = m_e = e = 4\pi\varepsilon_0 = 1$.
 - Conversions happen only when files are read or written, using CODATA values:
 
@@ -848,6 +955,7 @@ This chapter defines every quantity the program computes or will compute.
 | Time | $\hbar/E_h$ | 1 a.u. = 0.0241888432658 fs |
 | Mass | electron mass $m_e$ | 1 u (Da) = 1822.888486 $m_e$ |
 | Velocity | $a_0 E_h/\hbar$ | 1 a.u. = 2.18769126 × 10⁶ m s⁻¹ |
+| Temperature | $E_h/k_B$ | $k_B$ = 3.1668115634556 × 10⁻⁶ $E_h$/K (used by the thermal Wigner distribution, §8.8) |
 
 ### 8.2 Electron count and spin-multiplicity check
 **[IMPLEMENTED]**, in the `prepare` stage.
@@ -905,6 +1013,7 @@ $$
   - $\text{inputs}_s$ are the input-file values the stage uses.
   - For `prepare`: `charge`, `multiplicity` and the SHA-256 of the geometry file's **contents**. The path is not included, so moving the file does not invalidate results, but editing it does.
 - For `optimize` and `frequencies`: only what determines the S0 surface, namely the `[electronic]` keys that enter the ground-state calculation, plus the stage's own section. The keys that matter only for excited states are left out: `td_conv_tol` and `overlap_norm_kept` always, and `singlets` for `tda` and `tddft` (for `casscf`, `singlets` defines the state average and **is** included). Changing them therefore does not redo `optimize` or `frequencies`. For `frequencies` the key `imaginary_cutoff_cm1` is also left out, because it is only checked after the calculation: if the stage stopped on a too-large imaginary mode and you change the cutoff, the next run repeats only the finalization from the stored task results. Changing `basis`, `functional`, the active space or `fd_step_bohr` does recompute. These stages read no upstream file when the fingerprint is computed; they depend on `prepare` (and on `optimize`) only through the upstream fingerprints. A disabled `optimize` counts as "skipped" in the fingerprint of `frequencies`.
+- For `sampling`: the whole `[sampling]` section and `project.seed`, plus the fingerprint of `frequencies` (and so, through it, everything upstream). Any change of these after results exist is a stale-input stop (§7.5).
 - **Canonical form:** JSON is written with sorted keys and fixed separators, so the same inputs always give the same $F_s$.
 - **Chaining:** a fingerprint includes the fingerprints of the stages it depends on. A change therefore invalidates every later stage that depends on it.
 - **Interpreting it:** you never see $F_s$ directly. It produces the "results produced from different inputs" message in §7.5.
@@ -961,7 +1070,7 @@ where $f_{\max}$ is the stage's tolerated fraction. For `prepare`, $f_{\max} = 0
 
 ---
 
-> **§8.6 and §8.7 are [IMPLEMENTED].** **Everything after them (§8.8–§8.13) is [PLANNED].** The stages, keys and outputs there do not exist in the current version.
+> **§8.6, §8.7 and §8.8 are [IMPLEMENTED].** **Everything after them (§8.9–§8.13) is [PLANNED].** The stages, keys and outputs there do not exist in the current version.
 
 ### 8.6 Electronic structure (PySCF)
 **[IMPLEMENTED, P3a]** Energies, analytic gradients and transition dipoles. **[IMPLEMENTED, P3b, library only]** SA-CASSCF nonadiabatic couplings, wavefunction overlaps with phase tracking, `compute_more`, restarts (§8.6.8). **[PLANNED]** use of couplings and overlaps in dynamics (P7), TDDFT couplings, triplets and spin–orbit coupling. **[IMPLEMENTED, P4]** the S0 Hessian (analytic for RHF/RKS; SA-CASSCF uses finite differences of gradients in the `frequencies` stage, §8.7).
@@ -1358,34 +1467,73 @@ Warnings reach the console, `logs/gqteashmd.log` and the `warnings` list of `fre
 The PySCF comparison used the same masses and so tests the projection and the diagonalization alone; the ORCA comparison used ORCA's own masses and tests the whole chain. The example of §5.4 is not tightly converged (largest gradient $8.6\times10^{-5}\,E_h/a_0$), so its frequencies differ by up to 0.5 cm⁻¹ from the tightly converged values in the table.
 
 ### 8.8 Wigner sampling of initial conditions
-**[PLANNED, P5]**
-- **Coordinates:** each vibrational mode $k$ is treated as an independent harmonic oscillator in mass-weighted normal coordinate $Q_k$ and momentum $P_k$.
-- **Distribution at $T = 0$:** the Wigner distribution of the vibrational ground state is
+**[IMPLEMENTED]** (P5). The stage `sampling` reads `frequencies.h5` (§6) and draws $N_s$ = `n_samples` initial geometries with velocities. Atomic units are used inside the calculation ($\hbar = 1$, Hartree energies, bohr, electron masses $m_e$, §8.1); the files carry the units of §6.
+
+**Symbols.** $N_{\text{at}}$ atoms with masses $m_A$ (in $m_e$; the masses of `frequencies.h5` in amu times the conversion of §8.1) and equilibrium Cartesian geometry $\mathbf x_{\text{eq}}$ (the geometry that `frequencies` analysed, a $3N_{\text{at}}$-vector). $\mathbf M$ is the diagonal $3N_{\text{at}}\times3N_{\text{at}}$ matrix of the masses, each repeated three times. For every vibrational mode $k$: $\tilde\nu_k$ is its wavenumber in cm⁻¹ from `frequencies.h5`, $\omega_k = \tilde\nu_k / 219474.63\ldots$ is its angular frequency in hartree (the conversion of §8.1; $\hbar = 1$), and $\mathbf L_k$ is its mass-weighted normal mode (a $3N_{\text{at}}$-vector of unit length, dataset `modes_mass_weighted`). $T$ is `temperature_K` and $k_B$ the Boltzmann constant ($3.1668\times10^{-6}\,E_h/\text{K}$).
+
+**Modes that are sampled.** Mode $k$ is sampled if $\tilde\nu_k \ge$ `low_frequency_cutoff_cm1`. Every other mode, including the small imaginary modes (negative $\tilde\nu$ within the `frequencies` cutoff, §8.7), is **not sampled**: its coordinate stays at the equilibrium value and its velocity component is zero. The stage logs a warning that lists the wavenumbers of the unsampled modes and writes them to `samples.json`. If *no* mode is sampled, the stage fails (§9). A floppy mode below the cutoff would otherwise have a huge amplitude $\sigma_Q \propto \omega^{-1/2}$ in a harmonic picture that is not valid for it; with the default 10 cm⁻¹ a mode is sampled from about 10 cm⁻¹ upwards.
+
+**Distribution.** Each sampled mode is an independent harmonic oscillator in the mass-weighted normal coordinate $Q_k$ (unit $\sqrt{m_e}\,a_0$) and its conjugate momentum $P_k$ (unit $\sqrt{m_e}\,a_0$ per atomic unit of time). Their thermal Wigner distribution (Hillery et al., 1984) is a product of independent Gaussians with zero mean:
 
 $$
-W_k(Q_k, P_k) = \frac{1}{\pi\hbar}\exp\!\left(-\frac{\omega_k Q_k^2}{\hbar} - \frac{P_k^2}{\hbar\,\omega_k}\right),
+W_k(Q_k, P_k) \;\propto\; \exp\!\left(-\frac{Q_k^2}{2\sigma_{Q,k}^2} - \frac{P_k^2}{2\sigma_{P,k}^2}\right),
+\qquad
+\sigma_{Q,k}^2 = \frac{\hbar\,c_k}{2\omega_k},
+\qquad
+\sigma_{P,k}^2 = \frac{\hbar\,\omega_k\,c_k}{2},
+\qquad
+c_k = \coth\!\left(\frac{\hbar\omega_k}{2k_BT}\right).
 $$
 
-i.e. $Q_k$ and $P_k$ are independent Gaussians with
+The factor $c_k \ge 1$ measures the thermal occupation of mode $k$. At $T = 0$, $\coth \to 1$, $c_k = 1$ and $W_k$ is the Wigner function of the vibrational ground state, $\sigma_Q^2 = \hbar/2\omega$, $\sigma_P^2 = \hbar\omega/2$. Unlike a classical Boltzmann distribution, the Wigner distribution keeps the zero-point motion at every temperature, and it is exact for a harmonic oscillator (open item O4, decided on 2026-11-08: the exact harmonic thermal Wigner function, not a classical or a rescaled approximation).
+
+**Harmonic energy, its mean and variance.** The harmonic energy of a sample is $E_{\text{harm}} = \sum_k \bigl(\tfrac12 P_k^2 + \tfrac12\omega_k^2 Q_k^2\bigr)$ (sum over the sampled modes; it is computed from $Q$ and $P$ before the momentum removal below). Each mode contributes with mean $\tfrac12\hbar\omega_k c_k$, and the contribution of one mode is exponentially distributed in the energy, so its variance is the square of its mean. Therefore
 
 $$
-\sigma_{Q,k}^2 = \frac{\hbar}{2\omega_k}, \qquad \sigma_{P,k}^2 = \frac{\hbar\,\omega_k}{2}.
+\langle E\rangle = \sum_k \tfrac12\hbar\omega_k c_k,
+\qquad
+\operatorname{Var}(E) = \sum_k \bigl(\tfrac12\hbar\omega_k c_k\bigr)^2 .
 $$
 
-- **Cartesian geometry and velocities** (with $\mathbf M$ the diagonal $3N_{\text{at}}\times 3N_{\text{at}}$ matrix of masses):
+At $T = 0$, $\langle E\rangle = \tfrac12\sum_k\hbar\omega_k$ is the zero-point energy. **Check performed by the stage:** the mean of $E_{\text{harm}}$ over the $N_s$ samples must lie within $5\sqrt{\operatorname{Var}(E)/N_s}$ of $\langle E\rangle$. This is the statistical error of a mean with a margin of five standard errors, so a correct program fails it with a probability of about $10^{-6}$. A failure makes the stage fail with exit code 4 and the message says that it indicates a program error.
+
+**Cartesian geometry and velocities.**
 
 $$
 \mathbf x = \mathbf x_{\text{eq}} + \mathbf M^{-1/2}\sum_k \mathbf L_k Q_k,
 \qquad
-\mathbf v = \mathbf M^{-1/2}\sum_k \mathbf L_k P_k .
+\mathbf v = \mathbf M^{-1/2}\sum_k \mathbf L_k P_k ,
 $$
 
-- **Check performed automatically:** the mean harmonic energy per mode must approach the zero-point energy,
-  $\langle \tfrac12 P_k^2 + \tfrac12\omega_k^2 Q_k^2\rangle = \tfrac12\hbar\omega_k$.
-  Net linear and angular momentum are removed from each sample.
-- **Temperature $T > 0$** (open item O4): one option replaces $\hbar/(2\omega_k)$ by $\frac{\hbar}{2\omega_k}\coth\!\big(\frac{\hbar\omega_k}{2k_BT}\big)$, and likewise for $\sigma_P^2$. The exact scheme is decided in P5.
-- **Assumptions:** harmonic, uncoupled modes. Very low-frequency (floppy) modes are poorly described.
-- **Interpreting the samples:** each sample is one classical "snapshot" of the quantum vibrational distribution. Distributions of bond lengths and kinetic energies will be compared with SHARC's `wigner.py`.
+with the sums over the sampled modes. The geometries are not moved or rotated afterwards: all samples keep the orientation of the equilibrium geometry.
+
+**Removal of linear and angular momentum.** The $\mathbf v$ above contain a small net translation and rotation, because the harmonic modes are projected from the translations and rotations only at the equilibrium geometry. For each sample, with $\mathbf r_A$ the position of atom $A$ relative to the centre of mass:
+
+1. the centre-of-mass velocity $\sum_A m_A\mathbf v_A / \sum_A m_A$ is subtracted from every $\mathbf v_A$;
+2. the angular momentum $\mathbf L_{\text{ang}} = \sum_A m_A\,\mathbf r_A\times\mathbf v_A$ and the inertia tensor $\mathbf I = \sum_A m_A\bigl(r_A^2\,\mathbf 1 - \mathbf r_A\mathbf r_A^{\mathsf T}\bigr)$ give the angular velocity $\boldsymbol\Omega = \mathbf I^{-1}\mathbf L_{\text{ang}}$ (pseudo-inverse, so linear molecules work), and $\boldsymbol\Omega\times\mathbf r_A$ is subtracted from every $\mathbf v_A$.
+
+The velocities are **not rescaled** afterwards. The kinetic energy that the removal took away, $T_{\text{removed}} = T_{\text{before}} - T_{\text{after}}$, is stored for every sample (`removed_kinetic_energy`). Because of the removal, the mean kinetic energy of the samples is slightly below the value $\tfrac14\sum_k\hbar\omega_k c_k$ that the distribution alone gives (water: $1.5\times10^{-5}\,E_h$ of $0.0122\,E_h$ in §5.5; the stage does not add the energy back). **Check performed by the stage:** after the removal, the largest $\lvert\mathbf P\rvert$ over the samples must be below $10^{-8}$ and the largest $\lvert\mathbf L_{\text{ang}}\rvert$ below $10^{-6}$ (atomic units); otherwise the stage fails with exit code 4 and says that this indicates a program error.
+
+**Seed hierarchy.** All random numbers derive from `project.seed` $s$ in a fixed order: the stage generator is a NumPy `SeedSequence` built from $s$ and the CRC-32 checksum of the stage name (`sampling`); task number $i$ of the stage uses the $i$-th child of that sequence. `sampling` has one task, number 0, which draws first all $Q$ (a $N_s\times n_s$ array of standard normal numbers, scaled by $\sigma_Q$) and then all $P$. Consequences: the samples depend only on `project.seed`, `n_samples`, `temperature_K`, `low_frequency_cutoff_cm1` and the frequencies; the result is the same after a crash and a restart, on another day, and whatever other stages ran; and other stages have independent random streams.
+
+**Assumptions and limits.**
+- *Harmonic approximation:* the potential is quadratic around the geometry of `frequencies`. Anharmonic effects (stretches of X–H bonds at high temperature, torsions, ring puckering) are not described; large-amplitude motions can give geometries that are far from the equilibrium one.
+- *Independent modes:* there are no correlations between modes. The Wigner function of the harmonic Hamiltonian factorizes exactly in normal modes, but not for an anharmonic one.
+- *Cutoff:* modes below `low_frequency_cutoff_cm1` are not sampled, so their zero-point motion and thermal energy are missing from the sample.
+- *Classical nuclei afterwards:* each sample is a classical point in phase space; its energy is not an eigenvalue and, on the real surface, the total energy of a sample differs from $E_{\text{harm}}$.
+- The samples are drawn on the **S0 surface** only; the excited-state surfaces are used from `excitations` on (P6).
+
+**Validation (measured).** The sampler was compared with SHARC 4.1 `wigner.py` (run as a black box) on water RHF/STO-3G (frequencies 2170.05, 4140.00, 4391.07 cm⁻¹ at the tightly optimized geometry of §8.7, analytic Hessian, the same Molden file for both programs), at $T = 0$: SHARC with 2000 samples (`-r 7`), `gqteashmd` with 20000 samples (seed 1). The differences of the means are in units of the combined standard error; $p$ is the two-sample Kolmogorov–Smirnov probability that both samples come from one distribution.
+
+| Quantity | `gqteashmd` mean / std | SHARC mean / std | difference / standard error | KS $p$ |
+|---|---|---|---|---|
+| O–H₁ distance (bohr) | 1.873199 / 0.121838 | 1.872796 / 0.122546 | +0.14 | 0.966 |
+| O–H₂ distance (bohr) | 1.875603 / 0.120766 | 1.875007 / 0.122018 | +0.21 | 0.275 |
+| H–O–H angle (°) | 100.013 / 7.442 | 100.136 / 7.265 | −0.72 | 0.280 |
+| Kinetic energy after momentum removal ($E_h$) | 0.012225 / 0.010392 | 0.011957 / 0.010325 | +1.10 | 0.443 |
+| Kinetic energy before momentum removal ($E_h$) | 0.012250 / 0.010414 | 0.011983 / 0.010347 | +1.10 | 0.439 |
+
+The harmonic energy of SHARC's output, $\tfrac12\sum_k\hbar\omega_k$ = 0.0243789326 $E_h$, equals ours to better than $10^{-8}\,E_h$; the atomic masses agree to better than $10^{-6}$ amu; our maximum $\lvert\mathbf P\rvert$ and $\lvert\mathbf L_{\text{ang}}\rvert$ are $4\times10^{-15}$ and $5\times10^{-15}$ atomic units (SHARC's printed $\lvert\mathbf L_{\text{ang}}\rvert$ is below $5.4\times10^{-5}$, the rounding of its 8-decimal output). All five comparisons are consistent with sampling noise. **A note on SHARC's kinetic-energy line:** the `Ekin` line in each SHARC `initconds` entry is the kinetic energy *before* the momentum removal; it differs from the energy of the velocities printed next to it by up to $6.4\times10^{-4}\,E_h$ (mean $2.5\times10^{-5}\,E_h$), so the comparison above is "before with before" and "after with after". Other checks of the sampler (exact Gaussian widths, the $T > 0$ energy, zero total momenta, linear molecules, reproducibility) are unit tests of the package.
 
 ### 8.9 Initial excitation
 **[PLANNED, P6]** At each sampled geometry, the vertical excitation energies $\Delta E_{0J} = E_J - E_0$ and oscillator strengths $f_{0J}$ will be computed with the formulas of §8.6.5 and §8.6.6 (**[IMPLEMENTED]** there for one geometry; this stage will run them at every sampled geometry).
@@ -1530,6 +1678,11 @@ $$
 | `The finite-difference energies disagree with the reference gradient by … Eh/bohr` / `the energy at the optimized geometry … differs from the optimize stage's energy` | The consistency checks of `frequencies` (§8.7) failed (exit 4, `Stage 'frequencies' could not finalize its results: …`) | Check the active space, reduce `fd_step_bohr`, or re-run from `optimize` |
 | `The structure is not a minimum: N imaginary mode(s) beyond 20 cm^-1 (mode 1: -2329.0 cm^-1, …). Re-optimize …` | `frequencies` found imaginary modes beyond the cutoff (exit 4, §8.7). The files are written first | Re-optimize with a tighter `convergence`, check the starting structure, or raise `imaginary_cutoff_cm1` |
 | `The analytic SCF Hessian failed: …` | PySCF failed in the Hessian step (exit 4; retried only for `MemoryError`/`OSError`) | Read `electronic.log` in the task directory; try `frequencies.method = "finite_difference"` |
+| `Invalid input file …:` with `sampling.n_samples` / `sampling.temperature_K` / `sampling.low_frequency_cutoff_cm1` text (for example `Input should be greater than 0`) | A `[sampling]` value out of range, or an unknown key (exit 2, §4.2) | Correct the key |
+| `No vibrational mode is sampled: every mode is below the cutoff 10 cm^-1 (frequencies: …). Please lower [sampling] low_frequency_cutoff_cm1.` | All modes of the molecule are below `low_frequency_cutoff_cm1` (exit 4; the stage's files are not written) | Lower the cutoff (it must stay above 0) |
+| `Stage sampling: N mode(s) below the cutoff are not sampled (frequencies in cm^-1: …)` | **Warning**: modes below the cutoff, including small imaginary modes, stay at equilibrium with zero velocity (§8.8); the run continues | Lower `low_frequency_cutoff_cm1` if you want those modes sampled |
+| `The sampled harmonic energy is inconsistent with the Wigner distribution (… vs … Eh, allowed deviation …); this indicates a program error — please report it` | The mean harmonic energy of the samples differs from the exact mean by more than 5 standard errors (exit 4, §8.8). `samples.json` is written for diagnosis | Report it with the log |
+| `Total momentum was not removed from the samples (max |P| = …, max |L| = … a.u.); this indicates a program error — please report it` | The momentum check of §8.8 failed (exit 4) | Report it with the log |
 | `Stage … results directory … is missing; recomputing` | **Warning**: you deleted a stage directory (§7.3) | None; the stage is computed again |
 | `Stage frequencies: small imaginary modes …` / `translation/rotation contamination …` / `not a stationary point …` | **Warnings** from `frequencies` (§8.7); the run continues | Check the geometry and the Hessian |
 | `internal error: …` | A program bug | Report it with `logs/gqteashmd.log` and the task's `result.json` |
@@ -1538,7 +1691,8 @@ $$
 
 ## 10. Known limitations
 
-- **Feature scope:** the stages `prepare`, `optimize` and `frequencies` exist. Sampling, excitations, initial-state selection, dynamics and analysis are planned (P5–P8), so the workflow ends with the frequencies today.
+- **Feature scope:** the stages `prepare`, `optimize`, `frequencies` and `sampling` exist. Excitations, initial-state selection, dynamics and analysis are planned (P6–P8), so the workflow ends with the Wigner samples today.
+- **`sampling`:** harmonic and independent modes only (§8.8); no anharmonic or quasi-classical sampling, no sampling of an isotopically substituted molecule (the masses come from `frequencies`), samples are drawn on the S0 geometry of `frequencies` and not yet used by any later stage; the samples are not checked for chemical sense (very large amplitudes at high temperature or for floppy modes just above the cutoff are not detected).
 - **Electronic structure:** closed-shell singlet molecules with a restricted reference only; no triplet states; nonadiabatic couplings (SA-CASSCF only) and wavefunction overlaps exist only as a library and are not used by any command or stage yet (P7); the analytic Hessian exists for RHF/RKS only (SA-CASSCF uses finite differences, §8.7); TDA/TDDFT have no analytic couplings, and their overlaps use the excitation amplitudes X only (§8.6.8); the cost of the overlap engine grows with the number of determinants kept (`overlap_norm_kept`); overlap-based couplings carry noise of order $10^{-7}/\Delta t$ at default CASSCF convergence; no density fitting; no scratch-directory input key yet (the backend supports one, and writes no checkpoint file); TDDFT/TDA describe the S₁/S₀ crossing seam incorrectly (§8.6.4); DFT gradients omit the grid response, so use `grid_level` ≥ 5 for dynamics (§8.6.4). The SCF, CASSCF and TD calculations each have a retry ladder (§8.6.1, §8.6.8); a calculation that fails every rung stops.
 - **`optimize` and `frequencies`:** they work on the S0 surface of `[electronic]` only (no excited-state optimization, no constraints, no transition-state search). There is no input key for isotope masses, and no thermochemistry (zero-point energy, entropy), anharmonicity or frequency scaling. A finite-difference Hessian costs $1+6N_{\text{at}}$ gradients, which is large for SA-CASSCF with many atoms. The check of the project directory covers the scratch space; there is no separate check that the disk has room for PySCF's scratch files beyond `min_free_disk_mb`. A refused stale run still appends a provenance record (§7.5).
 - **Platform:** Linux only, with no batch-scheduler support. Runs are designed for a single workstation.
@@ -1547,7 +1701,7 @@ $$
 
 ## 11. Roadmap
 
-P1 foundation (done) → P2 input schema and pre-run checks (done) → P3a PySCF backend (done: energies, gradients, transition dipoles, `single-point`) → P3b couplings, overlaps, phase tracking and restarts (done, library only) → P3c hardening sweep (done) → P4 optimization, frequencies and Hessian (done: `optimize` and `frequencies` stages) → **P5 Wigner sampling (next)** → P6 excitations and initial states → P7 dynamics → P8 analysis → P9 systematic validation against SHARC 4.1. This manual is updated with each step. Sections marked [PLANNED] become [IMPLEMENTED] when their sub-project is finished and validated.
+P1 foundation (done) → P2 input schema and pre-run checks (done) → P3a PySCF backend (done: energies, gradients, transition dipoles, `single-point`) → P3b couplings, overlaps, phase tracking and restarts (done, library only) → P3c hardening sweep (done) → P4 optimization, frequencies and Hessian (done: `optimize` and `frequencies` stages) → P5 Wigner sampling (done: `sampling` stage, validated against SHARC `wigner.py`) → **P6 excitations and initial states (next)** → P7 dynamics → P8 analysis → P9 systematic validation against SHARC 4.1. This manual is updated with each step. Sections marked [PLANNED] become [IMPLEMENTED] when their sub-project is finished and validated.
 
 ## 12. References
 1. J. C. Tully, *J. Chem. Phys.* **93**, 1061 (1990): fewest-switches surface hopping.
@@ -1555,6 +1709,7 @@ P1 foundation (done) → P2 input schema and pre-run checks (done) → P3a PySCF
 3. G. Granucci, M. Persico, *J. Chem. Phys.* **126**, 134114 (2007): energy-based decoherence correction.
 4. S. Mai, P. Marquetand, L. González, *WIREs Comput. Mol. Sci.* **8**, e1370 (2018): the SHARC approach.
 5. E. Wigner, *Phys. Rev.* **40**, 749 (1932); M. Barbatti, K. Sen, *Int. J. Quantum Chem.* **116**, 762 (2016): Wigner sampling for initial conditions.
+   M. Hillery, R. F. O'Connell, M. O. Scully, E. P. Wigner, *Phys. Rep.* **106**, 121 (1984): distribution functions in physics (the thermal Wigner function of the harmonic oscillator); L. Sun, W. L. Hase, *J. Chem. Phys.* **133**, 044313 (2010): classical and Wigner sampling of vibrational energy levels.
 6. Q. Sun et al., *J. Chem. Phys.* **153**, 024109 (2020): PySCF.
 7. CODATA 2018 recommended values of the fundamental physical constants.
 8. E. B. Wilson, J. C. Decius, P. C. Cross, *Molecular Vibrations* (McGraw-Hill, 1955): normal-coordinate analysis.
