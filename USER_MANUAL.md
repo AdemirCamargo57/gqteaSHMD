@@ -4,7 +4,7 @@
 **Program:** `gqteashmd`, automated surface-hopping molecular dynamics with PySCF
 **Licence:** MIT
 
-> **Read this first: what works today.** This is an early development version. The **workflow engine is complete**: input file (with hardware and per-stage resource settings), checks before a run (preflight), project management, parallel tasks, crash-safe resume, graceful stop, review pauses, change detection, and a record of the software used (provenance). Its first stage is **`prepare`**, which validates and stores the molecule. The **electronic-structure layer** (PySCF: SCF, SA-CASSCF, TDA, TDDFT, CIS, TDHF; energies, analytic gradients, transition dipoles) is also **implemented** and validated against SHARC 4.1; you can use it today with **`gqteashmd single-point`** (§5.3). **No quantum-chemistry *stage* exists yet.** Optimization, frequencies, Wigner sampling, initial conditions, dynamics and analysis are *planned*; so are the use of nonadiabatic couplings and wavefunction overlaps in dynamics, and the Hessian (SA-CASSCF couplings and the overlap engine exist as a library, §8.6.8, but no command reaches them). They are described in §8.7–§8.13 so that you can see in advance how results will be computed. Every section is marked:
+> **Read this first: what works today.** This is an early development version. The **workflow engine is complete**: input file (with hardware and per-stage resource settings), checks before a run (preflight), project management, parallel tasks, crash-safe resume, graceful stop, review pauses, change detection, and a record of the software used (provenance). Three stages exist: **`prepare`** (validates and stores the molecule), **`optimize`** (optional S0 geometry optimization with geomeTRIC) and **`frequencies`** (S0 Hessian, harmonic frequencies, normal modes, Molden file). The last two work at the level of the `[electronic]` input section. The **electronic-structure layer** (PySCF: SCF, SA-CASSCF, TDA, TDDFT, CIS, TDHF; energies, analytic gradients, transition dipoles, the S0 Hessian) is **implemented** and validated against SHARC 4.1 and other programs; you can also use it directly with **`gqteashmd single-point`** (§5.3). **Wigner sampling, initial conditions, dynamics and analysis are *planned*; so is the use of nonadiabatic couplings and wavefunction overlaps in dynamics** (SA-CASSCF couplings and the overlap engine exist as a library, §8.6.8, but no command reaches them). They are described in §8.8–§8.13 so that you can see in advance how results will be computed. Every section is marked:
 >
 > - **[IMPLEMENTED]**: available in this version.
 > - **[PLANNED]**: designed but not yet available; details may still change.
@@ -29,13 +29,13 @@
 
 ## 1. What the program does
 
-`gqteashmd` will run a complete photodynamics study from **one input file**. The planned stages run in this order:
+`gqteashmd` will run a complete photodynamics study from **one input file**. The stages run in this order:
 
 | Order | Stage | What it does | Status |
 |---|---|---|---|
 | 0 | `prepare` | Reads and checks the molecule (XYZ syntax, elements, charge and multiplicity); stores a normalized copy | **[IMPLEMENTED]** |
-| 1 | `optimize` (optional) | Ground-state geometry optimization | [PLANNED, P4] |
-| 2 | `frequencies` | Hessian, harmonic frequencies and normal modes | [PLANNED, P4] |
+| 1 | `optimize` (optional) | Ground-state (S0) geometry optimization with geomeTRIC, on the surface of the `[electronic]` section | **[IMPLEMENTED, P4]** |
+| 2 | `frequencies` | S0 Hessian, harmonic frequencies and normal modes (analytic Hessian or finite differences of gradients); Molden, HDF5 and JSON output | **[IMPLEMENTED, P4]** |
 | 3 | `sampling` | Wigner sampling of initial geometries and velocities | [PLANNED, P5] |
 | 4 | `excitations` | Vertical excitation energies and oscillator strengths at each sampled geometry | [PLANNED, P6] |
 | 5 | `selection` | Choice of the initial electronic state for each trajectory | [PLANNED, P6] |
@@ -44,7 +44,7 @@
 
 In SHARC 4.1 these steps are separate manual tools: `wigner.py`, `setup_init.py`, `excite.py`, `setup_traj.py` and `populations.py`. `gqteashmd` runs them automatically, one after another. You only intervene when the program asks you to fix something.
 
-The electronic-structure program is **PySCF** **[IMPLEMENTED, P3a]** as a library layer: the `[electronic]` input section (§4.2) and the command `gqteashmd single-point` (§5.3) use it today. The workflow **stages** that will call it (`optimize`, `frequencies`, `excitations`, `dynamics`) are still planned, as is their use in dynamics; SA-CASSCF nonadiabatic couplings, wavefunction overlaps and phase tracking (P3b) exist as a library only (§8.6.8). ORCA, Gaussian and others may be added later.
+The electronic-structure program is **PySCF** **[IMPLEMENTED]**: the `[electronic]` input section (§4.2), the command `gqteashmd single-point` (§5.3) and the stages `optimize` and `frequencies` use it today. The stages that will call it later (`excitations`, `dynamics`) are still planned, as is the use of couplings in dynamics; SA-CASSCF nonadiabatic couplings, wavefunction overlaps and phase tracking (P3b) exist as a library only (§8.6.8). ORCA, Gaussian and others may be added later.
 
 ---
 
@@ -69,7 +69,7 @@ pip install -e . --no-deps
 gqteashmd --version                        # → gqteashmd 0.1.0.dev0
 ```
 
-The environment installs PySCF (pinned to the 2.14 series), NumPy, SciPy, h5py and geomeTRIC. The program itself requires `pydantic>=2.6`, `numpy>=1.26` and `pyscf>=2.6`; SciPy, h5py and geomeTRIC are for later stages. A PySCF older than 2.6 is refused when an electronic-structure calculation starts (§9).
+The environment installs PySCF (pinned to the 2.14 series), NumPy, SciPy, h5py and geomeTRIC. The program requires `pydantic>=2.6`, `numpy>=1.26`, `scipy>=1.11`, `pyscf>=2.6`, `h5py>=3.9` and `geometric>=1.0` (the environment pins the geomeTRIC 1.1 series). `gqteashmd run` checks the versions that the enabled stages need before it starts (§7.9); a PySCF older than 2.6 is also refused when an electronic-structure calculation starts (§9).
 
 ### 2.3 Where to run projects
 Keep project directories on a **local Linux disk**, for example `~/gqteashmd-runs/` or a data disk on the workstation. **Do not use OneDrive folders or Windows drives (`/mnt/c/...`).** The program writes many small files and uses file locks, and synchronized or Windows-mounted folders are slow and unreliable for both. `gqteashmd run` refuses such a project directory (§7.9). Ordinary Linux data disks mounted under `/mnt`, such as `/mnt/data`, are accepted.
@@ -83,7 +83,7 @@ Keep project directories on a **local Linux disk**, for example `~/gqteashmd-run
 ```bash
 mkdir -p ~/gqteashmd-runs/water && cd ~/gqteashmd-runs/water
 gqteashmd init input.toml                  # writes a commented template
-sed -i 's/^total_cores = .*/total_cores = 4/; s/^total_memory_mb = .*/total_memory_mb = 6000/' input.toml
+sed -i 's/^total_cores = .*/total_cores = 4/; s/^total_memory_mb = .*/total_memory_mb = 6000/; s/^basis = .*/basis = "sto-3g"/; s/^functional = .*/functional = "hf"/' input.toml
 cat > molecule.xyz <<'EOF'
 3
 water
@@ -92,11 +92,11 @@ H    0.000000    0.757200   -0.469200
 H    0.000000   -0.757200   -0.469200
 EOF
 gqteashmd validate input.toml              # checks the input; runs nothing
-gqteashmd run input.toml                   # runs every stage that is not yet done
+gqteashmd run input.toml                   # runs prepare, optimize and frequencies (about 15 s here)
 gqteashmd status input.toml                # shows progress
 ```
 
-The `sed` line sets `total_cores` and `total_memory_mb`, which are **required** and describe *your* workstation (the cores and the RAM in MB that you allow `gqteashmd` to use). The template's values (8 cores, 16000 MB) are only examples. If your values exceed what the program detects on the machine, `run` prints a warning but continues (§7.9). Set the two values to something that fits your machine, as above.
+The `sed` line sets `total_cores` and `total_memory_mb`, which are **required** and describe *your* workstation (the cores and the RAM in MB that you allow `gqteashmd` to use). The template's values (8 cores, 16000 MB) are only examples. If your values exceed what the program detects on the machine, `run` prints a warning but continues (§7.9). Set the two values to something that fits your machine, as above. The same `sed` line also replaces the template's electronic-structure setting (TDA-B3LYP/def2-SVP) by Hartree–Fock/STO-3G (`method = "tda"` with `functional = "hf"` is CIS), so that this first example is fast. `optimize` and `frequencies` need the `[electronic]` section (§4.2).
 
 Expected output of `validate` (the paths are those of your machine):
 
@@ -106,12 +106,25 @@ Input file /home/you/gqteashmd-runs/water/input.toml is valid.
   geometry:          /home/you/gqteashmd-runs/water/molecule.xyz
 ```
 
-Expected output of `run` in this version (the dates differ):
+Expected output of `run` (real output from a development machine; the dates and times differ):
 
 ```text
-2026-11-06 20:40:01 INFO    gqteashmd.orchestrator: Stage prepare: starting
-2026-11-06 20:40:02 INFO    gqteashmd.orchestrator: Stage prepare: done (1/1 tasks)
-Workflow complete: 1 stage(s) run, 0 already up to date, 0 skipped.
+2026-11-07 23:52:33 INFO    gqteashmd.orchestrator: Stage prepare: starting
+2026-11-07 23:52:36 INFO    gqteashmd.orchestrator: Stage prepare: done (1/1 tasks)
+2026-11-07 23:52:36 INFO    gqteashmd.orchestrator: Stage optimize: starting
+2026-11-07 23:52:41 INFO    gqteashmd.orchestrator: Stage optimize: done (1/1 tasks)
+2026-11-07 23:52:41 INFO    gqteashmd.orchestrator: Stage frequencies: starting
+2026-11-07 23:52:43 INFO    gqteashmd.orchestrator: Stage frequencies: done (1/1 tasks)
+Workflow complete: 3 stage(s) run, 0 already up to date, 0 skipped.
+```
+
+Running the same command again recomputes nothing:
+
+```text
+2026-11-07 23:52:46 INFO    gqteashmd.orchestrator: Stage prepare: up to date
+2026-11-07 23:52:46 INFO    gqteashmd.orchestrator: Stage optimize: up to date
+2026-11-07 23:52:46 INFO    gqteashmd.orchestrator: Stage frequencies: up to date
+Workflow complete: 0 stage(s) run, 3 already up to date, 0 skipped.
 ```
 
 Expected output of `status`:
@@ -121,9 +134,11 @@ Project: my_molecule  (/home/you/gqteashmd-runs/water/run)
 Controller: not running
 stage           status         done  failed  pending  running  message
 prepare         done              1       0        0        0  1/1 tasks succeeded
+optimize        done              1       0        0        0  1/1 tasks succeeded
+frequencies     done              1       0        0        0  1/1 tasks succeeded
 ```
 
-The results are in `~/gqteashmd-runs/water/run/` (see §6).
+The results are in `~/gqteashmd-runs/water/run/` (see §6). §5.4 shows what the files of this run contain.
 
 ---
 
@@ -176,17 +191,33 @@ min_free_disk_mb = 1000      # refuse to start with less free disk space (MB)
 [workflow]
 pause_after = []              # stage names to pause after for review, e.g. ["selection"]
 
-# Electronic structure (needed by the quantum-chemistry stages and `gqteashmd single-point`):
+# Electronic structure (used by optimize, frequencies and the later quantum-chemistry stages):
+[electronic]
+method = "tda"                # "casscf" | "tda" | "tddft"
+basis = "def2-svp"
+functional = "b3lyp"          # not used by method = "casscf"; use "hf" for CIS/TDHF
+singlets = 3                  # number of singlet states INCLUDING S0
+# CASSCF alternative (replace the block above):
 # [electronic]
-# method = "casscf"             # "casscf" | "tda" | "tddft"
+# method = "casscf"
 # basis = "6-31g*"
-# singlets = 2                  # number of singlet states INCLUDING S0
+# singlets = 2
 # [electronic.casscf]
 # ncas = 2                      # active orbitals
 # nelecas = 2                   # active electrons
+
+[optimize]
+enabled = true                # false: use the input geometry as it is
+max_steps = 100
+convergence = "GAU"           # geomeTRIC set: GAU, GAU_LOOSE, GAU_TIGHT, GAU_VERYTIGHT, ...
+
+[frequencies]
+method = "auto"               # "auto" | "analytic" | "finite_difference" (no analytic for casscf)
+fd_step_bohr = 0.005          # displacement for finite differences
+imaginary_cutoff_cm1 = 20.0   # imaginary modes above this wavenumber are errors
 ```
 
-The `[electronic]` block is commented out in the template: it is optional for `run` (today's only stage, `prepare`, does not use it) and required by `single-point`. The template omits one key, `execution.poll_interval_s` (default 0.5). The table lists every key:
+The template's `[electronic]` block is active (TDA-B3LYP/def2-SVP with S0 and two excited states), because `optimize` and `frequencies` need it, and so does `single-point`; the CASSCF alternative is given as comments. `[optimize]` and `[frequencies]` show their defaults. The template omits one key, `execution.poll_interval_s` (default 0.5). The table lists every key:
 
 | Key | Type | Default | Allowed | Meaning |
 |---|---|---|---|---|
@@ -223,10 +254,17 @@ The `[electronic]` block is commented out in the template: it is optional for `r
 | `electronic.casscf.nelecas` | int | — (required for `casscf`) | even, ≥ 1, ≤ 2 `ncas` | Number of active electrons $n_{e,\text{cas}}$ (singlet states need an even number) |
 | `electronic.casscf.conv_tol` | float | 1e-10 | > 0 | SA-CASSCF energy convergence threshold (Eh) |
 | `electronic.casscf.conv_tol_grad` | float | 1e-6 | > 0 | SA-CASSCF orbital-gradient convergence threshold. Tightening it much further (for example to 1e-7 with `conv_tol` 1e-12) can fail to converge at displaced geometries |
+| `optimize.enabled` | bool | `true` | `true`, `false` | `false` skips the stage; `frequencies` then uses the geometry of `prepare` as it is (§7.5) |
+| `optimize.max_steps` | int | 100 | ≥ 1 | Maximum number of geomeTRIC iterations (energy and gradient evaluations) before the stage fails |
+| `optimize.convergence` | str | `"GAU"` | `"GAU"`, `"GAU_LOOSE"`, `"GAU_TIGHT"`, `"GAU_VERYTIGHT"`, `"NWCHEM_LOOSE"`, `"TURBOMOLE"`, `"INTERFRAG_TIGHT"` | Name of the geomeTRIC convergence set. `"GAU"` uses Gaussian-style thresholds on forces and displacements |
+| `frequencies.method` | str | `"auto"` | `"auto"`, `"analytic"`, `"finite_difference"` | How the S0 Hessian is obtained (§8.7). `"auto"` is `"analytic"` for `tda`/`tddft` and `"finite_difference"` for `casscf`. `"analytic"` with `casscf` is an input error |
+| `frequencies.fd_step_bohr` | float | 0.005 | > 0 and ≤ 0.1 | Cartesian displacement $h$ of the central differences (bohr); used only by `"finite_difference"` |
+| `frequencies.imaginary_cutoff_cm1` | float | 20.0 | ≥ 0 | An imaginary mode with $	ilde
+u < -$ this value stops the workflow; smaller ones only warn (§8.7) |
 
 **Hardware keys.** `total_cores` and `total_memory_mb` are required, so that the input file records which machine the settings were written for. The input is rejected if the settings do not fit inside them (see the rules below and §8.4). The program also detects the real machine; if your values exceed it, `run` only **warns** (§7.9).
 
-**Per-stage overrides.** A section `[resources.stages.<name>]` changes the resources for one stage. A runnable example for this version, which has only the `prepare` stage:
+**Per-stage overrides.** A section `[resources.stages.<name>]` changes the resources for one stage. A runnable example:
 
 ```toml
 [resources]
@@ -237,7 +275,7 @@ total_memory_mb = 16000
 threads_per_task = 2
 ```
 
-**From P4 on** (when the `frequencies` stage exists; today `validate` rejects this example), the same mechanism can give a single-task stage the whole machine:
+A stage with one big task can be given the whole machine. `optimize` always has one task, and `frequencies` has one task with the analytic Hessian. With the finite-difference Hessian, `frequencies` has $1+6N_{\text{at}}$ independent tasks (§8.7), which run in parallel, so leave that stage on the global settings:
 
 ```toml
 [resources]
@@ -247,14 +285,14 @@ max_parallel_tasks = 8
 threads_per_task = 4
 memory_mb_per_task = 4000
 
-[resources.stages.frequencies]     # a stage with one big task
+[resources.stages.optimize]        # one task: give it the whole machine
 max_parallel_tasks = 1
 threads_per_task = 32
 ```
 
-- **Merge rule:** a key you leave out of an override takes the global value from `[resources]`. In the second example, `frequencies` uses `memory_mb_per_task = 4000`.
+- **Merge rule:** a key you leave out of an override takes the global value from `[resources]`. In the second example, `optimize` uses `memory_mb_per_task = 4000`.
 - **Fit rule:** for the global settings **and for every override** (after merging), the input must satisfy $n_p n_t \le N_{\text{cores}}$ and $n_p m \le M_{\text{total}}$ (§8.4). Otherwise the input is rejected, naming `[resources]` or `[resources.stages.<name>]` and the numbers. Note that an override that sets only `max_parallel_tasks` is also checked against the global `threads_per_task`.
-- **Stage names:** an override for a stage that does not exist is an input error (`[resources.stages] names unknown stage(s): …`). The only stage in this version is `prepare`; the `frequencies` example above becomes valid when that stage exists (P4).
+- **Stage names:** an override for a stage that does not exist is an input error (`[resources.stages] names unknown stage(s): …`). The stages in this version are `prepare`, `optimize` and `frequencies`.
 
 #### The `[electronic]` section
 **[IMPLEMENTED]** (P3a). A complete example for ethylene, SA2-CASSCF(2,2)/6-31G\*:
@@ -292,6 +330,15 @@ The rules, all checked when the input is loaded (`validate`, `run`, `single-poin
 - `overlap_norm_kept` (float, default `0.9999`, allowed range $0.9 < x \le 1$): the fraction of each state's squared wavefunction norm that the determinant expansion must keep when wavefunction overlaps between geometries are computed (§8.6.8). Smaller values are faster and less accurate; `1.0` keeps every determinant. Values $\le 0.9$ or $> 1$ are an input error. It only matters for the overlap/phase machinery, which the CLI does not reach yet (§8.6.8).
 - Not implemented yet: density fitting, spin-flip or unrestricted references, ECP-specific options, a `scratch` directory key in the input file (the backend itself already supports a scratch directory, §8.6.8), MC-PDFT.
 
+#### The `[optimize]` and `[frequencies]` sections
+**[IMPLEMENTED]** (P4). Both stages work on the **S0 surface of the `[electronic]` section**, that is, on the ground-state surface that the dynamics will start from (§8.7). The keys are in the table above.
+
+- **`[electronic]` is required.** `optimize` (when enabled) and `frequencies` need it. If it is missing, `validate` and `run` stop with exit code 2: *Stage 'optimize' needs an [electronic] section in the input file; Stage 'frequencies' needs an [electronic] section in the input file. See USER_MANUAL.md §4.* (every stage that lacks it is listed, separated by `; `).
+- **`[optimize]` and `[frequencies]` are optional.** If a section is absent, its defaults apply.
+- **`frequencies.method = "analytic"` with `electronic.method = "casscf"`** is rejected when the input is loaded, because PySCF has no analytic SA-CASSCF Hessian. When several cross-field rules are violated, the message lists all of them, separated by `; `.
+- **`singlets`** does not change the S0 calculation of `tda` and `tddft` (only S0 is computed for the gradients and the Hessian). For `casscf` it does, because the state average defines the S0 surface (§8.7).
+- **Fingerprints (§8.3):** `optimize` depends on `[electronic]` and `[optimize]`; `frequencies` on `[electronic]` and `[frequencies]`. Changing a key of one of these sections after results exist is a stale-input stop (§7.5).
+
 ### 4.3 The XYZ geometry file
 **[IMPLEMENTED]**
 
@@ -307,8 +354,8 @@ The rules, all checked when the input is loaded (`validate`, `run`, `single-poin
 - Every error message gives the line number, for example `line 3: expected 'symbol x y z'`.
 
 ### 4.4 Planned sections
-**[PLANNED]** Their key names and meanings are in the master plan §4.3. Each sub-project adds the sections it needs, and this manual is updated each time. The sections for the later stages are not part of the input yet, because their keys depend on decisions that are still open:
-- `[optimize]`, `[frequencies]` (P4); `[sampling]` (P5); `[excitations]`, `[selection]` (P6); `[dynamics]` (P7); `[analysis]` (P8).
+**[PLANNED]** Their key names and meanings are in the master plan §4.3 (`[optimize]` and `[frequencies]` are implemented, see above). Each sub-project adds the sections it needs, and this manual is updated each time. The sections for the later stages are not part of the input yet, because their keys depend on decisions that are still open:
+- `[sampling]` (P5); `[excitations]`, `[selection]` (P6); `[dynamics]` (P7); `[analysis]` (P8).
 - Additional `[electronic]` keys: density fitting, MC-PDFT, triplet states (with intersystem crossing).
 - A `scratch` directory key in the input file (the backend takes a scratch directory and has no checkpoint file since P3b, §8.6.8; the input key arrives with the stage that uses it).
 
@@ -323,7 +370,7 @@ Until then, an input file that contains one of these sections or keys is rejecte
 | Command | What it does |
 |---|---|
 | `gqteashmd init PATH [--force]` | Writes a commented template input file. Refuses to overwrite an existing file unless `--force` is given |
-| `gqteashmd validate INPUT` | Checks the input file, that the geometry is an existing regular file, and that `[resources.stages]` and `workflow.pause_after` name stages that exist. It does not read the XYZ contents (coordinates, elements, charge/multiplicity); `prepare` does. Runs nothing, and does not run the preflight checks (§7.9) |
+| `gqteashmd validate INPUT` | Checks the input file, that the geometry is an existing regular file, and that `[resources.stages]` and `workflow.pause_after` name stages that exist. It checks that every enabled stage has the input section it needs (`[electronic]`, §4.2). It does not read the XYZ contents (coordinates, elements, charge/multiplicity); `prepare` does. Runs nothing, and does not run the preflight checks (§7.9) |
 | `gqteashmd run INPUT` | Runs the preflight checks (§7.9), then runs or resumes every stage that is not yet done |
 | `gqteashmd run INPUT --rerun-from STAGE` | Moves the results of `STAGE` and all later stages to `.gqteashmd/superseded/`, then recomputes them |
 | `gqteashmd status INPUT` | Shows whether a controller is running, and per stage the status, the task counts (done/failed/pending/running) and the last message. It opens the progress database read-only and changes nothing, so it is safe at any time |
@@ -461,6 +508,79 @@ The sign of `transition_dipole_au` in this example may differ from other runs, g
 
 Errors are printed once as `gqteashmd: error: …` (§5.1). An electronic-structure failure is not retried, because the same input would fail again, with one exception: a `MemoryError` or `OSError` raised inside PySCF (transient memory or file-system trouble) is a *retryable* task error, which `run` retries up to `execution.max_attempts` (§7.6). Every other failure is non-retryable (exit 4). §9 lists the messages.
 
+### 5.4 Example: `optimize` and `frequencies` on water
+**[IMPLEMENTED]** (P4). The run of §3 (water, HF/STO-3G, analytic Hessian) took 14 s in total and wrote, next to `00_prepare/`, the files below. The field tables are in §6; this section shows real contents.
+
+| File | Contents | Units |
+|---|---|---|
+| `01_optimize/optimized.xyz` | Optimized geometry; the comment line holds the S0 energy | Å (energy in $E_h$) |
+| `01_optimize/optimization_path.xyz` | One frame per gradient evaluation of the optimizer; frame 0 is the starting geometry | Å (energies in $E_h$) |
+| `01_optimize/optimize.json` | Energy, convergence, number of gradients, final maximum gradient, optimized coordinates | $E_h$, $E_h/a_0$, bohr, Å |
+| `02_frequencies/frequencies.h5` | Masses, coordinates, Hessian, frequencies, normal modes, reduced masses | each dataset has a `units` attribute |
+| `02_frequencies/frequencies.molden` | Frequencies and normal modes for a viewer (Molden, Jmol, Avogadro, ...); SHARC 4.1's `wigner.py` also reads it | bohr, cm⁻¹ |
+| `02_frequencies/frequencies.json` | Frequencies, reduced masses, warnings, method, checks | cm⁻¹, amu, $E_h/a_0$ |
+
+`optimized.xyz`. The input geometry had an O–H distance of 0.958 Å and an H–O–H angle of 104.5°; the optimizer ends at 0.989 Å and 100.0°:
+
+```text
+3
+energy -74.9659011864 Eh
+O     -0.0000000000   -0.0000000000    0.1502207532
+H     -0.0000000000    0.7580696780   -0.4856603766
+H      0.0000000000   -0.7580696780   -0.4856603766
+```
+
+The comment lines of `optimization_path.xyz` show the energy falling over the 5 gradient evaluations:
+
+```text
+step 0 energy -74.9630231385 Eh
+step 1 energy -74.9657219406 Eh
+step 2 energy -74.9658625222 Eh
+step 3 energy -74.9659003417 Eh
+step 4 energy -74.9659011864 Eh
+```
+
+`optimize.json` (the coordinates are left out here):
+
+```json
+{"schema_version": 1, "converged": true, "convergence": "GAU", "max_steps": 100,
+ "energy_hartree": -74.96590118638045, "n_gradients": 5,
+ "max_gradient_hartree_per_bohr": 8.566197959058997e-05, "symbols": ["O", "H", "H"]}
+```
+
+`frequencies.json`:
+
+```json
+{"schema_version": 1, "method": "analytic", "geometry_source": "optimize",
+ "energy_hartree": -74.96590118638039, "max_gradient_hartree_per_bohr": 8.565669726223746e-05,
+ "linear": false, "n_external": 6, "external_residual_cm1": 32.43849554737321,
+ "frequencies_cm1": [2170.19451623371, 4139.57161119818, 4390.548011804773],
+ "reduced_masses_amu": [1.078489404457653, 1.0490981633895675, 1.0773535803600447],
+ "imaginary_modes": [], "small_imaginary_modes": [], "warnings": []}
+```
+
+The start of `frequencies.molden` (coordinates in bohr, wavenumbers in cm⁻¹; the file continues with `[FR-COORD]` and `[FR-NORM-COORD]`):
+
+```text
+[Molden Format]
+[Atoms] AU
+O      1    8      -0.0000000000      -0.0000000000       0.2838760818
+H      2    1      -0.0000000000       1.4325440749      -0.9177651014
+H      3    1       0.0000000000      -1.4325440749      -0.9177651014
+[FREQ]
+     2170.194516
+     4139.571611
+     4390.548012
+```
+
+The three frequencies are the bend (2170 cm⁻¹) and the two stretches of water at this level (HF/STO-3G overestimates all three). The optimization stops at the `GAU` criterion with a maximum gradient of $8.6\times10^{-5}\,E_h/a_0$, so these frequencies differ by up to 0.5 cm⁻¹ from those at a tightly converged geometry (§8.7, validation). Each task directory also holds working files: `tasks/optimize/geometric/`, `tasks/optimize/electronic.log` (PySCF's output) and `tasks/hessian/hessian.npy` (§6).
+
+**What a stale run looks like.** If you now set `[optimize] enabled = false` and run again, the `frequencies` results were computed from the optimized geometry, so the program stops before changing anything (exit code 3):
+
+```text
+gqteashmd: error: Stage 'frequencies' has results produced from different inputs (the input file or an earlier stage changed). Run `gqteashmd run /home/you/gqteashmd-runs/water/input.toml --rerun-from frequencies` to move the old results aside and recompute from this stage onward.
+```
+
 ---
 
 ## 6. Project directory and output files
@@ -487,7 +607,71 @@ Errors are printed once as `gqteashmd: error: …` (§5.1). An electronic-struct
         └── worker.log      # the task's own output and error messages
 ```
 
-Later stages will add `01_optimize/`, `02_frequencies/` and so on, each with the same `tasks/` structure.
+Stage directories are numbered by the position of the stage in the pipeline and each has the same `tasks/<task id>/` structure. With `optimize` and `frequencies` the project also holds:
+
+```text
+├── 01_optimize/                # [IMPLEMENTED, P4]
+│   ├── optimized.xyz           # final geometry (Å)
+│   ├── optimization_path.xyz   # one frame per gradient evaluation (Å)
+│   ├── optimize.json           # see below
+│   └── tasks/optimize/         # task.json, result.json, worker.log, electronic.log (PySCF output),
+│                               #   scratch/ (PySCF temporary files), geometric/ (geomeTRIC's log and
+│                               #   trajectory), and last.xyz if the optimization did not converge
+└── 02_frequencies/             # [IMPLEMENTED, P4]
+    ├── frequencies.h5          # arrays with units, see below
+    ├── frequencies.molden      # for viewers; also read by SHARC's wigner.py
+    ├── frequencies.json        # see below
+    └── tasks/                  # analytic Hessian: hessian/ (with hessian.npy);
+                                #   finite differences: reference/, fd_000_plus/, fd_000_minus/, ... fd_<3N-1>_minus/
+```
+
+A disabled `optimize` stage still occupies number 01, so `frequencies` stays in `02_frequencies/`. In `fd_<k>_plus` and `fd_<k>_minus`, $k$ counts the Cartesian coordinates ($x,y,z$ of atom 1, then atom 2, ...) from 0. PySCF's temporary files of a task are written to its own `scratch/` directory inside the project, never to the system temporary directory.
+
+**`optimize.json`** [IMPLEMENTED]:
+
+| Field | Meaning | Unit |
+|---|---|---|
+| `schema_version` | File-format version (1) | — |
+| `energy_hartree` | S0 energy at the optimized geometry | $E_h$ |
+| `converged` | Always `true` (a failed optimization writes no `optimize.json`) | — |
+| `n_gradients` | Number of energy+gradient evaluations used by the optimizer. One more gradient is computed afterwards for the next field and is not counted | — |
+| `max_gradient_hartree_per_bohr` | Largest absolute Cartesian gradient component at the final geometry | $E_h/a_0$ |
+| `convergence`, `max_steps` | The `[optimize]` values used | — |
+| `symbols` | Element symbols, in input order | — |
+| `coords_bohr`, `coords_angstrom` | Optimized coordinates, one `[x, y, z]` per atom | $a_0$, Å |
+
+**`frequencies.json`** [IMPLEMENTED]:
+
+| Field | Meaning | Unit |
+|---|---|---|
+| `schema_version` | File-format version (1) | — |
+| `method` | `"analytic"` or `"finite_difference"` (the resolved choice) | — |
+| `geometry_source` | `"optimize"` or `"prepare"`: where the geometry came from | — |
+| `energy_hartree` | S0 energy at that geometry | $E_h$ |
+| `max_gradient_hartree_per_bohr` | Largest absolute gradient component there (stationarity check, §8.7) | $E_h/a_0$ |
+| `linear` | `true` if the molecule was found to be linear (5 external motions) | — |
+| `n_external` | Number of translations and rotations projected out: 6, 5 (linear) or 3 (one atom) | — |
+| `external_residual_cm1` | Largest $\lvert\tilde\nu\rvert$ of the projected-out motions (§8.7) | cm⁻¹ |
+| `frequencies_cm1` | Vibrational wavenumbers, ascending; **imaginary modes are negative** | cm⁻¹ |
+| `reduced_masses_amu` | Reduced mass of each mode (§8.7 convention) | amu |
+| `imaginary_modes` | `[{"mode": i, "frequency_cm1": f}, ...]` for $\tilde\nu < -$ `imaginary_cutoff_cm1` (modes are numbered from 1; non-empty only when the stage failed) | cm⁻¹ |
+| `small_imaginary_modes` | The same for $-$cutoff $\le \tilde\nu < 0$ | cm⁻¹ |
+| `warnings` | The warning messages issued (§8.7); empty if none | — |
+
+**`frequencies.h5`** [IMPLEMENTED] (HDF5; file attributes `schema_version` = 1 and `gqteashmd_version`). Every numeric dataset has a string attribute `units`. $N$ is the number of atoms and $n$ the number of vibrational modes ($3N - n_{\text{ext}}$):
+
+| Dataset | Shape | Unit | Meaning |
+|---|---|---|---|
+| `symbols` | $N$ | — | Element symbols |
+| `masses` | $N$ | amu | Masses used (§8.7) |
+| `coordinates` | $N\times3$ | bohr | The geometry analysed |
+| `hessian` | $3N\times3N$ | $E_h/a_0^2$ | Cartesian Hessian of S0 (symmetrized) |
+| `frequencies` | $n$ | cm⁻¹ | Wavenumbers, ascending; imaginary modes negative |
+| `modes_mass_weighted` | $3N\times n$ | 1 (dimensionless) | Column $k$ is the mass-weighted normal mode $\mathbf l_k$ (unit norm) |
+| `modes_cartesian` | $3N\times n$ | 1 (dimensionless) | Column $k$ is the Cartesian displacement of mode $k$, scaled to unit length |
+| `reduced_masses` | $n$ | amu | Reduced masses |
+
+**`frequencies.molden`** [IMPLEMENTED]: Molden format with `[Atoms] AU`, `[FREQ]` (cm⁻¹), `[FR-COORD]` (bohr) and `[FR-NORM-COORD]` (the `modes_cartesian` columns, one `vibration k` block per mode). Imaginary modes appear as negative wavenumbers.
 
 **`provenance.json`** [IMPLEMENTED]. Every `gqteashmd run` appends one record once the controller holds the project lock and has opened `state.db` (one run is one record), so the file shows the software behind every run of the project. A run that is later refused because a stage is stale (`StaleStageError`, §7.5) has a record; a run refused by the preflight checks, by the lock, or by a corrupt `state.db` has none. Open it with any text editor, or with `python -m json.tool .gqteashmd/provenance.json`.
 
@@ -527,7 +711,7 @@ Later stages will add `01_optimize/`, `02_frequencies/` and so on, each with the
 **[IMPLEMENTED]**
 
 ### 7.1 Stages and tasks
-- Each stage is split into **tasks**. `prepare` has one task. Planned stages have many; for example, `dynamics` will have one task per trajectory.
+- Each stage is split into **tasks**. `prepare` and `optimize` have one task each. `frequencies` has one task with the analytic Hessian, or $1+6N_{\text{at}}$ tasks with finite differences (§8.7). Planned stages have many; for example, `dynamics` will have one task per trajectory.
 - Stages run in order. A stage starts only when the stages it depends on are done.
 - Within a stage, up to `max_parallel_tasks` tasks run at the same time. Each task runs as a separate process, so a crashing calculation cannot bring down the controller.
 
@@ -538,7 +722,7 @@ Run `gqteashmd run input.toml`. It finishes with exit code 0 and prints `Workflo
 Simply **run the same command again**:
 - Stages that are already done are skipped ("up to date").
 - An interrupted stage continues where it stopped.
-- A stage that was done but whose results directory you deleted by hand is **computed again**, with a warning (`results directory … is missing; recomputing`). Downstream stages that are done are kept, and a recomputed stage listed in `workflow.pause_after` pauses again. This rule covers **done** stages only: a pending or failed stage that has done tasks whose directory was deleted stops with "missing or corrupt; run with --rerun-from".
+- A stage whose results directory you deleted by hand is **computed again**, with a warning (`results directory … is missing; recomputing`). This holds for every stage that is not skipped and that is either done or has finished tasks (so a failed or interrupted stage with finished tasks is reset too, not only a done one). Downstream stages that are done are kept, and a recomputed stage listed in `workflow.pause_after` pauses again.
 - Temporary files (`.…tmp`) left in `.gqteashmd/` by a crashed controller are removed when the next run starts.
 - Tasks that were running when the controller died are checked. Finished ones are kept. Left-over processes are terminated and the tasks are run again.
 
@@ -565,6 +749,10 @@ Run the suggested command. The old results are moved to `.gqteashmd/superseded/<
 
 A stage that has **no** finished tasks (it failed, or was stopped before any task finished) is simply started over when its inputs change.
 
+**A refused run changes nothing.** The check is made before anything in the project is written: the input snapshot `.gqteashmd/config.json` and the records of all stages are exactly as before. The only trace is the provenance record of the attempt (§6).
+
+**Optional stages.** `[optimize] enabled = false` skips `optimize`, and `frequencies` then uses the geometry from `prepare`. A disabled stage that already has results keeps them (log line `Stage optimize: skipped (disabled in the input file; earlier results kept)`). Downstream stages see it as skipped, so a `frequencies` stage that was computed from the optimized geometry is stale: the run stops with exit code 3 and the message of §5.4. Enabling `optimize` again with unchanged inputs makes `optimize` and `frequencies` up to date again. To use the unoptimized geometry anyway, run `gqteashmd run INPUT --rerun-from frequencies`.
+
 ### 7.6 When a stage fails
 The run stops with exit code 4 and lists up to five failed tasks with the path to each `worker.log`:
 
@@ -586,18 +774,18 @@ The lock is taken before anything else is created. A run that the lock refuses t
 
 ```toml
 [workflow]
-pause_after = ["selection"]        # example; "selection" is a planned stage
+pause_after = ["optimize"]         # example: stop after the geometry optimization
 ```
 
 - When a listed stage **finishes in this run**, the run stops, prints the message below, and exits with code **5**:
 
   ```text
-  Paused after stage 'selection' as requested (workflow.pause_after). Review its results, then run the same command again to continue.
+  Paused after stage 'optimize' as requested (workflow.pause_after). Review its results, then run the same command again to continue.
   ```
 
 - Review the results in the stage directory, then run **the same command again**. The finished stage is "up to date", so the run continues with the next stage and does not pause again.
 - A stage that was **skipped** (disabled in the input) never pauses. A stage that was already up to date from an earlier run does not pause either.
-- The **last** stage never pauses, because nothing follows it. In this version the only stage is `prepare`, so `pause_after` has no visible effect yet; it becomes useful when the later stages exist.
+- The **last** stage never pauses, because nothing follows it. In this version the stages are `prepare`, `optimize` and `frequencies`, so `pause_after = ["optimize"]` lets you inspect `optimized.xyz` before the frequencies are computed, while `pause_after = ["frequencies"]` has no effect until later stages exist.
 - A stage name that does not exist is an input error (`workflow.pause_after names unknown stage(s): …`), found before anything runs.
 
 ### 7.9 Checks before a run (preflight)
@@ -614,6 +802,11 @@ pause_after = ["selection"]        # example; "selection" is a planned stage
 | Free disk space below `execution.min_free_disk_mb` | `Only N MB are free on the disk holding …; at least M MB are required (execution.min_free_disk_mb).` | Free space, choose another disk, or lower the limit |
 | The free space cannot be determined | `Cannot determine free disk space for …` | Check that the path is on a readable disk |
 | An enabled stage needs a Python module that is not installed | `Stage '…' needs the Python module '…', which is not installed in this environment.` | Install the module in the active conda environment |
+| An enabled stage needs a newer version of a module | `Stage '…' needs pyscf >= 2.6; version … is installed. Update the conda environment (environment.yml).` | Update the environment |
+
+**Required modules per stage:** `optimize` needs `pyscf>=2.6` and `geometric>=1.0`; `frequencies` needs `pyscf>=2.6` and `h5py>=3.9`. A stage that is disabled is not checked (with `optimize.enabled = false`, geomeTRIC is not needed). If the installed version cannot be read, the version is not checked.
+
+**Scratch space.** PySCF's temporary files are written to `scratch/` inside each task directory, in the project. The check that the project directory is writable therefore also covers the scratch space; there is no separate scratch check.
 
 The disk is the one that holds the project directory, or its nearest existing parent folder if the directory does not exist yet. The location check looks at the path text. A relative path is resolved against the input file's directory with symbolic links followed, so it is judged by its target; an absolute path is taken as written, and a symbolic link in it is not followed (§10).
 
@@ -631,8 +824,8 @@ These two warnings appear when the values you entered exceed the cores or the RA
 ## 8. Computational methods and formulas
 
 This chapter defines every quantity the program computes or will compute.
-- **§8.1–§8.6** describe **what the current version does**.
-- **§8.7–§8.13** describe the **planned** methods. Those formulas document the intended implementation; they are not available yet, and details may change after validation against SHARC 4.1 and the literature.
+- **§8.1–§8.7** describe **what the current version does**.
+- **§8.8–§8.13** describe the **planned** methods. Those formulas document the intended implementation; they are not available yet, and details may change after validation against SHARC 4.1 and the literature.
 
 ### 8.1 Units and constants
 **[IMPLEMENTED]** for input and output:
@@ -640,7 +833,7 @@ This chapter defines every quantity the program computes or will compute.
 - Charges are in units of the elementary charge $e$.
 - Times in `[execution]` are in seconds.
 
-**[IMPLEMENTED]** in the electronic-structure layer (§8.6): coordinates are converted from Å to bohr once, when the XYZ file is read, using the CODATA 2018 values below. Energies are in $E_h$, gradients in $E_h/a_0$ and transition dipoles in $e\,a_0$; the only conversion on output is $E_h \to$ eV for the excitation energies.
+**[IMPLEMENTED]** in the electronic-structure layer (§8.6): coordinates are converted from Å to bohr once, when the XYZ file is read, using the CODATA 2018 values below. Energies are in $E_h$, gradients in $E_h/a_0$ and transition dipoles in $e\,a_0$; the only conversion on output is $E_h \to$ eV for the excitation energies. The vibrational analysis (§8.7) takes masses in amu and Hessians in $E_h/a_0^2$, and reports wavenumbers in cm⁻¹ with the conversion factors of the table below.
 
 **[PLANNED]** for the other calculations:
 - All internal quantities will be in **Hartree atomic units**, where $\hbar = m_e = e = 4\pi\varepsilon_0 = 1$.
@@ -709,6 +902,7 @@ $$
 - **Inputs:**
   - $\text{inputs}_s$ are the input-file values the stage uses.
   - For `prepare`: `charge`, `multiplicity` and the SHA-256 of the geometry file's **contents**. The path is not included, so moving the file does not invalidate results, but editing it does.
+- For `optimize`: the whole `[electronic]` section and the `[optimize]` section. For `frequencies`: the whole `[electronic]` section and the `[frequencies]` section. These stages read no upstream file when the fingerprint is computed; they depend on `prepare` (and on `optimize`) only through the upstream fingerprints. A disabled `optimize` counts as "skipped" in the fingerprint of `frequencies`.
 - **Canonical form:** JSON is written with sorted keys and fixed separators, so the same inputs always give the same $F_s$.
 - **Chaining:** a fingerprint includes the fingerprints of the stages it depends on. A change therefore invalidates every later stage that depends on it.
 - **Interpreting it:** you never see $F_s$ directly. It produces the "results produced from different inputs" message in §7.5.
@@ -765,10 +959,10 @@ where $f_{\max}$ is the stage's tolerated fraction. For `prepare`, $f_{\max} = 0
 
 ---
 
-> **§8.6 is [IMPLEMENTED].** **Everything below it (§8.7–§8.13) is [PLANNED].** The stages, keys and outputs there do not exist in the current version.
+> **§8.6 and §8.7 are [IMPLEMENTED].** **Everything after them (§8.8–§8.13) is [PLANNED].** The stages, keys and outputs there do not exist in the current version.
 
 ### 8.6 Electronic structure (PySCF)
-**[IMPLEMENTED, P3a]** Energies, analytic gradients and transition dipoles. **[IMPLEMENTED, P3b, library only]** SA-CASSCF nonadiabatic couplings, wavefunction overlaps with phase tracking, `compute_more`, restarts (§8.6.8). **[PLANNED]** use of couplings and overlaps in dynamics (P7), TDDFT couplings, triplets and spin–orbit coupling, the Hessian (P4).
+**[IMPLEMENTED, P3a]** Energies, analytic gradients and transition dipoles. **[IMPLEMENTED, P3b, library only]** SA-CASSCF nonadiabatic couplings, wavefunction overlaps with phase tracking, `compute_more`, restarts (§8.6.8). **[PLANNED]** use of couplings and overlaps in dynamics (P7), TDDFT couplings, triplets and spin–orbit coupling. **[IMPLEMENTED, P4]** the S0 Hessian (analytic for RHF/RKS; SA-CASSCF uses finite differences of gradients in the `frequencies` stage, §8.7).
 
 **What is computed.** For a geometry $\mathbf R$ (nuclear coordinates, bohr) and the states $I = S_0, S_1, \dots$ requested by `electronic.singlets`:
 
@@ -776,11 +970,11 @@ where $f_{\max}$ is the stage's tolerated fraction. For `prepare`, $f_{\max} = 0
 |---|---|---|---|
 | Adiabatic energy | $E_I(\mathbf R)$ | $E_h$ | **[IMPLEMENTED]** |
 | Excitation energy | $\Delta E_{0I} = E_I - E_0$ | $E_h$ (eV on output) | **[IMPLEMENTED]** |
-| Gradient | $\nabla_{\mathbf R} E_I$, a $3N_{\text{at}}$-vector | $E_h/a_0$ | **[IMPLEMENTED]** (backend; `single-point` does not request it) |
+| Gradient | $\nabla_{\mathbf R} E_I$, a $3N_{\text{at}}$-vector | $E_h/a_0$ | **[IMPLEMENTED]** (used by `optimize` and `frequencies`; `single-point` does not request it) |
 | Transition dipole | $\boldsymbol\mu_{0I}$ | $e\,a_0$ | **[IMPLEMENTED]** |
 | Oscillator strength | $f_{0I}$ | — | **[IMPLEMENTED]** |
 | Nonadiabatic couplings $\mathbf d_{IJ} = \langle \Psi_I \vert \nabla_{\mathbf R} \Psi_J \rangle$ (CASSCF); wavefunction overlaps $S_{IJ}(t) = \langle \Psi_I(t-\Delta t) \vert \Psi_J(t) \rangle$ (TDA/TDDFT) | $\mathbf d_{IJ}$, $S_{IJ}$ | $a_0^{-1}$, — | **[IMPLEMENTED, P3b]** $\mathbf d_{IJ}$ for CASSCF only; $S_{IJ}$ for all methods; library only, not reachable from the CLI (§8.6.8) |
-| Hessian $\partial^2 E_0/\partial x_i\partial x_j$ | $H_{ij}$ | $E_h/a_0^2$ | [PLANNED, P4] |
+| Hessian $\partial^2 E_0/\partial x_i\partial x_j$ | $H_{ij}$ | $E_h/a_0^2$ | **[IMPLEMENTED, P4]** S0 only: analytic for `tda`/`tddft` (SCF Hessian, backend method `ground_state_hessian`); not for `casscf` (finite differences, §8.7) |
 
 **Assumptions that apply to everything in §8.6:**
 - **Closed-shell singlet molecules only.** The reference is a restricted determinant (RHF or RKS), so `molecule.multiplicity` must be 1. Open-shell references and radicals are refused (§9).
@@ -1045,28 +1239,115 @@ A CASSCF rung fails if it does not converge or if a root has $\lvert\langle S^2\
 **Scratch policy.** No SCF checkpoint file is written. PySCF's temporary directory is pointed at the backend's `scratch_dir` (default: the system temporary directory) during `compute` and `compute_more` and restored afterwards, also after a failure. Put the scratch directory on a local disk, not on OneDrive or `/mnt/<letter>` in WSL. An input-file key for it is [PLANNED].
 
 ### 8.7 Harmonic analysis (frequencies)
-**[PLANNED, P4]** From the Cartesian Hessian $H_{ij} = \partial^2 E_0 / \partial x_i \partial x_j$ at the optimized geometry:
-
-$$
-H^{\text{mw}}_{ij} = \frac{H_{ij}}{\sqrt{m_i m_j}}, \qquad
-H^{\text{mw}} \mathbf L_k = \lambda_k \mathbf L_k, \qquad
-\omega_k = \sqrt{\lambda_k}, \qquad
-\tilde\nu_k\,[\text{cm}^{-1}] = 219474.63\;\omega_k\,[\text{a.u.}] .
-$$
+**[IMPLEMENTED, P4]** The `frequencies` stage computes the Cartesian Hessian of the S0 energy at the geometry of `optimize` (or of `prepare` when `optimize` is disabled) and analyses it in the harmonic approximation. The analysis (`gqteashmd.vib.harmonic`) is our own implementation of the standard treatment of Wilson, Decius and Cross [8] in the Eckart frame [9]. It needs only the Hessian, the geometry and the masses.
 
 | Symbol | Meaning | Unit |
 |---|---|---|
-| $x_i$ | Cartesian coordinate $i$ ($3N_{\text{at}}$ of them) | $a_0$ |
-| $m_i$ | Mass of the atom that owns coordinate $i$ (most abundant isotope; open item O5) | $m_e$ |
-| $H_{ij}$ | Hessian | $E_h\,a_0^{-2}$ |
-| $\lambda_k$, $\mathbf L_k$ | Eigenvalues and orthonormal eigenvectors (normal modes) of the mass-weighted Hessian | a.u. |
-| $\omega_k$ | Angular frequency | $E_h/\hbar$ |
-| $\tilde\nu_k$ | Wavenumber | cm⁻¹ |
+| $N_{\text{at}}$ | Number of atoms | — |
+| $x_i$ ($i = 1,\dots,3N_{\text{at}}$) | Cartesian coordinates of the geometry $\mathbf R$ | $a_0$ |
+| $m_i$ | Mass of the atom that owns coordinate $i$ (§ masses below) | amu |
+| $E_0$, $g_i = \partial E_0/\partial x_i$ | S0 energy and its gradient | $E_h$, $E_h/a_0$ |
+| $H_{ij} = \partial^2 E_0/\partial x_i\partial x_j$ | Cartesian Hessian | $E_h/a_0^2$ |
+| $h$ | Finite-difference step (`frequencies.fd_step_bohr`) | $a_0$ |
+| $\mathbf e_k$ | Unit vector along Cartesian coordinate $k$ | — |
+| $H^{\text{mw}}$ | Mass-weighted Hessian | $E_h\,a_0^{-2}\,\text{amu}^{-1}$ |
+| $\mathbf D$, $n_{\text{ext}}$ | Orthonormal translations and rotations ($3N_{\text{at}}\times n_{\text{ext}}$), and their number | —, — |
+| $\mathbf Q$ | Orthonormal basis of the complement of $\mathbf D$ ($3N_{\text{at}}\times(3N_{\text{at}}-n_{\text{ext}})$) | — |
+| $\lambda_k$, $\mathbf v_k$ | Eigenvalues and eigenvectors of $\mathbf Q^{\mathsf T}H^{\text{mw}}\mathbf Q$ | $E_h\,a_0^{-2}\,\text{amu}^{-1}$, — |
+| $u$ | One amu in electron masses, $1822.888486$ | $m_e$/amu |
+| $\tilde\nu_k$ | Wavenumber of mode $k$ | cm⁻¹ |
+| $\mathbf l_k$ | Mass-weighted normal mode, unit norm | — |
+| $\mathbf x_k$ | Cartesian displacement of mode $k$, scaled to unit length | — |
+| $\mu_k$ | Reduced mass of mode $k$ | amu |
 
-- **Removed modes:** translations and rotations are projected out, leaving $3N_{\text{at}}-6$ vibrational modes, or $3N_{\text{at}}-5$ for linear molecules.
-- **Imaginary modes:** $\lambda_k < 0$ means an imaginary frequency, which is reported as a negative wavenumber. If $|\tilde\nu_k|$ exceeds `imaginary_cutoff_cm1` (planned default 20 cm⁻¹), the geometry is not a minimum and the workflow stops.
-- **Assumptions:** harmonic approximation, and the Born–Oppenheimer ground state.
-- **Output:** `frequencies.h5` and a Molden file for visualization.
+**Step 1: the Hessian.** Two ways, chosen by `frequencies.method`:
+
+- *Analytic* (one task `hessian`): PySCF's analytic SCF Hessian (RHF or RKS) at $\mathbf R$.
+- *Finite differences* (SA-CASSCF, which has no analytic Hessian in PySCF; or `method = "finite_difference"`): central differences of the S0 gradient. For each Cartesian coordinate $k$, the gradient is computed at $\mathbf R + h\,\mathbf e_k$ and $\mathbf R - h\,\mathbf e_k$:
+
+$$
+H_{ik} \;\approx\; \frac{g_i(\mathbf R + h\,\mathbf e_k) - g_i(\mathbf R - h\,\mathbf e_k)}{2h},
+\qquad
+\mathbf H \leftarrow \tfrac12\left(\mathbf H + \mathbf H^{\mathsf T}\right).
+$$
+
+  The error of the differences is of order $h^2$, and gradient noise is divided by $2h$; the default $h = 0.005\,a_0$ is a compromise between the two. The stage has $1 + 6N_{\text{at}}$ independent tasks: one `reference` task (the energy and gradient at $\mathbf R$, used for the stationarity check and `energy_hartree`) and $2\times3N_{\text{at}}$ displaced gradients. Every task builds a **fresh** electronic-structure object, so the orbitals of one displacement cannot influence another. The tasks run in parallel up to `max_parallel_tasks` (§8.4).
+
+In both cases the Hessian is symmetrized before the analysis (for the analytic Hessian this removes only rounding noise).
+
+**Step 2: mass weighting.**
+
+$$
+H^{\text{mw}}_{ij} \;=\; \frac{H_{ij}}{\sqrt{m_i\,m_j}} .
+$$
+
+**Step 3: removing translations and rotations (Eckart frame).** With atom positions $\mathbf r_A$, the centre of mass $\mathbf r_{\text{cm}} = \sum_A m_A\mathbf r_A/\sum_A m_A$, and the three Cartesian axes $a$, the mass-weighted vectors of infinitesimal translation and rotation have, for atom $A$, the components
+
+$$
+\left(\mathbf T_a\right)_A = \sqrt{m_A}\;\hat{\mathbf e}_a ,
+\qquad
+\left(\mathbf R_a\right)_A = \sqrt{m_A}\;\hat{\mathbf e}_a \times (\mathbf r_A - \mathbf r_{\text{cm}}) .
+$$
+
+The six vectors are orthonormalized by a singular-value decomposition, and singular values smaller than $10^{-6}$ times the largest are discarded. This leaves $n_{\text{ext}} = 6$ vectors for a nonlinear molecule, 5 for a linear one (found automatically) and 3 for a single atom; they form the columns of $\mathbf D$. An orthonormal basis $\mathbf Q$ of the complement of $\mathbf D$ is built by QR decomposition. The vibrational problem is then
+
+$$
+\left(\mathbf Q^{\mathsf T} H^{\text{mw}} \mathbf Q\right)\mathbf v_k = \lambda_k \mathbf v_k ,
+\qquad k = 1,\dots, 3N_{\text{at}} - n_{\text{ext}} .
+$$
+
+**Step 4: frequencies.** With the mass in amu and the Hessian in atomic units, the angular frequency in atomic units is $\omega_k = \sqrt{\lambda_k/u}$, and the wavenumber follows from $1\,E_h = 219474.6313632$ cm⁻¹:
+
+$$
+\tilde\nu_k \;=\; \operatorname{sign}(\lambda_k)\,\sqrt{\frac{\lvert\lambda_k\rvert}{u}}\;\times\;219474.6313632\ \text{cm}^{-1} .
+$$
+
+A negative $\lambda_k$ is an **imaginary frequency**; it is reported as a **negative** wavenumber, in the JSON, HDF5 and Molden files. Modes are numbered from 1 in ascending order of $\tilde\nu$, so the most negative (most unstable) mode comes first.
+
+**Step 5: normal modes and reduced masses.** The mass-weighted mode is $\mathbf l_k = \mathbf Q\mathbf v_k$ (unit norm). Its Cartesian displacement is $\mathbf x_k \propto M^{-1/2}\mathbf l_k$, with $M = \operatorname{diag}(m_i)$, scaled to unit length (`modes_cartesian`, and the Molden file). The reduced mass uses the Gaussian/PySCF convention:
+
+$$
+\mu_k \;=\; \frac{1}{\sum_i l_{k,i}^2/m_i} .
+$$
+
+For example, the stretch of H₂ gets $\mu = 1.0078$ amu, not the textbook $m/2 = 0.504$ amu, so reduced masses can be compared directly with Gaussian and PySCF output. The water modes in §5.4 have $\mu \approx 1.05$–$1.08$ amu.
+
+**External residual.** The motions removed in Step 3 would have zero frequency for an exact Hessian at a stationary point. The program also diagonalizes $\mathbf D^{\mathsf T}H^{\text{mw}}\mathbf D$ and reports the largest $\lvert\tilde\nu\rvert$ (same conversion) as `external_residual_cm1`. It measures how far the Hessian is from rotational and translational invariance. At optimized geometries we measured 25–41 cm⁻¹ with RHF and about 22 cm⁻¹ with B3LYP on the default grid (`grid_level` 3). These values are not errors in the vibrational frequencies, because the external motions are projected out before diagonalization.
+
+**Masses [IMPLEMENTED, P4; open item O5 resolved].** The masses $m_i$ are those of the **most abundant isotope** of each element, in amu, for H to Rn (module `gqteashmd.chem.masses`; values from the NIST atomic weights and isotopic compositions as tabulated in PySCF; for Tc, Pm, Po, At and Rn, which have no stable isotope, the isotope listed in the module). Examples: H 1.007825, C 12.000000, N 14.003074, O 15.994915. They are stored in `frequencies.h5` (`masses`). There is no input key for isotopic substitution yet. The Wigner sampling of P5 will use the same masses.
+
+**Why only S0, and how the surface is defined.** The Hessian is that of the ground-state surface on which the dynamics will start.
+- For `tda` and `tddft` the S0 energy is the SCF energy of the restricted reference. Excited states do not enter it, so the stages ask the backend for S0 only (`singlets` is set to 1 internally for these calculations) and the Hessian is the analytic SCF Hessian (RHF for `functional = "hf"`, RKS otherwise).
+- For `casscf` the S0 energy is the lowest root of the **state-averaged** calculation. The state average defines the orbitals and therefore the surface, so the stages keep your `singlets` (an equal-weight state average). PySCF has no analytic SA-CASSCF Hessian, so the Hessian comes from finite differences of the SA-CASSCF S0 gradient (Step 1), which costs $1 + 6N_{\text{at}}$ gradient evaluations (37 for ethylene).
+- `optimize` uses the same S0 settings, with one electronic-structure object for the whole optimization path (successive geometries start from the previous orbitals).
+
+**Stopping and warning policy.** `frequencies` writes all its files first and then checks the result:
+
+| Condition | What happens |
+|---|---|
+| Some $\tilde\nu_k < -$ `imaginary_cutoff_cm1` (default 20 cm⁻¹) | The stage **fails** (exit code 4). The message lists every such mode, for example `mode 1: -2329.0 cm^-1, mode 2: -2329.0 cm^-1`. The files are on disk, so you can look at the modes in `frequencies.molden`. The structure is not a minimum: re-optimize (for example `convergence = "GAU_TIGHT"`), check the starting structure, or raise the cutoff if the mode is a known numerical artefact |
+| $-$cutoff $\le \tilde\nu_k < 0$ | **Warning** `small imaginary modes (within the cutoff): …`; the modes are recorded in `small_imaginary_modes` |
+| `external_residual_cm1` > 100 cm⁻¹ | **Warning** `translation/rotation contamination up to … cm^-1 (Hessian or geometry inaccurate)` |
+| Largest absolute gradient component > $10^{-3}\,E_h/a_0$ | **Warning** `max |gradient| = … Eh/bohr: not a stationary point; frequencies are approximate` |
+
+Warnings reach the console, `logs/gqteashmd.log` and the `warnings` list of `frequencies.json`; the run continues. The master plan's earlier idea of stopping on a wrong number of near-zero modes was replaced by the external-residual warning, because the projected frequencies are not affected.
+
+**Cost.** Analytic: one SCF plus one Hessian. Finite differences: $1 + 6N_{\text{at}}$ SA-CASSCF gradient tasks; in the test suite, SA-CASSCF(2,2)/STO-3G ethylene (37 tasks) takes about 84 s. `optimize` for water at HF/STO-3G needed 5 gradient evaluations (about 0.9 s of computation).
+
+**Assumptions.** Harmonic approximation; the Born–Oppenheimer S0 surface of §8.6; the geometry is a stationary point (checked by the gradient warning above). No anharmonicity, no thermochemistry (zero-point energy, entropy) and no frequency scaling are computed.
+
+**Validation (measured).**
+
+| Comparison | Result |
+|---|---|
+| Our harmonic analysis vs PySCF `thermo.harmonic_analysis` for the same Hessian, geometry and masses (water; linear CO₂) | Frequencies agree to $10^{-6}$ cm⁻¹ |
+| Analytic SCF Hessian vs finite differences of analytic gradients ($h = 10^{-3}$; water, HF/STO-3G) | Largest difference $6.0\times10^{-7}\,E_h/a_0^2$ |
+| `frequencies` stage, water RHF/STO-3G at a tightly optimized geometry (largest gradient $1.7\times10^{-7}\,E_h/a_0$): analytic vs finite differences ($h = 0.005\,a_0$) | Analytic 2170.05, 4140.00, 4391.07 cm⁻¹; finite differences 2170.00, 4140.02, 4391.08 cm⁻¹ |
+| ORCA 6.1.1, water RHF/6-31G\*, fixed geometry, ORCA's masses | Ours 1825.981, 4055.472, 4173.836 cm⁻¹; ORCA 1826.02, 4055.42, 4173.83 cm⁻¹ (differences −0.039, +0.052, +0.006 cm⁻¹) |
+| Linear water (a saddle point of the bend) | Two imaginary bending modes at −2329.0 cm⁻¹; the stage stops as designed |
+| SHARC 4.1 `wigner.py` (run as a black box) reading our `frequencies.molden` | Accepted unchanged |
+
+The PySCF comparison used the same masses and so tests the projection and the diagonalization alone; the ORCA comparison used ORCA's own masses and tests the whole chain. The example of §5.4 is not tightly converged (largest gradient $8.6\times10^{-5}\,E_h/a_0$), so its frequencies differ by up to 0.5 cm⁻¹ from the tightly converged values in the table.
 
 ### 8.8 Wigner sampling of initial conditions
 **[PLANNED, P5]**
@@ -1205,6 +1486,9 @@ $$
 | `Project directory … is on a Windows drive mounted in WSL …` / `… on a OneDrive folder …` | Preflight refusal (§7.9) | Use a local Linux disk |
 | `Only N MB are free on the disk holding … ` | Not enough free disk space (§7.9) | Free space or lower `execution.min_free_disk_mb` |
 | `Stage '…' needs the Python module '…', which is not installed` | Preflight: a missing module | Install it in the conda environment |
+| `Stage '…' needs pyscf >= 2.6; version … is installed. Update the conda environment (environment.yml).` (also `geometric >= 1.0`, `h5py >= 3.9`) | Preflight: a module is too old (exit 2, §7.9) | Update the conda environment |
+| `Stage 'optimize' needs an [electronic] section in the input file` (also for `frequencies`; several stages are joined by `; `) | `validate` or `run` with no `[electronic]` section (exit 2) | Add the section (§4.2) |
+| `frequencies.method = 'analytic': there is no analytic SA-CASSCF Hessian in PySCF; use 'auto' or 'finite_difference'` | `analytic` together with `electronic.method = "casscf"` (exit 2) | Use `"auto"` or `"finite_difference"` |
 | `Preflight: resources.total_cores = … exceeds the … cores detected` (also for memory) | **Warning**, not an error (§7.9) | Check that the values describe your machine |
 | `Paused after stage '…' as requested (workflow.pause_after)` | Not an error: exit code 5 (§7.8) | Review, then run the same command again |
 | `File locking is not available for … (…); put the project directory on a local Linux filesystem.` | The filesystem of the project directory does not support file locks (exit 3) | Choose a local Linux disk (§2.3) |
@@ -1233,22 +1517,27 @@ $$
 | `The wavefunction overlap failed: MemoryError: The wavefunction overlap would exceed the memory limit of … GiB: estimated … GiB; lower overlap_norm_kept or the active space` | The overlap between two geometries would need more than 2 GiB (raised as a retryable `ElectronicStructureError` by a library call; not reachable from the CLI) | Lower `electronic.overlap_norm_kept` or the active space |
 | `The wavefunction overlap failed: …` | The truncation, overlap or tracking step failed (`ElectronicStructureError`, not retried; library call, not reachable from the CLI) | Read the message; report it if the geometry is ordinary |
 | `The SA-CASSCF gradient of … failed` / `… gradient of … failed` / `The transition dipole calculation failed` | PySCF failed in a derivative or dipole step (exit 4) | Read the `--log` file; report if the SCF itself converged |
+| `The geometry optimization did not converge in N steps (convergence = '…'). Increase [optimize] max_steps, start from a better geometry, or loosen [optimize] convergence; the last geometry is in …/last.xyz` | The `optimize` task failed (not retried); the stage stops with `Stage 'optimize' failed: 1 of 1 tasks did not succeed` (exit 4) | Follow the advice. `optimization_path.xyz` and `last.xyz` are in the task directory |
+| `The structure is not a minimum: N imaginary mode(s) beyond 20 cm^-1 (mode 1: -2329.0 cm^-1, …). Re-optimize …` | `frequencies` found imaginary modes beyond the cutoff (exit 4, §8.7). The files are written first | Re-optimize with a tighter `convergence`, check the starting structure, or raise `imaginary_cutoff_cm1` |
+| `The analytic SCF Hessian failed: …` | PySCF failed in the Hessian step (exit 4; retried only for `MemoryError`/`OSError`) | Read `electronic.log` in the task directory; try `frequencies.method = "finite_difference"` |
+| `Stage … results directory … is missing; recomputing` | **Warning**: you deleted a stage directory (§7.3) | None; the stage is computed again |
+| `Stage frequencies: small imaginary modes …` / `translation/rotation contamination …` / `not a stationary point …` | **Warnings** from `frequencies` (§8.7); the run continues | Check the geometry and the Hessian |
 | `internal error: …` | A program bug | Report it with `logs/gqteashmd.log` and the task's `result.json` |
 
 ---
 
 ## 10. Known limitations
 
-- **Feature scope:** only the `prepare` stage exists. The electronic-structure layer works through `gqteashmd single-point` only; no workflow stage uses it yet, so the hardware and per-stage resource settings and `pause_after` have little visible effect until the later stages arrive.
-- **Electronic structure:** closed-shell singlet molecules with a restricted reference only; no triplet states; nonadiabatic couplings (SA-CASSCF only) and wavefunction overlaps exist only as a library and are not used by any command or stage yet (P7), and the Hessian is missing (P4); TDA/TDDFT have no analytic couplings, and their overlaps use the excitation amplitudes X only (§8.6.8); the cost of the overlap engine grows with the number of determinants kept (`overlap_norm_kept`); overlap-based couplings carry noise of order $10^{-7}/\Delta t$ at default CASSCF convergence; no density fitting; no scratch-directory input key yet (the backend supports one, and writes no checkpoint file); TDDFT/TDA describe the S₁/S₀ crossing seam incorrectly (§8.6.4); DFT gradients omit the grid response, so use `grid_level` ≥ 5 for dynamics (§8.6.4). The SCF, CASSCF and TD calculations each have a retry ladder (§8.6.1, §8.6.8); a calculation that fails every rung stops.
-- **Workflow checks still planned (P4):** the preflight does not yet check the PySCF and geomeTRIC versions or that a scratch directory is writable; `validate` reports only the first violation it finds in the input file; a run refused because a stage is stale still opens and writes `state.db`.
+- **Feature scope:** the stages `prepare`, `optimize` and `frequencies` exist. Sampling, excitations, initial-state selection, dynamics and analysis are planned (P5–P8), so the workflow ends with the frequencies today.
+- **Electronic structure:** closed-shell singlet molecules with a restricted reference only; no triplet states; nonadiabatic couplings (SA-CASSCF only) and wavefunction overlaps exist only as a library and are not used by any command or stage yet (P7); the analytic Hessian exists for RHF/RKS only (SA-CASSCF uses finite differences, §8.7); TDA/TDDFT have no analytic couplings, and their overlaps use the excitation amplitudes X only (§8.6.8); the cost of the overlap engine grows with the number of determinants kept (`overlap_norm_kept`); overlap-based couplings carry noise of order $10^{-7}/\Delta t$ at default CASSCF convergence; no density fitting; no scratch-directory input key yet (the backend supports one, and writes no checkpoint file); TDDFT/TDA describe the S₁/S₀ crossing seam incorrectly (§8.6.4); DFT gradients omit the grid response, so use `grid_level` ≥ 5 for dynamics (§8.6.4). The SCF, CASSCF and TD calculations each have a retry ladder (§8.6.1, §8.6.8); a calculation that fails every rung stops.
+- **`optimize` and `frequencies`:** they work on the S0 surface of `[electronic]` only (no excited-state optimization, no constraints, no transition-state search). There is no input key for isotope masses, and no thermochemistry (zero-point energy, entropy), anharmonicity or frequency scaling. A finite-difference Hessian costs $1+6N_{\text{at}}$ gradients, which is large for SA-CASSCF with many atoms. The check of the project directory covers the scratch space; there is no separate check that the disk has room for PySCF's scratch files beyond `min_free_disk_mb`. A refused stale run still appends a provenance record (§7.5).
 - **Platform:** Linux only, with no batch-scheduler support. Runs are designed for a single workstation.
 - **Project-folder check:** the check for Windows drives and OneDrive (§7.9) looks at the text of the path. An absolute path that is a symbolic link into a Windows drive or a OneDrive folder is not detected.
 - **SHARC comparison is not automated:** the tests against SHARC 4.1 need a SHARC installation and run only on the development machine (`pytest -m sharc`); the continuous-integration workflow (first run 2026-11-07, passing) runs everything else.
 
 ## 11. Roadmap
 
-P1 foundation (done) → P2 input schema and pre-run checks (done) → P3a PySCF backend (done: energies, gradients, transition dipoles, `single-point`) → P3b couplings, overlaps, phase tracking and restarts (done, library only) → P3c hardening sweep (done) → **P4 optimization, frequencies and Hessian (next)** → P5 Wigner sampling → P6 excitations and initial states → P7 dynamics → P8 analysis → P9 systematic validation against SHARC 4.1. This manual is updated with each step. Sections marked [PLANNED] become [IMPLEMENTED] when their sub-project is finished and validated.
+P1 foundation (done) → P2 input schema and pre-run checks (done) → P3a PySCF backend (done: energies, gradients, transition dipoles, `single-point`) → P3b couplings, overlaps, phase tracking and restarts (done, library only) → P3c hardening sweep (done) → P4 optimization, frequencies and Hessian (done: `optimize` and `frequencies` stages) → **P5 Wigner sampling (next)** → P6 excitations and initial states → P7 dynamics → P8 analysis → P9 systematic validation against SHARC 4.1. This manual is updated with each step. Sections marked [PLANNED] become [IMPLEMENTED] when their sub-project is finished and validated.
 
 ## 12. References
 1. J. C. Tully, *J. Chem. Phys.* **93**, 1061 (1990): fewest-switches surface hopping.
@@ -1258,3 +1547,5 @@ P1 foundation (done) → P2 input schema and pre-run checks (done) → P3a PySCF
 5. E. Wigner, *Phys. Rev.* **40**, 749 (1932); M. Barbatti, K. Sen, *Int. J. Quantum Chem.* **116**, 762 (2016): Wigner sampling for initial conditions.
 6. Q. Sun et al., *J. Chem. Phys.* **153**, 024109 (2020): PySCF.
 7. CODATA 2018 recommended values of the fundamental physical constants.
+8. E. B. Wilson, J. C. Decius, P. C. Cross, *Molecular Vibrations* (McGraw-Hill, 1955): normal-coordinate analysis.
+9. C. Eckart, *Phys. Rev.* **47**, 552 (1935): the translation and rotation conditions.
