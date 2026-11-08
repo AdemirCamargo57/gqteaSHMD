@@ -9,10 +9,13 @@ from gqteashmd.project.layout import ProjectLayout
 
 pytestmark = pytest.mark.pyscf
 HF = '[electronic]\nmethod = "tda"\nbasis = "sto-3g"\nfunctional = "hf"\nsinglets = 2\n'
+# keep the stages after frequencies cheap: few samples, one excitations task
+TAIL = "[excitations]\nsamples_per_task = 20\n[selection]\nn_trajectories = 2\nallow_fewer = true\n"
+FEW = "[sampling]\nn_samples = 4\n" + TAIL
 
 
 def test_run_optimizes_and_computes_frequencies(tmp_path, write_input):
-    path = write_input(tmp_path, extra=HF)
+    path = write_input(tmp_path, extra=HF + FEW)
     assert main(["run", str(path)]) == 0
     layout = ProjectLayout(load_config(path).config.project.directory)
     opt = json.loads((layout.stage_dir(1, "optimize") / "optimize.json").read_text())
@@ -24,7 +27,7 @@ def test_run_optimizes_and_computes_frequencies(tmp_path, write_input):
 
 
 def test_disabling_optimize_after_a_run_is_refused(tmp_path, write_input):
-    path = write_input(tmp_path, extra=HF)
+    path = write_input(tmp_path, extra=HF + FEW)
     assert main(["run", str(path)]) == 0
     path.write_text(path.read_text() + "\n[optimize]\nenabled = false\n")
     assert main(["run", str(path)]) == 3  # frequencies was computed from the optimized geometry
@@ -53,7 +56,7 @@ def test_sampling_end_to_end_and_seed_change(tmp_path, write_input):
     import h5py
     import numpy as np
 
-    path = write_input(tmp_path, extra=HF + "[sampling]\nn_samples = 20\n")
+    path = write_input(tmp_path, extra=HF + "[sampling]\nn_samples = 20\n" + TAIL)
     seeded = 'name = "test"\nseed = {}'
     original = path.read_text().replace('name = "test"', seeded.format(1))
     path.write_text(original)
