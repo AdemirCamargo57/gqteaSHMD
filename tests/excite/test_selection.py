@@ -53,3 +53,12 @@ def test_fixed_takes_first_n_in_order():
     sel = select_fixed(c, 1)
     assert [(x.sample, x.state) for x in sel.selected] == [(1, "S1")]
     assert sel.accepted == 2 and sel.candidates == 2 and sel.f_max == 0.2
+
+
+def test_bright_consumes_one_draw_per_candidate():
+    c = candidates_from(E, F, OK, ["S1", "S2"], None)
+    rng = np.random.default_rng(11)
+    select_bright(c, 2, rng)
+    ref = np.random.default_rng(11)
+    ref.random(len(c))
+    assert rng.random() == ref.random()

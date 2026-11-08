@@ -163,3 +163,45 @@ def format_samples_xyz(
         )
         frames.append(format_xyz(geometry))
     return "".join(frames)
+
+
+def read_samples_h5(path: Path) -> dict[str, Any]:
+    """Read the parts of ``samples.h5`` that the excitations stage needs.
+
+    A missing, unreadable or inconsistent file raises ``ValueError`` whose message names the
+    path and says how to recompute it.
+    """
+    import h5py
+
+    path = Path(path)
+    advice = f"; rerun the sampling stage with --rerun-from sampling ({path})"
+    try:
+        with h5py.File(path, "r") as f:
+            data: dict[str, Any] = {
+                "symbols": tuple(
+                    s.decode() if isinstance(s, bytes) else str(s) for s in f["symbols"][()]
+                ),
+                "masses_amu": np.asarray(f["masses"][()], dtype=float),
+                "equilibrium_bohr": np.asarray(f["equilibrium_coordinates"][()], dtype=float),
+                "positions_bohr": np.asarray(f["positions"][()], dtype=float),
+                "velocities_au": np.asarray(f["velocities"][()], dtype=float),
+                "n_samples": int(f.attrs["n_samples"]),
+                "temperature_K": float(f.attrs["temperature_K"]),
+            }
+    except (OSError, KeyError) as exc:
+        raise ValueError(f"samples.h5 is missing or unreadable ({exc!r}){advice}") from exc
+    n = len(data["symbols"])
+    ns = data["n_samples"]
+    expected = {
+        "masses": (data["masses_amu"].shape, (n,)),
+        "equilibrium_coordinates": (data["equilibrium_bohr"].shape, (n, 3)),
+        "positions": (data["positions_bohr"].shape, (ns, n, 3)),
+        "velocities": (data["velocities_au"].shape, (ns, n, 3)),
+    }
+    for name, (got, want) in expected.items():
+        if got != want:
+            raise ValueError(
+                f"samples.h5 is inconsistent: dataset '{name}' has shape {got}, "
+                f"expected {want}{advice}"
+            )
+    return data
