@@ -96,7 +96,21 @@ imaginary_cutoff_cm1 = 20.0   # imaginary modes above this wavenumber are errors
 [sampling]
 n_samples = 200               # number of Wigner-sampled initial geometries and velocities
 temperature_K = 0.0           # 0 = zero-point (vibrational ground state) distribution
-low_frequency_cutoff_cm1 = 10.0   # modes below this wavenumber are not sampled"""
+low_frequency_cutoff_cm1 = 10.0   # modes below this wavenumber are not sampled
+
+[excitations]
+include_reference = true      # also compute the vertical excitations at the reference geometry
+samples_per_task = 1          # Wigner samples per task
+max_failed_fraction = 0.05    # stop if more samples than this fraction fail
+broadening_fwhm_eV = 0.1      # Gaussian width (FWHM) of the nuclear-ensemble spectrum
+spectrum_step_eV = 0.01       # energy grid step of the spectrum
+
+[selection]
+mode = "bright"               # "bright": accept with probability f/f_max; "fixed": one state
+# states = ["S1", "S2"]       # candidate excited states (default: all excited singlets)
+# energy_window_eV = [4.5, 6.0]   # accepted excitation energy range (default: none)
+n_trajectories = 100          # number of trajectories to start
+allow_fewer = false           # accept fewer trajectories if too few pass the selection"""
 
 
 def _cmd_init(args: argparse.Namespace) -> int:

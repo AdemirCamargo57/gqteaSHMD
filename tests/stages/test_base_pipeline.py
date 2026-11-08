@@ -135,3 +135,22 @@ def test_prepare_only_pipeline(tmp_path, write_input):
 
     cfg = load_config(write_input(tmp_path)).config
     assert [s.name for s in prepare_only(cfg)] == ["prepare"]
+
+
+def test_check_config_hook_problems_are_reported_for_enabled_stages(tmp_path, write_input):
+    from gqteashmd.errors import ConfigError
+    from gqteashmd.stages.pipeline import check_stage_inputs
+
+    class Picky(_Dummy):
+        def check_config(self, config):
+            return ["problem one", "problem two"]
+
+    class Off(Picky):
+        def enabled(self, config):
+            return False
+
+    cfg = load_config(write_input(tmp_path)).config
+    assert _Dummy().check_config(cfg) == []
+    check_stage_inputs(cfg, [_Dummy(), Off()])
+    with pytest.raises(ConfigError, match="problem one; problem two"):
+        check_stage_inputs(cfg, [Picky()])
