@@ -32,6 +32,7 @@ class Capabilities:
     nacs: bool  # analytic nonadiabatic coupling vectors d_IJ = <I|dJ/dR>
     overlaps: bool  # <Psi_I(previous geometry)|Psi_J(current geometry)>
     transition_dipoles: bool
+    hessian: bool = False  # analytic S0 Cartesian Hessian
 
 
 @dataclass(frozen=True, eq=False)
@@ -152,6 +153,10 @@ class ElectronicBackend(ABC):
         Raises ValueError when there is no successful preceding compute() (a failed compute()
         discards the previous one).
         """
+
+    def ground_state_hessian(self, coords_bohr: ArrayLike) -> np.ndarray:
+        """Cartesian Hessian of S0 (Eh/bohr²) at `coords_bohr`; independent of the step history."""
+        raise NotImplementedError(f"{type(self).__name__} has no analytic Hessian")
 
     @abstractmethod
     def reset(self) -> None:

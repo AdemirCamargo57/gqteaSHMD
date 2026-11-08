@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import IO, Any
 
 import numpy as np
+from numpy.typing import ArrayLike
 
 from gqteashmd.chem.electrons import count_electrons
 from gqteashmd.chem.elements import atomic_number
@@ -229,7 +230,28 @@ class PySCFBackend(ElectronicBackend):
             nacs=self._settings.method == "casscf",
             overlaps=True,
             transition_dipoles=True,
+            hessian=self._settings.method != "casscf",
         )
+
+    def ground_state_hessian(self, coords_bohr: ArrayLike) -> np.ndarray:
+        """Analytic RHF/RKS Hessian (Eh/bohr²) from a fresh SCF; leaves the snapshot alone."""
+        if self._settings.method == "casscf":
+            raise ValueError(
+                "There is no analytic Hessian for method = 'casscf'; use finite differences of "
+                "S0 gradients (frequencies.method = 'finite_difference')."
+            )
+        coords = np.asarray(coords_bohr, dtype=float)
+        n = len(self._molecule.symbols)
+        if coords.shape != (n, 3):
+            raise ValueError(f"coords_bohr must have shape ({n}, 3)")
+        with self._environment() as stdout:
+            mol = self._build_mol(coords, stdout)
+            mf, _ = self._run_scf(mol, None)
+            try:
+                h4 = mf.Hessian().kernel()
+            except Exception as exc:
+                raise wrap_failure("The analytic SCF Hessian", exc) from exc
+        return np.asarray(h4, dtype=float).transpose(0, 2, 1, 3).reshape(3 * n, 3 * n)
 
     def compute_more(
         self,
