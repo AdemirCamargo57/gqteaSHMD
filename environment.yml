@@ -14,4 +14,4 @@ dependencies:
   - numpy
   - scipy
   - h5py
-  - geometric
+  - geometric=1.1.*
