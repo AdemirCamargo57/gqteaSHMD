@@ -180,3 +180,21 @@ def test_module_versions_are_checked(tmp_path, write_input, monkeypatch):
 
     monkeypatch.setattr(metadata, "version", unknown)
     run_preflight(cfg, [_needy_stage("numpy>=999.0")], machine=machine)  # unknown version: skip
+
+
+@pytest.mark.parametrize(
+    "text, expected",
+    [
+        ("2.6", (2, 6, 0)),
+        ("2.6rc1", (2, 6, 0)),
+        ("1.0", (1, 0, 0)),
+        ("1.0.0", (1, 0, 0)),
+        ("2.10.1.post3", (2, 10, 1)),
+        ("3.12.0.dev1", (3, 12, 0)),
+        ("7", (7, 0, 0)),
+    ],
+)
+def test_version_tuple_is_padded_and_stops_at_non_numeric(text, expected):
+    from gqteashmd.preflight import _version_tuple
+
+    assert _version_tuple(text) == expected

@@ -1,11 +1,15 @@
 import os
 import subprocess
+import sys
+from pathlib import Path
 
 import numpy as np
 import pytest
 
 from gqteashmd.vib.harmonic import harmonic_analysis
 from gqteashmd.vib.molden import format_molden
+
+RUNNER = Path(__file__).resolve().parents[2] / "tools" / "sharc_compare" / "run_wigner.py"
 
 pytestmark = [
     pytest.mark.sharc,
@@ -26,16 +30,26 @@ def test_sharc_wigner_accepts_our_molden(tmp_path):
     molden.write_text(
         format_molden(("O", "H", "H"), coords, analysis.frequencies_cm1, analysis.modes_cartesian)
     )
-    home = os.environ["SHARC_HOME"]
-    env = dict(os.environ, SHARC=f"{home}/bin", PYTHONPATH=f"{home}/lib:{home}/pysharc")
-    before = set(os.listdir(tmp_path))
+    out_dir = tmp_path / "wigner"
     proc = subprocess.run(
-        [os.environ["SHARC_PYTHON"], f"{home}/bin/wigner.py", "-n", "3", str(molden)],
-        cwd=tmp_path,
-        env=env,
+        [
+            sys.executable,
+            str(RUNNER),
+            "--sharc-home",
+            os.environ["SHARC_HOME"],
+            "--python",
+            os.environ["SHARC_PYTHON"],
+            "--molden",
+            str(molden),
+            "--n",
+            "3",
+            "--out-dir",
+            str(out_dir),
+        ],
         capture_output=True,
         text=True,
-        timeout=300,
+        timeout=600,
     )
-    assert proc.returncode == 0, proc.stderr[-2000:]
-    assert set(os.listdir(tmp_path)) - before  # wigner.py wrote its initial conditions
+    assert proc.returncode == 0, (proc.stderr or proc.stdout)[-2000:]
+    assert proc.stdout.strip()  # wigner.py wrote its initial conditions (paths listed)
+    assert any(out_dir.iterdir())

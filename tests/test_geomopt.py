@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from gqteashmd.geomopt import optimize_geometry
+from gqteashmd.geomopt import OptimizationFailedError, optimize_geometry
 
 R0, K = 1.8, 0.4  # bohr, Eh/bohr^2
 
@@ -82,3 +82,75 @@ def test_logging_configuration_is_preserved(tmp_path):
         assert root.handlers == before and root.level == level
     finally:
         root.removeHandler(marker)
+
+
+def test_non_convergence_returns_the_lowest_energy_geometry(tmp_path):
+    state = {"n": 0}
+
+    def noisy(coords):
+        energy, grad = _bonds(coords)
+        state["n"] += 1
+        if state["n"] == 1:
+            return energy - 1.0, grad  # an artificially low first point that is never beaten
+        return energy, grad
+
+    result = optimize_geometry(
+        ("O", "H", "H"),
+        START,
+        noisy,
+        max_steps=3,
+        convergence="GAU_VERYTIGHT",
+        work_dir=tmp_path / "geo",
+    )
+    assert result.converged is False
+    best = int(np.argmin(result.energies_hartree))
+    assert best == 0
+    np.testing.assert_allclose(result.coords_bohr, result.path_bohr[best])
+    assert result.energy_hartree == min(result.energies_hartree)
+
+
+def test_geometric_failures_are_wrapped_but_energy_errors_are_not(tmp_path, monkeypatch):
+    import geometric.optimize
+
+    def fail(*args, **kwargs):
+        raise RuntimeError("internal coordinate failure")
+
+    monkeypatch.setattr(geometric.optimize, "run_optimizer", fail)
+    with pytest.raises(OptimizationFailedError, match="internal coordinate failure"):
+        optimize_geometry(
+            ("O", "H", "H"),
+            START,
+            _bonds,
+            max_steps=10,
+            convergence="GAU",
+            work_dir=tmp_path / "geo",
+        )
+
+
+def test_energy_error_is_not_wrapped_even_when_geometric_raises_something_else(
+    tmp_path, monkeypatch
+):
+    import geometric.optimize
+
+    real = geometric.optimize.run_optimizer
+
+    def swallowing(**kwargs):
+        try:
+            return real(**kwargs)
+        except RuntimeError as exc:
+            raise ValueError("geomeTRIC re-raised") from exc
+
+    monkeypatch.setattr(geometric.optimize, "run_optimizer", swallowing)
+
+    def broken(coords):
+        raise RuntimeError("electronic structure exploded")
+
+    with pytest.raises(RuntimeError, match="exploded"):
+        optimize_geometry(
+            ("O", "H", "H"),
+            START,
+            broken,
+            max_steps=10,
+            convergence="GAU",
+            work_dir=tmp_path / "geo",
+        )

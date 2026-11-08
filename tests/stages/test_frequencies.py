@@ -129,3 +129,10 @@ def test_energy_at_the_optimized_geometry_is_checked(tmp_path, write_input):
     )
     with pytest.raises(StageFailedError, match="not the optimized one"):
         stage.finalize(good, results)
+
+
+def test_single_atom_has_no_modes(tmp_path, write_input):
+    _, ctx, stage, results = _run_stage(tmp_path, write_input, "", "1\nhelium\nHe 0.0 0.0 0.0\n")
+    stage.finalize(ctx, results)
+    data = json.loads((ctx.stage_dir / "frequencies.json").read_text())
+    assert data["frequencies_cm1"] == [] and data["n_external"] == 3

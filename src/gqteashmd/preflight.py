@@ -71,7 +71,16 @@ def _parse_requirement(text: str) -> tuple[str, str | None]:
 
 
 def _version_tuple(text: str) -> tuple[int, ...]:
-    return tuple(int(part) for part in re.findall(r"\d+", text)[:3])
+    """Leading numeric release components (at most 3), padded with zeros: "2.6rc1" -> (2, 6, 0)."""
+    numbers: list[int] = []
+    for part in text.split("."):
+        digits = re.match(r"\d+", part)
+        if digits is None:
+            break
+        numbers.append(int(digits.group()))
+        if digits.end() != len(part):
+            break
+    return tuple((numbers[:3] + [0, 0, 0])[:3])
 
 
 _WSL_DRIVE = re.compile(r"^/mnt/[A-Za-z](/|$)")

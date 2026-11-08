@@ -14,7 +14,7 @@ from gqteashmd.core.units import BOHR_IN_ANGSTROM
 from gqteashmd.electronic.base import Request
 from gqteashmd.electronic.factory import ground_state_fingerprint
 from gqteashmd.errors import TaskError
-from gqteashmd.geomopt import optimize_geometry
+from gqteashmd.geomopt import OptimizationFailedError, optimize_geometry
 from gqteashmd.stages.base import Stage, StageContext, TaskSpec
 from gqteashmd.stages.geometry import prepared_molecule, stage_backend
 from gqteashmd.util.fileio import write_json_atomic, write_text_atomic
@@ -59,14 +59,26 @@ class OptimizeStage(Stage):
             result = backend.compute(Request(coords, gradients=frozenset({s0})))
             return result.energies[s0], result.gradients[s0]
 
-        opt = optimize_geometry(
-            molecule.symbols,
-            start,
-            energy_and_gradient,
-            max_steps=options.max_steps,
-            convergence=options.convergence,
-            work_dir=task_dir / "geometric",
-        )
+        if len(molecule.symbols) == 1:
+            return self._single_atom(
+                molecule.symbols, start, energy_and_gradient, task_dir, options
+            )
+        try:
+            opt = optimize_geometry(
+                molecule.symbols,
+                start,
+                energy_and_gradient,
+                max_steps=options.max_steps,
+                convergence=options.convergence,
+                work_dir=task_dir / "geometric",
+            )
+        except OptimizationFailedError as exc:
+            raise TaskError(
+                f"The geometry optimizer (geomeTRIC) failed: {exc}. Check the starting geometry "
+                "(overlapping or very distant atoms, nearly linear angles), or disable "
+                "[optimize] and provide an optimized geometry.",
+                retryable=False,
+            ) from exc
         path_text = "".join(
             _xyz(molecule.symbols, c, f"step {i} energy {e:.10f} Eh")
             for i, (c, e) in enumerate(zip(opt.path_bohr, opt.energies_hartree, strict=True))
@@ -74,13 +86,18 @@ class OptimizeStage(Stage):
         write_text_atomic(task_dir / "optimization_path.xyz", path_text)
         if not opt.converged:
             write_text_atomic(
-                task_dir / "last.xyz", _xyz(molecule.symbols, opt.coords_bohr, "last")
+                task_dir / "best.xyz",
+                _xyz(
+                    molecule.symbols,
+                    opt.coords_bohr,
+                    f"lowest energy {opt.energy_hartree:.10f} Eh (not converged)",
+                ),
             )
             raise TaskError(
                 f"The geometry optimization did not converge in {options.max_steps} steps "
                 f"(convergence = '{options.convergence}'). Increase [optimize] max_steps, start "
-                "from a better geometry, or loosen [optimize] convergence; the last geometry is "
-                f"in {task_dir / 'last.xyz'}",
+                "from a better geometry, or loosen [optimize] convergence; the lowest-energy "
+                f"geometry found is in {task_dir / 'best.xyz'}",
                 retryable=False,
             )
         _, final_gradient = energy_and_gradient(opt.coords_bohr)
@@ -108,6 +125,46 @@ class OptimizeStage(Stage):
             "energy_hartree": opt.energy_hartree,
             "converged": True,
             "n_gradients": opt.n_gradients,
+            "max_gradient_hartree_per_bohr": max_gradient,
+        }
+
+    def _single_atom(
+        self,
+        symbols: tuple[str, ...],
+        start: np.ndarray,
+        energy_and_gradient: Any,
+        task_dir: Path,
+        options: Any,
+    ) -> dict[str, Any]:
+        """One atom has no geometry to optimize: write the outputs without calling geomeTRIC."""
+        energy, gradient = energy_and_gradient(start)
+        max_gradient = float(np.abs(gradient).max())
+        write_text_atomic(
+            task_dir / "optimization_path.xyz",
+            _xyz(symbols, start, f"step 0 energy {energy:.10f} Eh"),
+        )
+        write_text_atomic(
+            task_dir / "optimized.xyz", _xyz(symbols, start, f"energy {energy:.10f} Eh")
+        )
+        write_json_atomic(
+            task_dir / "optimize.json",
+            {
+                "schema_version": 1,
+                "energy_hartree": energy,
+                "converged": True,
+                "n_gradients": 1,
+                "max_gradient_hartree_per_bohr": max_gradient,
+                "convergence": options.convergence,
+                "max_steps": options.max_steps,
+                "symbols": list(symbols),
+                "coords_bohr": start.tolist(),
+                "coords_angstrom": (start * BOHR_IN_ANGSTROM).tolist(),
+            },
+        )
+        return {
+            "energy_hartree": energy,
+            "converged": True,
+            "n_gradients": 1,
             "max_gradient_hartree_per_bohr": max_gradient,
         }
 

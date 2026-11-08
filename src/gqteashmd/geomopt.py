@@ -17,6 +17,10 @@ from gqteashmd.core.units import ANGSTROM_TO_BOHR, BOHR_IN_ANGSTROM
 EnergyGradient = Callable[[np.ndarray], tuple[float, np.ndarray]]
 
 
+class OptimizationFailedError(ValueError):
+    """geomeTRIC itself failed (internal coordinates, structure, ...), not the energy function."""
+
+
 @dataclass(frozen=True, eq=False)
 class OptimizationResult:
     coords_bohr: np.ndarray
@@ -43,11 +47,16 @@ def optimize_geometry(
 
     path: list[np.ndarray] = []
     energies: list[float] = []
+    callback_errors: list[Exception] = []
 
     class _Engine(geometric.engine.Engine):
         def calc_new(self, coords: Any, dirname: Any) -> dict[str, Any]:
             c = np.asarray(coords, dtype=float).reshape(-1, 3)
-            energy, gradient = energy_and_gradient(c)
+            try:
+                energy, gradient = energy_and_gradient(c)
+            except Exception as exc:
+                callback_errors.append(exc)  # re-raised unchanged below, whatever geomeTRIC does
+                raise
             path.append(c.copy())
             energies.append(float(energy))
             return {"energy": float(energy), "gradient": np.asarray(gradient, dtype=float).ravel()}
@@ -72,7 +81,12 @@ def optimize_geometry(
                 convergence_set=convergence,
             )
     except GeomOptNotConvergedError:
-        return OptimizationResult(path[-1], energies[-1], False, len(path), path, energies)
+        best = int(np.argmin(energies))  # the lowest-energy evaluated geometry, not the last
+        return OptimizationResult(path[best], energies[best], False, len(path), path, energies)
+    except Exception as exc:
+        if callback_errors:
+            raise callback_errors[0] from None
+        raise OptimizationFailedError(f"{type(exc).__name__}: {exc}") from exc
     finally:
         for handler in list(root.handlers):
             if handler not in saved_handlers:
