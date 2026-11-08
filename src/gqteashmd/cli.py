@@ -26,7 +26,12 @@ from gqteashmd.orchestrator import Orchestrator
 from gqteashmd.project.layout import ProjectLayout
 from gqteashmd.project.lock import locked_by
 from gqteashmd.project.state import StateStore, TaskStatus
-from gqteashmd.stages.pipeline import DEFAULT_PIPELINE, check_stage_names, import_pipeline
+from gqteashmd.stages.pipeline import (
+    DEFAULT_PIPELINE,
+    check_stage_inputs,
+    check_stage_names,
+    import_pipeline,
+)
 from gqteashmd.util.fileio import write_json_atomic
 
 EXIT_STOPPED = 5
@@ -106,7 +111,9 @@ def _cmd_validate(args: argparse.Namespace) -> int:
     cfg = loaded.config
     if not cfg.molecule.geometry.is_file():
         raise ConfigError(f"Geometry file not found or not a regular file: {cfg.molecule.geometry}")
-    check_stage_names(cfg, [s.name for s in import_pipeline(args.pipeline)(cfg)])
+    stages = import_pipeline(args.pipeline)(cfg)
+    check_stage_names(cfg, [s.name for s in stages])
+    check_stage_inputs(cfg, stages)
     print(f"Input file {loaded.source} is valid.")
     print(f"  project directory: {cfg.project.directory}")
     print(f"  geometry:          {cfg.molecule.geometry}")

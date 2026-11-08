@@ -71,9 +71,9 @@ def test_fingerprint_with_missing_geometry_is_config_error(tmp_path, write_input
         PrepareStage().fingerprint_inputs(_ctx(path))
 
 
-def test_default_pipeline_contains_prepare(tmp_path, write_input):
+def test_default_pipeline_starts_with_prepare(tmp_path, write_input):
     cfg = load_config(write_input(tmp_path)).config
-    assert [s.name for s in default_pipeline(cfg)] == ["prepare"]
+    assert [s.name for s in default_pipeline(cfg)][0] == "prepare"
 
 
 def test_geometry_that_is_a_directory_is_a_config_error(tmp_path, write_input):

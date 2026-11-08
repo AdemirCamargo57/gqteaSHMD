@@ -104,3 +104,29 @@ def test_dot_names_are_not_safe(name):
 
 def test_ordinary_names_are_safe():
     assert is_safe_name("t001") and is_safe_name("03_sampling.v2")
+
+
+def test_default_pipeline_order(tmp_path, write_input):
+    from gqteashmd.stages.registry import default_pipeline
+
+    cfg = load_config(write_input(tmp_path)).config
+    assert [s.name for s in default_pipeline(cfg)] == ["prepare", "optimize", "frequencies"]
+
+
+def test_missing_electronic_section_is_reported(tmp_path, write_input):
+    from gqteashmd.errors import ConfigError
+    from gqteashmd.stages.pipeline import check_stage_inputs
+    from gqteashmd.stages.registry import default_pipeline
+
+    cfg = load_config(write_input(tmp_path)).config  # no [electronic]
+    with pytest.raises(ConfigError) as info:
+        check_stage_inputs(cfg, default_pipeline(cfg))
+    text = str(info.value)
+    assert "'optimize'" in text and "'frequencies'" in text and "[electronic]" in text
+
+
+def test_prepare_only_pipeline(tmp_path, write_input):
+    from gqteashmd.testing.pipelines import prepare_only
+
+    cfg = load_config(write_input(tmp_path)).config
+    assert [s.name for s in prepare_only(cfg)] == ["prepare"]

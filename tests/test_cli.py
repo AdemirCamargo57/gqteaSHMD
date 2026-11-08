@@ -17,6 +17,7 @@ from gqteashmd.project.state import StageStatus, StateStore, TaskStatus
 from gqteashmd.testing.fake_stages import BEHAVIOUR_ENV
 
 FAKE = "gqteashmd.testing.fake_stages:make_pipeline"
+PREPARE_ONLY = "gqteashmd.testing.pipelines:prepare_only"
 FAST = "poll_interval_s = 0.05\nstop_grace_period_s = 2.0"
 
 
@@ -43,11 +44,18 @@ def test_init_refuses_to_overwrite(tmp_path, capsys):
 
 def test_validate_reports_success_and_errors(tmp_path, write_input, capsys):
     good = write_input(tmp_path)
-    assert main(["validate", str(good)]) == 0
+    assert main(["validate", str(good), "--pipeline", PREPARE_ONLY]) == 0
     assert "is valid" in capsys.readouterr().out
     (tmp_path / "water.xyz").unlink()
-    assert main(["validate", str(good)]) == 2
+    assert main(["validate", str(good), "--pipeline", PREPARE_ONLY]) == 2
     assert "Geometry file not found" in capsys.readouterr().err
+
+
+def test_validate_reports_missing_electronic_section(tmp_path, write_input, capsys):
+    path = write_input(tmp_path)
+    assert main(["validate", str(path)]) == 2
+    err = capsys.readouterr().err
+    assert "Stage 'frequencies' needs an [electronic] section in the input file" in err
 
 
 def test_validate_rejects_a_directory_as_geometry(tmp_path, write_input, capsys):

@@ -24,6 +24,7 @@ from gqteashmd.project.state import StageStatus, StateStore, TaskRecord, TaskSta
 from gqteashmd.stages.base import Stage, StageContext, TaskSpec
 from gqteashmd.stages.pipeline import (
     DEFAULT_PIPELINE,
+    check_stage_inputs,
     check_stage_names,
     import_pipeline,
     validate_pipeline,
@@ -69,6 +70,7 @@ class Orchestrator:
             )
         self.rerun_from = rerun_from
         check_stage_names(self.config, names)
+        check_stage_inputs(self.config, self.stages)
         self.layout = ProjectLayout(self.config.project.directory)
         self._preflight_warnings: list[str] | None = None
         self._session_depth = 0

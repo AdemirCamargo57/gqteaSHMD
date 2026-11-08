@@ -45,6 +45,19 @@ def check_stage_names(config: ShmdConfig, stage_names: Sequence[str]) -> None:
         )
 
 
+def check_stage_inputs(config: ShmdConfig, stages: Sequence[Stage]) -> None:
+    """Every enabled stage's input sections must be present (optional sections default)."""
+    missing = [
+        f"Stage '{stage.name}' needs an [{section}] section in the input file"
+        for stage in stages
+        if stage.enabled(config)
+        for section in stage.config_sections
+        if getattr(config, section, None) is None
+    ]
+    if missing:
+        raise ConfigError("; ".join(missing) + ". See USER_MANUAL.md §4.")
+
+
 def validate_pipeline(stages: Sequence[Stage]) -> None:
     seen: set[str] = set()
     for stage in stages:
