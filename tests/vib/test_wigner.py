@@ -92,6 +92,24 @@ def test_momenta_are_removed():
     assert np.all(samples.removed_kinetic_energy_hartree >= -1e-15)
 
 
+def test_kinetic_energy_bookkeeping_matches_mode_momenta():
+    analysis = _model_water()
+    samples = sample_wigner(
+        WATER_MASSES,
+        WATER_BOHR,
+        analysis.frequencies_cm1,
+        analysis.modes_mass_weighted,
+        n_samples=50,
+        temperature_K=300.0,
+        low_frequency_cutoff_cm1=10.0,
+        rng=np.random.default_rng(4),
+    )
+    before = 0.5 * (samples.p**2).sum(axis=1)
+    np.testing.assert_allclose(
+        samples.kinetic_energy_hartree + samples.removed_kinetic_energy_hartree, before, rtol=1e-10
+    )
+
+
 def test_low_frequency_and_imaginary_modes_are_not_sampled():
     analysis = _model_water()
     freqs = analysis.frequencies_cm1.copy()
