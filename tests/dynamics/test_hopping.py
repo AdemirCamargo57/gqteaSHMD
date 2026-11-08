@@ -45,6 +45,7 @@ def test_no_coupling_gives_zero():
 
 
 def test_small_dt_flux_and_agreement():
+    # first-order relative error of the left-point FSSH sum (about rate * delta)
     c, c2, p, starts, nac, v, dt = _two_state(dt=0.002, ns=2)
     exact = (abs(c[0]) ** 2 - abs(c2[0]) ** 2) / abs(c[0]) ** 2
     assert exact > 0
@@ -63,10 +64,45 @@ def test_sharc_conservation_exact_two_state():
 
 
 def test_population_gain_gives_zero():
-    c, c2, p, _, _, _, _ = _two_state(angle=-0.7, dt=0.05)
-    # amplitudes flow into state 0 here
-    if abs(c2[0]) >= abs(c[0]):
-        assert np.all(sharc_probabilities(0, c, c2, p) == 0)
+    # c1 > 0 and c0 > 0 with T01 = -kappa: population flows INTO state 0
+    c, c2, p, starts, nac, v, dt = _two_state(kappa=-0.5, dt=0.05)
+    assert abs(c2[0]) > abs(c[0])
+    assert np.all(sharc_probabilities(0, c, c2, p) == 0)
+    assert np.all(fssh_probabilities(0, starts, nac, nac, v, v, dt) == 0)
+
+
+def _complex_two_state(dt=0.002, ns=2, kappa=0.5, theta=0.7, phi=1.2, gphase=np.pi / 4):
+    nac = np.zeros((2, 2, 1))
+    nac[0, 1, 0], nac[1, 0, 0] = kappa, -kappa
+    c = np.exp(1j * gphase) * np.array([np.cos(theta), np.exp(1j * phi) * np.sin(theta)])
+    ev = np.array([0.0, 0.05])
+    v = np.ones(1)
+    c2, p, starts = propagate(c, ev, ev, nac, nac, v, v, dt, ns)
+    return c, c2, p, starts, nac, v, dt
+
+
+def test_complex_amplitude_flux():
+    # Relative phase 1.2 rad plus a global phase: a missing conjugate changes the result
+    # markedly. The relative error of the left-point FSSH sum is first order (rate * delta).
+    c, c2, p, starts, nac, v, dt = _complex_two_state()
+    exact = (abs(c[0]) ** 2 - abs(c2[0]) ** 2) / abs(c[0]) ** 2
+    assert exact > 0
+    hf = fssh_probabilities(0, starts, nac, nac, v, v, dt).sum()
+    hs = sharc_probabilities(0, c, c2, p).sum()
+    assert hf == pytest.approx(exact, rel=1e-3)
+    assert hs == pytest.approx(exact, rel=1e-3)
+
+
+def test_global_phase_invariance():
+    c, c2, p, starts, nac, v, dt = _complex_two_state(dt=0.3, ns=3, gphase=0.0)
+    ph = np.exp(1j * np.pi / 4)
+    f0 = fssh_probabilities(0, starts, nac, nac, v, v, dt)
+    f1 = fssh_probabilities(0, [ph * x for x in starts], nac, nac, v, v, dt)
+    s0 = sharc_probabilities(0, c, c2, p)
+    s1 = sharc_probabilities(0, ph * c, ph * c2, p)
+    assert f0.sum() > 0 and s0.sum() > 0
+    assert np.allclose(f0, f1, atol=1e-12, rtol=0)
+    assert np.allclose(s0, s1, atol=1e-12, rtol=0)
 
 
 def test_choose_state():

@@ -43,6 +43,23 @@ def test_matches_expm_for_constant_hamiltonian(ns):
     assert np.allclose(p, ref, atol=1e-12)
 
 
+@pytest.mark.parametrize("ns", [1, 2])
+def test_midpoint_interpolation(ns):
+    rng = np.random.default_rng(4)
+    e0, nac0, v0, c = _rand_setup(rng)
+    e1, nac1, v1, _ = _rand_setup(rng)
+    dt = 0.35
+    _, p, _ = propagate(c, e0, e1, nac0, nac1, v0, v1, dt, ns)
+    ref = np.eye(3, dtype=complex)
+    for m in range(1, ns + 1):
+        s = (m - 0.5) / ns
+        h = np.diag((1 - s) * e0 + s * e1) - 1j * coupling_matrix(
+            (1 - s) * nac0 + s * nac1, (1 - s) * v0 + s * v1
+        )
+        ref = expm(-1j * h * dt / ns) @ ref
+    assert np.allclose(p, ref, atol=1e-12)
+
+
 def test_rabi():
     kappa, t = 0.3, 2.0
     nac = np.zeros((2, 2, 1))
