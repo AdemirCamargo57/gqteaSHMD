@@ -17,7 +17,9 @@ import numpy as np
 from gqteashmd import __version__
 from gqteashmd.chem.xyz import parse_xyz
 from gqteashmd.config.loader import load_config
+from gqteashmd.config.model_dynamics import load_model_dynamics
 from gqteashmd.core.units import ANGSTROM_TO_BOHR
+from gqteashmd.dynamics.ensemble import run_model_ensemble
 from gqteashmd.electronic.base import MoleculeSpec, Request
 from gqteashmd.electronic.factory import make_backend
 from gqteashmd.errors import ConfigError, ProjectError, ShmdError
@@ -301,6 +303,56 @@ def _cmd_single_point(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_model_dynamics(args: argparse.Namespace) -> int:
+    cfg = load_model_dynamics(args.input)
+    if args.json is not None:
+        _check_json_output(args.json)
+    try:
+        model = cfg.build_model()
+        options = cfg.build_options()
+        result = run_model_ensemble(
+            model,
+            n_trajectories=cfg.ensemble.n_trajectories,
+            x0=cfg.initial.x0,
+            k=cfg.initial.k,
+            sigma=cfg.sigma,
+            initial_state=cfg.initial.state,
+            options=options,
+            seed=cfg.ensemble.seed,
+            x_exit=cfg.ensemble.x_exit,
+            max_steps=cfg.ensemble.max_steps,
+            sampling=cfg.initial.sampling,
+        )
+    except ValueError as exc:
+        raise ConfigError(f"Invalid model-dynamics input {args.input}: {exc}") from exc
+    counts, probs, intervals = result.counts(), result.probabilities(), result.intervals_95()
+    print(
+        f"Model dynamics: {cfg.model.name}, {cfg.ensemble.n_trajectories} trajectories, "
+        f"{result.n_finished} finished"
+    )
+    print(f"{'branch':<20}{'count':>8}{'P':>9}{'95% interval':>22}")
+    for name, p in probs.items():
+        lo, hi = intervals[name]
+        interval = f"[{lo:.4f}, {hi:.4f}]"
+        print(f"{name:<20}{counts[name]:>8}{p:>9.4f}{interval:>22}")
+    print(f"unfinished: {counts['unfinished']}, energy_drift: {counts['energy_drift']}")
+    if args.json is not None:
+        data = {
+            "schema_version": 1,
+            "model": cfg.model.model_dump(),
+            "initial": {**cfg.initial.model_dump(), "sigma": cfg.sigma},
+            "dynamics": cfg.dynamics.model_dump(),
+            "ensemble": cfg.ensemble.model_dump(),
+            "counts": counts,
+            "probabilities": probs,
+            "intervals_95": {name: list(v) for name, v in intervals.items()},
+            "n_finished": result.n_finished,
+        }
+        write_json_atomic(args.json, data)
+        print(f"Results written to {args.json}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="gqteashmd", description="Surface-hopping MD workflow")
     parser.add_argument("--version", action="version", version=f"gqteashmd {__version__}")
@@ -338,6 +390,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_sp.add_argument("--json", type=Path, help="write the results to this JSON file")
     p_sp.add_argument("--log", type=Path, help="write the PySCF output to this file")
     p_sp.set_defaults(func=_cmd_single_point)
+
+    p_md = sub.add_parser(
+        "model-dynamics", help="run a surface-hopping ensemble on a 1D analytic model"
+    )
+    p_md.add_argument("input", type=Path)
+    p_md.add_argument("--json", type=Path, help="write the branching results to this JSON file")
+    p_md.set_defaults(func=_cmd_model_dynamics)
     return parser
 
 
