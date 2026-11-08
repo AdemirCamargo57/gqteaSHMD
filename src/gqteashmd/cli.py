@@ -106,7 +106,8 @@ broadening_fwhm_eV = 0.1      # Gaussian width (FWHM) of the nuclear-ensemble sp
 spectrum_step_eV = 0.01       # energy grid step of the spectrum
 
 [selection]
-mode = "bright"               # "bright": accept with probability f/f_max; "fixed": one state
+mode = "bright"               # "bright": accept by oscillator strength; "fixed": one state
+weighting = "f_over_dE2"      # "f_over_dE2" (SHARC excite.py-compatible) or "f"
 # states = ["S1", "S2"]       # candidate excited states (default: all excited singlets)
 # energy_window_eV = [4.5, 6.0]   # accepted excitation energy range (default: none)
 n_trajectories = 100          # number of trajectories to start

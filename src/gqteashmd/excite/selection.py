@@ -1,17 +1,27 @@
 """Initial-state selection from the vertical excitations of the Wigner samples.
 
 A candidate is a pair (sample, excited state) that passes the optional energy window
-``lo <= dE <= hi`` (eV). In ``bright`` mode (Barbatti et al., J. Photochem. Photobiol. A 190,
-228 (2007)) a candidate with oscillator strength ``f`` is accepted when ``r < f / f_max``, where
-``r`` is uniform in [0, 1) and ``f_max`` is the largest ``f`` among the candidates. Exactly one
-random number is drawn per candidate, in candidate order (sample-major, then S1, S2, ...), so
-the stream is a fixed function of the candidate list. The first ``n`` accepted pairs are kept.
-``fixed`` mode takes the first ``n`` candidates of one state.
+``lo <= dE <= hi`` (eV). In ``bright`` mode a candidate with weight ``w`` is accepted when
+``r < w / w_max``, where ``r`` is uniform in [0, 1) and ``w_max`` is the largest weight among
+the candidates (the window is applied first, so the maximum is over the in-window pairs only).
+Two weightings are offered:
+
+* ``f_over_dE2`` (default): ``w = f / dE**2``, with ``f`` the oscillator strength and ``dE`` the
+  vertical excitation energy of the pair (eV; the ratio ``w / w_max`` does not depend on the
+  energy unit). This is SHARC 4.1 excite.py-compatible (determined by black-box comparison).
+* ``f``: ``w = f`` (acceptance ``f / f_max``, the Newton-X-style rule; Barbatti et al.,
+  J. Photochem. Photobiol. A 190, 228 (2007)).
+
+``w_max <= 0`` selects nothing. Exactly one random number is drawn per candidate, in candidate
+order (sample-major, then S1, S2, ...), so the stream is a fixed function of the candidate list.
+The first ``n`` accepted pairs are kept. ``fixed`` mode takes the first ``n`` candidates of one
+state.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Literal
 
 import numpy as np
 from numpy.typing import NDArray
@@ -31,8 +41,9 @@ class Candidate:
 class Selection:
     selected: tuple[Candidate, ...]
     candidates: int
-    f_max: float
+    f_max: float  # largest oscillator strength among the candidates (for reports)
     accepted: int  # accepted pairs before truncation to n
+    weight_max: float = 0.0  # w_max of the weighting used (f_max for "fixed")
 
 
 def candidates_from(
@@ -58,19 +69,33 @@ def candidates_from(
     return result
 
 
-def select_bright(candidates: list[Candidate], n: int, rng: np.random.Generator) -> Selection:
-    """Accept each candidate with probability f / f_max; keep the first n accepted."""
+def _weight(candidate: Candidate, weighting: str) -> float:
+    if weighting == "f":
+        return candidate.oscillator_strength
+    return candidate.oscillator_strength / candidate.excitation_energy_eV**2
+
+
+def select_bright(
+    candidates: list[Candidate],
+    n: int,
+    rng: np.random.Generator,
+    *,
+    weighting: Literal["f_over_dE2", "f"] = "f_over_dE2",
+) -> Selection:
+    """Accept each candidate with probability w / w_max; keep the first n accepted."""
+    if weighting not in ("f_over_dE2", "f"):
+        raise ValueError(f"unknown weighting {weighting!r}")
     f_max = max((c.oscillator_strength for c in candidates), default=0.0)
     draws = [float(rng.random()) for _ in candidates]
-    if f_max <= 0.0:
-        return Selection((), len(candidates), max(f_max, 0.0), 0)
-    accepted = [
-        c for c, r in zip(candidates, draws, strict=True) if r < c.oscillator_strength / f_max
-    ]
-    return Selection(tuple(accepted[:n]), len(candidates), f_max, len(accepted))
+    weights = [_weight(c, weighting) for c in candidates]
+    w_max = max(weights, default=0.0)
+    if w_max <= 0.0:
+        return Selection((), len(candidates), max(f_max, 0.0), 0, 0.0)
+    accepted = [c for c, r, w in zip(candidates, draws, weights, strict=True) if r < w / w_max]
+    return Selection(tuple(accepted[:n]), len(candidates), f_max, len(accepted), w_max)
 
 
 def select_fixed(candidates: list[Candidate], n: int) -> Selection:
     """The first n candidates (used when a single state is requested)."""
     f_max = max((c.oscillator_strength for c in candidates), default=0.0)
-    return Selection(tuple(candidates[:n]), len(candidates), f_max, len(candidates))
+    return Selection(tuple(candidates[:n]), len(candidates), f_max, len(candidates), f_max)

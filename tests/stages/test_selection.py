@@ -145,3 +145,21 @@ def test_report_files(tmp_path, write_input):
     assert "../04_excitations/spectrum.csv" in md
     assert "t00001" in md
     assert md.rstrip().endswith("Review, then run `gqteashmd run` again to continue.")
+
+
+def test_weighting_reaches_the_rule_and_the_reports(tmp_path, write_input):
+    out = {}
+    for w in ("f_over_dE2", "f"):
+        sel = f'[selection]\nn_trajectories = 5\nweighting = "{w}"\nallow_fewer = true\n'
+        ctx = _context(tmp_path / w, write_input, sel)
+        stage, results = _run(ctx)
+        stage.finalize(ctx, results)
+        summary = results["select"]
+        assert summary["weighting"] == w
+        report = json.loads((ctx.stage_dir / "selection_report.json").read_text())
+        assert report["weighting"] == w and report["weight_max"] == summary["weight_max"]
+        assert f"- weighting: {w}" in (ctx.stage_dir / "selection_report.md").read_text()
+        out[w] = summary
+    assert out["f"]["weight_max"] == pytest.approx(out["f"]["f_max"])
+    assert out["f_over_dE2"]["weight_max"] < out["f"]["weight_max"]
+    assert out["f"]["accepted"] != out["f_over_dE2"]["accepted"]

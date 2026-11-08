@@ -230,6 +230,8 @@ class ExcitationsSection(_Section):
 
 class SelectionSection(_Section):
     mode: Literal["bright", "fixed"] = "bright"
+    # Only used by mode = "bright": acceptance weight f/dE^2 (SHARC excite.py-compatible) or f.
+    weighting: Literal["f_over_dE2", "f"] = "f_over_dE2"
     states: list[str] | None = None
     energy_window_eV: tuple[float, float] | None = None
     n_trajectories: int = Field(default=100, ge=1)

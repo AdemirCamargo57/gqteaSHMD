@@ -16,6 +16,7 @@ def test_defaults(tmp_path, write_input):
         None,
     )
     assert cfg.selection.n_trajectories == 100 and not cfg.selection.allow_fewer
+    assert cfg.selection.weighting == "f_over_dE2"
 
 
 def test_values(tmp_path, write_input):
@@ -26,6 +27,11 @@ def test_values(tmp_path, write_input):
     cfg = load_config(write_input(tmp_path, extra=extra)).config
     assert cfg.selection.states == ["S1", "S2"]  # normalized
     assert cfg.selection.energy_window_eV == (4.5, 12.0)
+
+
+def test_weighting_value(tmp_path, write_input):
+    extra = TDA + '[selection]\nweighting = "f"\n'
+    assert load_config(write_input(tmp_path, extra=extra)).config.selection.weighting == "f"
 
 
 @pytest.mark.parametrize(
@@ -41,6 +47,7 @@ def test_values(tmp_path, write_input):
         ("[selection]\nenergy_window_eV = [6.0, 4.0]\n", "energy_window_eV"),
         ("[selection]\nenergy_window_eV = [-1.0, 4.0]\n", "energy_window_eV"),
         ("[selection]\nn_trajectories = 0\n", "n_trajectories"),
+        ('[selection]\nweighting = "f_over_dE"\n', "weighting"),
         ("[excitations]\nsamples_per_task = 0\n", "samples_per_task"),
         ("[excitations]\nmax_failed_fraction = 1.0\n", "max_failed_fraction"),
         ("[excitations]\nbroadening_fwhm_eV = 0.0\n", "broadening_fwhm_eV"),

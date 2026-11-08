@@ -1,4 +1,5 @@
 import numpy as np
+import pytest
 
 from gqteashmd.excite.selection import candidates_from, select_bright, select_fixed
 
@@ -21,6 +22,10 @@ def test_bright_uses_fmax_over_candidates_only():
     c = candidates_from(E, F, OK, ["S1", "S2"], (4.5, 8.0))
     sel = select_bright(c, 10, np.random.default_rng(0))
     assert sel.f_max == 0.4 and sel.candidates == 3
+    # f / dE^2 (default): weights 0.2/25, 0.4/49, 0.1/30.25
+    assert sel.weight_max == pytest.approx(0.4 / 49.0)
+    sel_f = select_bright(c, 10, np.random.default_rng(0), weighting="f")
+    assert sel_f.weight_max == 0.4
 
 
 def test_bright_acceptance_frequencies_match_f_over_fmax():
@@ -33,6 +38,36 @@ def test_bright_acceptance_frequencies_match_f_over_fmax():
     assert abs(p1 - 0.25) < 4 * np.sqrt(0.25 * 0.75 / 20000)
     assert p2 == 1.0  # f = f_max is always accepted (r < 1)
     assert sel.accepted == len(sel.selected)
+
+
+@pytest.mark.parametrize(
+    "weighting, p1",
+    [
+        ("f", 0.1 / 0.4),  # S1 (5 eV, f 0.1) against S2 (7 eV, f 0.4)
+        ("f_over_dE2", (0.1 / 25.0) / (0.4 / 49.0)),
+    ],
+)
+def test_bright_acceptance_frequencies_per_weighting(weighting, p1):
+    n = 20000
+    e = np.tile([5.0, 7.0], (n, 1))
+    f = np.tile([0.1, 0.4], (n, 1))
+    c = candidates_from(e, f, np.ones(n, bool), ["S1", "S2"], None)
+    sel = select_bright(c, 10**9, np.random.default_rng(3), weighting=weighting)
+    states = [x.state for x in sel.selected]
+    got = states.count("S1") / n
+    assert abs(got - p1) < 4 * np.sqrt(p1 * (1 - p1) / n)
+    assert states.count("S2") == n  # the maximum is always accepted
+    assert sel.f_max == 0.4
+
+
+def test_weightings_differ():
+    n = 2000
+    e = np.tile([5.0, 7.0], (n, 1))
+    f = np.tile([0.1, 0.4], (n, 1))
+    c = candidates_from(e, f, np.ones(n, bool), ["S1", "S2"], None)
+    a = select_bright(c, 10**9, np.random.default_rng(3), weighting="f")
+    b = select_bright(c, 10**9, np.random.default_rng(3))
+    assert a.accepted != b.accepted
 
 
 def test_bright_is_reproducible_and_truncates_in_order():

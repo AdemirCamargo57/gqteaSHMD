@@ -54,9 +54,14 @@ def _synthetic():
     rng = np.random.default_rng(20261108)
     de = np.column_stack([rng.uniform(4, 6, N), rng.uniform(5, 9, N)])
     f = np.column_stack([rng.uniform(0, 0.1, N), rng.uniform(0, 0.4, N)])
-    big = rng.random(N) < 0.10  # bright S2 pairs outside the window: f_max depends on semantics
+    big = rng.random(N) < 0.10  # bright S2 pairs above the window: f_max depends on semantics
     de[big, 1] = rng.uniform(8.5, 9.0, big.sum())
     f[big, 1] = rng.uniform(0.4, 0.8, big.sum())
+    # S1 pairs below the window with a larger f/dE^2 than every in-window pair: the window
+    # maximum and the all-pairs maximum then differ under f/dE^2 as well.
+    low = rng.random(N) < 0.10
+    de[low, 0] = rng.uniform(3.0, 3.8, low.sum())
+    f[low, 0] = rng.uniform(0.3, 0.4, low.sum())
     return de, f
 
 
@@ -92,29 +97,18 @@ def _write_tree(root, formats, de_ev, f):
 
 
 def _expectations(de, f):
-    """Per-state acceptance probabilities under our rule and two alternatives."""
+    """Per-state acceptance probabilities under the four candidate rules."""
     inside = (de >= WINDOW[0]) & (de <= WINDOW[1])
-    out = {}
-    out["f/f_max (window)"] = np.where(inside, f / f[inside].max(), 0.0)
-    out["f/f_max (all pairs)"] = np.where(inside, f / f.max(), 0.0)
     w = f / de**2
-    out["f/dE^2 (window)"] = np.where(inside, w / w[inside].max(), 0.0)
+    out = {}
+    for name, weight in (("f/dE^2", w), ("f", f)):
+        out[f"{name} (window max)"] = np.where(inside, weight / weight[inside].max(), 0.0)
+        out[f"{name} (all-pairs max)"] = np.where(inside, weight / weight.max(), 0.0)
     return out
 
 
 def _z(count, p):
     return (count - p.sum()) / np.sqrt((p * (1.0 - p)).sum())
-
-
-OBSERVED_RULE_DIFFERENCE = (
-    "SHARC 4.1 excite.py (delta-pulse excitation, option 3) does not accept a pair with "
-    "probability f/f_max. Measured on N = 3000 synthetic samples, window [4, 8] eV, seed 7: "
-    "SHARC selected [435, 674] pairs (S1, S2); our rule f/f_max(window) expects [368.0, 1026.7] "
-    "(z = +3.82, -19.11) and f/f_max(all pairs) expects [184.6, 515.1] (z = +19.24, +8.59). "
-    "SHARC is consistent with a probability proportional to f/dE^2, normalised by the largest "
-    "f/dE^2 over the in-window pairs: expected [387.4, 654.6] (z = +2.68, +1.03). Owner decision 1 "
-    "(Newton-X-style f/f_max) is kept; the controller decides whether to change it."
-)
 
 
 @pytest.fixture(scope="module")
@@ -158,15 +152,18 @@ def test_sharc_reports_our_input_back(sharc_run):
     assert not run["selected"][outside].any(), "SHARC selected a pair outside the window"
 
 
-def test_our_select_bright_follows_our_rule_and_resembles_sharc(sharc_run):
+DEFAULT_RULE = "f/dE^2 (window max)"
+
+
+def test_our_select_bright_follows_the_default_rule_and_resembles_sharc(sharc_run):
     de, f = sharc_run["de_in"], sharc_run["f_in"]
     cands = candidates_from(de, f, np.ones(N, dtype=bool), ["S1", "S2"], WINDOW)
     ours = select_bright(cands, len(cands), np.random.default_rng(1))
     counts = [sum(c.state == s for c in ours.selected) for s in ("S1", "S2")]
-    p = _expectations(de, f)["f/f_max (window)"]
+    p = _expectations(de, f)[DEFAULT_RULE]
     z = [_z(counts[c], p[:, c]) for c in range(2)]
     print(f"\nour counts S1, S2 = {counts}, expected {p[:, 0].sum():.1f}, {p[:, 1].sum():.1f}")
-    print(f"z = ({z[0]:+.2f}, {z[1]:+.2f}); our f_max = {ours.f_max:.6f}")
+    print(f"z = ({z[0]:+.2f}, {z[1]:+.2f}); our weight_max = {ours.weight_max:.6g}")
     assert all(abs(x) < 4 for x in z)
     sel = sharc_run["selected"]
     de_ours = np.array([c.excitation_energy_eV for c in ours.selected if c.state == "S1"])
@@ -177,28 +174,19 @@ def test_our_select_bright_follows_our_rule_and_resembles_sharc(sharc_run):
     assert ks.pvalue > 1e-3
 
 
-def _report(sharc_run):
+def test_sharc_counts_follow_f_over_de_squared_with_the_window_maximum(sharc_run):
+    """SHARC matches f/dE^2 normalised by the in-window maximum, and none of the alternatives."""
     de, f, sel = sharc_run["de_in"], sharc_run["f_in"], sharc_run["selected"]
     counts = sel.sum(axis=0)
     print(f"\nSHARC selected counts S1, S2 = {counts.tolist()}")
-    result = {}
+    zs = {}
     for name, p in _expectations(de, f).items():
-        zs = [_z(counts[c], p[:, c]) for c in range(2)]
-        result[name] = zs
+        zs[name] = [float(_z(counts[c], p[:, c])) for c in range(2)]
         print(
-            f"  {name:22s} expected S1 {p[:, 0].sum():8.2f} S2 {p[:, 1].sum():8.2f} "
-            f"z = ({zs[0]:+.2f}, {zs[1]:+.2f})"
+            f"  {name:24s} expected S1 {p[:, 0].sum():8.2f} S2 {p[:, 1].sum():8.2f} "
+            f"z = ({zs[name][0]:+.2f}, {zs[name][1]:+.2f})"
         )
-    return result
-
-
-@pytest.mark.xfail(strict=True, reason=OBSERVED_RULE_DIFFERENCE)
-def test_sharc_counts_match_f_over_fmax(sharc_run):
-    zs = _report(sharc_run)["f/f_max (window)"]
-    assert all(abs(z) < 4 for z in zs), f"z = {zs}"
-
-
-def test_sharc_counts_match_f_over_de_squared(sharc_run):
-    """Documents the rule SHARC was observed to follow (probability ~ f/dE^2, window maximum)."""
-    zs = _report(sharc_run)["f/dE^2 (window)"]
-    assert all(abs(z) < 4 for z in zs), f"z = {zs}"
+    assert all(abs(z) < 4 for z in zs[DEFAULT_RULE]), f"z = {zs[DEFAULT_RULE]}"
+    for name, z in zs.items():
+        if name != DEFAULT_RULE:
+            assert max(abs(x) for x in z) > 6, f"{name} is not discriminated: z = {z}"

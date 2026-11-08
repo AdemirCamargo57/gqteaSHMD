@@ -68,7 +68,7 @@ class SelectionStage(Stage):
         rng = task_rng(ctx.config.project.seed, self.name, 0)
         n_all = max(len(candidates), 1)  # all accepted pairs, truncated below
         if options.mode == "bright":
-            full = select_bright(candidates, n_all, rng)
+            full = select_bright(candidates, n_all, rng, weighting=options.weighting)
         else:
             full = select_fixed(candidates, n_all)
         chosen = full.selected[: options.n_trajectories]
@@ -91,6 +91,8 @@ class SelectionStage(Stage):
             "candidates": full.candidates,
             "accepted": full.accepted,
             "f_max": full.f_max,
+            "weighting": options.weighting,
+            "weight_max": full.weight_max,
             "per_state": per_state,
             "selected": [
                 [c.sample, c.state, c.excitation_energy_eV, c.oscillator_strength] for c in chosen
@@ -107,7 +109,8 @@ class SelectionStage(Stage):
             raise StageFailedError(
                 f"Only {len(rows)} of {requested} requested trajectories can be selected "
                 f"(candidates: {summary['candidates']}, accepted: {summary['accepted']}, "
-                f"f_max: {summary['f_max']:.4g}, window: {window}, "
+                f"f_max: {summary['f_max']:.4g}, weighting: {summary['weighting']}, "
+                f"window: {window}, "
                 f"states: {', '.join(summary['states'])}). Increase [sampling] n_samples "
                 "(then run with --rerun-from sampling), widen energy_window_eV, add states, "
                 "lower n_trajectories" + (", or set allow_fewer = true." if rows else ".")
@@ -154,6 +157,8 @@ class SelectionStage(Stage):
                 "candidates": summary["candidates"],
                 "accepted": summary["accepted"],
                 "f_max": summary["f_max"],
+                "weighting": summary["weighting"],
+                "weight_max": summary["weight_max"],
                 "per_state": summary["per_state"],
             },
         )
@@ -162,6 +167,7 @@ class SelectionStage(Stage):
             "# Initial-state selection",
             "",
             f"- mode: {summary['mode']}",
+            f"- weighting: {summary['weighting']} (w_max = {summary['weight_max']:.4g})",
             f"- states: {', '.join(summary['states'])}",
             f"- energy window (eV): {window if window else 'none'}",
             f"- trajectories: {len(trajectories)} selected of {requested} requested",
