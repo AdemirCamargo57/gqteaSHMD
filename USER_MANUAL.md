@@ -4,7 +4,7 @@
 **Program:** `gqteashmd`, automated surface-hopping molecular dynamics with PySCF
 **Licence:** MIT
 
-> **Read this first: what works today.** This is an early development version. The **workflow engine is complete**: input file (with hardware and per-stage resource settings), checks before a run (preflight), project management, parallel tasks, crash-safe resume, graceful stop, review pauses, change detection, and a record of the software used (provenance). Six stages exist: **`prepare`** (validates and stores the molecule), **`optimize`** (optional S0 geometry optimization with geomeTRIC), **`frequencies`** (S0 Hessian, harmonic frequencies, normal modes, Molden file), **`sampling`** (harmonic Wigner sampling of initial geometries and velocities, from the frequencies), **`excitations`** (vertical excitation energies and oscillator strengths at every sample, and the absorption spectrum) and **`selection`** (the initial excited state of every trajectory). `optimize`, `frequencies` and `excitations` work at the level of the `[electronic]` input section. The **electronic-structure layer** (PySCF: SCF, SA-CASSCF, TDA, TDDFT, CIS, TDHF; energies, analytic gradients, transition dipoles, the S0 Hessian) is **implemented** and validated against SHARC 4.1 and other programs; you can also use it directly with **`gqteashmd single-point`** (§5.3). **Dynamics and analysis are *planned*; so is the use of nonadiabatic couplings and wavefunction overlaps in dynamics** (SA-CASSCF couplings and the overlap engine exist as a library, §8.6.8, but no command reaches them). They are described in §8.10–§8.13 so that you can see in advance how results will be computed. Every section is marked:
+> **Read this first: what works today.** This is an early development version. The **workflow engine is complete**: input file (with hardware and per-stage resource settings), checks before a run (preflight), project management, parallel tasks, crash-safe resume, graceful stop, review pauses, change detection, and a record of the software used (provenance). Six stages exist: **`prepare`** (validates and stores the molecule), **`optimize`** (optional S0 geometry optimization with geomeTRIC), **`frequencies`** (S0 Hessian, harmonic frequencies, normal modes, Molden file), **`sampling`** (harmonic Wigner sampling of initial geometries and velocities, from the frequencies), **`excitations`** (vertical excitation energies and oscillator strengths at every sample, and the absorption spectrum) and **`selection`** (the initial excited state of every trajectory). `optimize`, `frequencies` and `excitations` work at the level of the `[electronic]` input section. The **electronic-structure layer** (PySCF: SCF, SA-CASSCF, TDA, TDDFT, CIS, TDHF; energies, analytic gradients, transition dipoles, the S0 Hessian) is **implemented** and validated against SHARC 4.1 and other programs; you can also use it directly with **`gqteashmd single-point`** (§5.3). The **surface-hopping dynamics core** (velocity Verlet, electronic propagation, Tully and SHARC-type hopping, velocity adjustment, decoherence, restarts) is **implemented and validated on Tully's analytic models** (P7a-1): run it with **`gqteashmd model-dynamics`** (§5.7, §8.10–§8.12, §8.14). **The `dynamics` stage for molecules, and analysis, are *planned*; so is the use of nonadiabatic couplings and wavefunction overlaps in dynamics** (SA-CASSCF couplings and the overlap engine exist as a library, §8.6.8, but no project command reaches them), and so are the LVC model, local diabatization from overlaps and spin–orbit coupling (P7a-2, P7b). The analysis is described in §8.13 so that you can see in advance how results will be computed. Every section is marked:
 >
 > - **[IMPLEMENTED]**: available in this version.
 > - **[PLANNED]**: designed but not yet available; details may still change.
@@ -424,7 +424,7 @@ The rules, all checked when the input is loaded (`validate`, `run`, `single-poin
 
 ### 4.4 Planned sections
 **[PLANNED]** Their key names and meanings are in the master plan §4.3 (`[optimize]`, `[frequencies]`, `[sampling]`, `[excitations]` and `[selection]` are implemented, see above). Each sub-project adds the sections it needs, and this manual is updated each time. The sections for the later stages are not part of the input yet, because their keys depend on decisions that are still open:
-- `[dynamics]` (P7); `[analysis]` (P8).
+- `[dynamics]` of the project input (P7b; the small input file of `gqteashmd model-dynamics`, §5.7, is separate and already has a `[dynamics]` table with the options of §8.12); `[analysis]` (P8).
 - Additional `[electronic]` keys: density fitting, MC-PDFT, triplet states (with intersystem crossing).
 - A `scratch` directory key in the input file (the backend takes a scratch directory and has no checkpoint file since P3b, §8.6.8; the input key arrives with the stage that uses it).
 
@@ -445,6 +445,7 @@ Until then, an input file that contains one of these sections or keys is rejecte
 | `gqteashmd status INPUT` | Shows whether a controller is running, and per stage the status, the task counts (done/failed/pending/running) and the last message. It opens the progress database read-only and changes nothing, so it is safe at any time |
 | `gqteashmd stop INPUT` | Asks the running controller to stop gracefully |
 | `gqteashmd single-point INPUT [--json FILE] [--log FILE]` | Computes the electronic structure at the input geometry (§5.3) |
+| `gqteashmd model-dynamics INPUT [--json FILE]` | Runs a surface-hopping ensemble on one of Tully's 1D models and prints the branching probabilities (§5.7) |
 | `gqteashmd --version` | Prints the version |
 
 ### 5.1 Exit codes
@@ -782,6 +783,85 @@ When you pause with `pause_after = ["excitations"]`, `selection` has not run yet
 ```
 
 `sample` is the 1-based number of the geometry and velocity in `samples.h5` (§6); `rng` names the random stream that `dynamics` will use for this trajectory (§8.9.3).
+
+### 5.7 `gqteashmd model-dynamics`
+**[IMPLEMENTED]** (P7a-1). It runs an ensemble of surface-hopping trajectories on one of Tully's one-dimensional two-state models (§8.14) and prints the branching probabilities. It is the way to try the dynamics core (§8.10–§8.12) and to validate your settings against a known answer. It needs no project directory, no molecule and no electronic-structure program (NumPy only), does not run the preflight checks (§7.9) and writes no files unless you ask for JSON. The input file is a **separate small TOML file** (not the project input of §4); its `[dynamics]` table is the dynamics options of §8.12, not the future `[dynamics]` section of a project.
+
+```text
+gqteashmd model-dynamics INPUT [--json FILE]
+```
+
+| Option | Meaning |
+|---|---|
+| `--json FILE` | Also write the results to a JSON file (fields below). Refuses an existing directory or an unwritable path before the run |
+
+Exit code 0 on success, 2 for an input problem (unknown key, invalid value, unknown model parameter; the message names the key, e.g. `dynamics.edc_convention`). Every table is strict: unknown keys are rejected. Everything is in atomic units (§8.10).
+
+| Table | Key | Default | Meaning |
+|---|---|---|---|
+| `[model]` | `name` | required | `tully_sac`, `tully_dac` or `tully_ecr` |
+| | `mass` | 2000 | Particle mass in $m_e$ (> 0) |
+| | `parameters` | none | Overrides of the model constants, e.g. `parameters = { A = 0.02 }`; an unknown name is an error that lists the allowed ones (§8.14) |
+| `[initial]` | `x0` | −10 | Centre of the packet, in bohr |
+| | `k` | required | Mean momentum, in atomic units (non-zero) |
+| | `sigma` | `20/|k|` | Packet width $\sigma$ (> 0) |
+| | `state` | 0 | Initial adiabatic state (0 = lower) |
+| | `sampling` | `"wigner"` | `"wigner"` or `"fixed"` (§8.14) |
+| `[dynamics]` | `dt_au` | 1.0 | Time step, in atomic units of time (> 0) |
+| | `nsubsteps` | 25 | Electronic substeps per step (≥ 1) |
+| | `hopping` | `"sharc"` | `"sharc"`, `"fssh"` or `"none"` (§8.12) |
+| | `ekin_correction` | `"parallel_vel"` | `"parallel_vel"` or `"parallel_nac"` |
+| | `frustrated` | `"keep"` | `"keep"` or `"reflect"` |
+| | `decoherence` | `"edc"` | `"edc"` or `"none"` |
+| | `decoherence_param_Eh` | 0.1 | EDC constant $C$, in $E_h$ (≥ 0) |
+| | `edc_convention` | `"sharc"` | `"sharc"` or `"granucci_persico"` |
+| | `substep_interpolation` | `"midpoint"` | `"midpoint"` or `"endpoint"` (§8.11) |
+| | `energy_drift_limit_au` | 0.0184 | Energy-drift limit, in $E_h$ (> 0) |
+| `[ensemble]` | `n_trajectories` | 1000 | Number of trajectories |
+| | `seed` | 12345 | Seed (≥ 0); the results are reproducible (§8.14) |
+| | `x_exit` | 10 | A trajectory stops when $|x|$ > `x_exit` while moving outward |
+| | `max_steps` | 200000 | Step limit per trajectory (the trajectory then counts as `unfinished`) |
+| | `workers` | 1 | Worker processes; the counts do **not** depend on it. Use at most the physical cores |
+
+The console output lists, per branch, the count, the probability over the finished trajectories and its 95 % Wilson interval, then the number of unfinished and energy-drift trajectories. The JSON file has `schema_version` (1), `model`, `initial` (with the resolved `sigma`), `dynamics`, `ensemble` (all as run), `counts`, `probabilities`, `intervals_95` (as `[low, high]`), and `n_finished`. The branches are `transmitted_lower`, `transmitted_upper`, `reflected_lower` and `reflected_upper` (§8.14); `unfinished` and `energy_drift` are counted separately.
+
+**Example.** Tully SAC at $k = 20$ (a mean energy of $k^2/2m = 0.1\,E_h$), 200 trajectories on 8 workers, plain Tully FSSH (`decoherence = "none"`, the setting that Tully's benchmark is for, §8.14.1). The input (`sac_k20.toml`):
+
+```toml
+[model]
+name = "tully_sac"
+
+[initial]
+x0 = -10.0
+k = 20.0
+state = 0
+
+[dynamics]
+dt_au = 1.0
+decoherence = "none"
+
+[ensemble]
+n_trajectories = 200
+seed = 20261108
+x_exit = 10.0
+workers = 8
+```
+
+and the real output (WSL, this workstation; 18.0 s):
+
+```text
+$ gqteashmd model-dynamics sac_k20.toml --json out.json
+Model dynamics: tully_sac, 200 trajectories, 200 finished
+branch                 count        P          95% interval
+transmitted_lower        104   0.5200      [0.4510, 0.5882]
+transmitted_upper         96   0.4800      [0.4118, 0.5490]
+reflected_lower            0   0.0000      [0.0000, 0.0188]
+reflected_upper            0   0.0000      [0.0000, 0.0188]
+unfinished: 0, energy_drift: 0
+Results written to out.json
+```
+
+The exact quantum result at $k = 20$ is 0.5077 lower and 0.4923 upper (§8.14.1), inside the intervals. The interval of 200 trajectories is wide ($\pm$ 0.07); 2000 trajectories narrow it to $\pm$ 0.02.
 
 ---
 
@@ -1152,8 +1232,9 @@ These two warnings appear when the values you entered exceed the cores or the RA
 ## 8. Computational methods and formulas
 
 This chapter defines every quantity the program computes or will compute.
-- **§8.1–§8.8** describe **what the current version does**.
-- **§8.9–§8.13** describe the **planned** methods. Those formulas document the intended implementation; they are not available yet, and details may change after validation against SHARC 4.1 and the literature.
+- **§8.1–§8.9** describe **what the current version does** for molecules.
+- **§8.10–§8.12 and §8.14** describe the **dynamics core**, implemented in P7a-1 and validated on analytic models; it is not yet connected to molecules (P7b).
+- **§8.13** describes the **planned** analysis. Those formulas document the intended implementation; they are not available yet, and details may change after validation against SHARC 4.1 and the literature.
 
 ### 8.1 Units and constants
 **[IMPLEMENTED]** for input and output:
@@ -1893,63 +1974,118 @@ The tests assert $\lvert\hat k+2\rvert<4\,\mathrm{SE}$ and $\lvert\hat a-1\rvert
 The test asserts only what these counts can decide: the default rule within 4 standard deviations, and the all-pairs maximum rejected (at least one state with $\lvert z\rvert>6$), so **the maximum is taken over the in-window pairs**. The other rows are reported only, because the counts of two states cannot pin an exponent down (the exponent is settled by the fits above). Our `select_bright` with the default rule on the same data gives 353 (S1) and 666 (S2), $z=+0.19$ and $+0.61$ against its own expectation. A two-sample Kolmogorov–Smirnov test of the $\Delta E$ of the selected S1 pairs, ours against SHARC's, gives $p=0.96$ (statistic 0.036). The comparison cannot say *why* SHARC uses $f/\Delta E^2$; hence the wording "determined by black-box comparison".
 
 ### 8.10 Nuclear motion (velocity Verlet)
-**[PLANNED, P7]** Nuclei move classically on the active surface $\lambda$:
+**[IMPLEMENTED]** (P7a-1, `gqteashmd.dynamics`, analytic models; **[PLANNED, P7b]** for molecules with PySCF). All of §8.10–§8.12 and §8.14 use **Hartree atomic units** ($\hbar = 1$): positions in bohr, masses in electron masses $m_e$, time in $\hbar/E_h$ (1 a.u. = 0.024188843265857 fs), velocities in bohr per atomic unit of time, energies in $E_h$, nonadiabatic couplings in 1/bohr. The core works on a flat coordinate vector $\mathbf q$ of length $f$ (the number of degrees of freedom) with masses $\mathbf m$ of length $f$; a molecule of $N_{\text{at}}$ atoms has $f = 3N_{\text{at}}$ (P7b).
+
+**Symbols.** $n$ is the number of electronic states, $\lambda$ the active state, $E_k(\mathbf q)$ the energies, $\mathbf g_k = \partial E_k/\partial\mathbf q$ the gradients (length $f$), $\mathbf d_{jk} = \langle j|\partial k/\partial\mathbf q\rangle$ the nonadiabatic coupling vector (NAC, length $f$; real and antisymmetric for real states), $\mathbf v$ the velocity, $\mathbf M = \mathrm{diag}(\mathbf m)$, $K = \tfrac12\mathbf v^{\mathsf T}\mathbf M\mathbf v$ the kinetic energy and $\Delta t$ = `dt_au`.
+
+The nuclei move classically on the active surface:
 
 $$
-\mathbf a(t) = -\mathbf M^{-1}\nabla E_\lambda(\mathbf R(t)),\qquad
-\mathbf R(t+\Delta t) = \mathbf R + \mathbf v\,\Delta t + \tfrac12 \mathbf a\,\Delta t^2,\qquad
-\mathbf v(t+\Delta t) = \mathbf v + \tfrac12\big[\mathbf a(t) + \mathbf a(t+\Delta t)\big]\Delta t .
+\mathbf a = -\mathbf M^{-1}\mathbf g_\lambda(\mathbf q),\qquad
+\mathbf q' = \mathbf q + \mathbf v\,\Delta t + \tfrac12\mathbf a\,\Delta t^2,\qquad
+\mathbf v' = \mathbf v + \tfrac12\big[\mathbf a + \mathbf a'\big]\Delta t ,\quad \mathbf a' = -\mathbf M^{-1}\mathbf g'_\lambda(\mathbf q') .
 $$
 
-- **Inputs:** $\Delta t$ = `dt_fs`; a typical value is 0.5 fs.
-- **Quality check:** the total energy $E_{\text{tot}} = \tfrac12\mathbf v^{\mathsf T}\mathbf M\mathbf v + E_\lambda$ should be conserved. A trajectory whose drift $|E_{\text{tot}}(t) - E_{\text{tot}}(0)|$ exceeds a limit (planned 0.5 eV, open item O8) is ended and flagged.
+The time step is fixed (velocity Verlet; no adaptive step). The order of all operations of one step, including where the hop happens, is in §8.12.
+
+**Total energy.** $E_{\text{tot}} = E_\lambda(\mathbf q) + K$. The trajectory ends with the outcome `energy_drift` when $|E_{\text{tot}}(t) - E_{\text{tot}}(0)|$ exceeds `energy_drift_limit_au` (default 0.0184 $E_h$ = 0.5 eV; a NaN also counts as drift). Because the velocity is completed before a hop and rescaled exactly, $E_{\text{tot}}$ is continuous across hops.
+
+**Measured:** Tully SAC with hopping off, $\Delta t = 1$ a.u.: $\max|E_{\text{tot}}-E_{\text{tot}}(0)| = 3.2\times10^{-7}\,E_h$ (and $8.1\times10^{-8}$ at $\Delta t = 0.5$, the expected $\Delta t^2$ scaling); at a hop step the jump is at most $7.9\times10^{-9}\,E_h$ ($\text{sharc}$, both velocity adjustments).
 
 ### 8.11 Electronic motion
-**[PLANNED, P7]** The electronic wavefunction $\Psi(t) = \sum_J c_J(t)\,\Psi_J$ obeys
+**[IMPLEMENTED]** (P7a-1; molecules **[PLANNED, P7b]**). The electronic wavefunction $\Psi(t) = \sum_j c_j(t)\,\Psi_j$ is expanded in the **propagation basis**, the diagonal basis, which in P7a-1 equals the adiabatic (MCH) basis. It obeys
 
 $$
-i\hbar\,\dot c_I = \sum_J \big(H_{IJ} - i\hbar\,T_{IJ}\big)\, c_J,
-\qquad
-T_{IJ} = \Big\langle \Psi_I \Big| \frac{\partial \Psi_J}{\partial t}\Big\rangle = \mathbf v\cdot\mathbf d_{IJ}.
+\dot c_j = -i E_j\, c_j - \sum_k T_{jk}\, c_k,\qquad T_{jk} = \mathbf v\cdot\mathbf d_{jk}
+\qquad\Longleftrightarrow\qquad
+i\,\dot{\mathbf c} = \mathbf H_{\text{eff}}\,\mathbf c,\quad \mathbf H_{\text{eff}} = \mathrm{diag}(\mathbf E) - i\,\mathbf T .
 $$
 
 | Symbol | Meaning |
 |---|---|
-| $c_J$ | Complex amplitude of state $J$ (dimensionless); $\lvert c_J\rvert^2$ is the quantum population |
-| $H_{IJ}$ | Electronic Hamiltonian in the state basis (diagonal $E_I$ without spin–orbit coupling), in $E_h$ |
-| $T_{IJ}$ | Time-derivative coupling, in inverse time (atomic unit: $E_h/\hbar$) |
+| $c_j$ | Complex amplitude of state $j$ (dimensionless); $\lvert c_j\rvert^2$ is the quantum population |
+| $E_j$ | Energy of state $j$, in $E_h$ |
+| $T_{jk}$ | Time-derivative coupling $\mathbf v\cdot\mathbf d_{jk}$ (real, antisymmetric), in 1/(atomic unit of time) |
+| $\mathbf H_{\text{eff}}$ | Effective Hamiltonian; Hermitian, so the norm is conserved |
 
-- **Integration:** with small sub-steps between nuclear steps.
-- **Overlaps:** with overlap matrices, the robust *local diabatization* scheme of Granucci et al. (2001) is used.
-- **Norm:** $\sum_J |c_J|^2 = 1$ is conserved and monitored.
+**Propagator over one nuclear step.** With $N_s$ = `nsubsteps` (default 25) and $\delta = \Delta t/N_s$, the step propagator is $\mathbf P = \mathbf P_{N_s}\cdots\mathbf P_1$ with $\mathbf P_m = \exp[-i\,\mathbf H_{\text{eff}}(s_m)\,\delta]$, computed from the eigendecomposition of the (explicitly Hermitized) $\mathbf H_{\text{eff}}$. $\mathbf P$ is unitary, so $\sum_j|c_j|^2 = 1$ is conserved to rounding. The option `substep_interpolation` sets how $\mathbf E$, $\mathbf d$ and $\mathbf v$ are interpolated between their values at $t$ and $t+\Delta t$ ($s\in[0,1]$ is the fraction of the step):
+
+| `substep_interpolation` | Points $s_m$ | Interpolation | Accuracy |
+|---|---|---|---|
+| `"midpoint"` (default) | $s_m = (m-\tfrac12)/N_s$ | $\mathbf E$, $\mathbf d$, $\mathbf v$ linear, each separately; $\mathbf T(s) = \mathbf v(s)\cdot\mathbf d(s)$ | second order in $\delta$ |
+| `"endpoint"` | $s_m = m/N_s$ | $\mathbf E$ and $\mathbf T = \mathbf v\cdot\mathbf d$ linear (between $\mathbf v(t)\cdot\mathbf d(t)$ and $\mathbf v(t+\Delta t)\cdot\mathbf d(t+\Delta t)$) | first order in $\delta$ |
+
+`"endpoint"` is the scheme of the public SHARC 4.1 manual (§8.33.1, eqs. 8.191–8.194), offered for comparison with SHARC. The two schemes have slightly different continuous limits when $\mathbf v$ varies during the step (one is linear and the other quadratic in $s$ for $\mathbf T$). The check against SHARC is in §8.14.
+
+**Not yet available:** local diabatization from wavefunction overlaps, the `overlap` coupling type, and spin–orbit coupling. **[PLANNED, P7a-2 and P7b]** The data model is already prepared: every electronic snapshot carries the complex MCH Hamiltonian and the MCH→diagonal matrix $\mathbf U$. In P7a-1 $\mathbf U$ must be diagonal up to phases (no SOC); a non-diagonal $\mathbf U$ (largest off-diagonal element above $10^{-10}$) raises `NotImplementedError` pointing to P7a-2.
 
 ### 8.12 Surface hopping, energy adjustment, decoherence
-**[PLANNED, P7]**
+**[IMPLEMENTED]** (P7a-1, analytic models; **[PLANNED, P7b]** for molecules). Options and their defaults:
 
-**Hopping probability** (Tully fewest switches) from the active state $\lambda$ to $J$ in one step:
+| Option (`[dynamics]` key) | Values (default first) | Meaning |
+|---|---|---|
+| `hopping` | `"sharc"`, `"fssh"`, `"none"` | Hopping probability: propagator-based (SHARC type), Tully fewest switches, or off (for tests and "hopping off" comparisons) |
+| `ekin_correction` | `"parallel_vel"`, `"parallel_nac"` | Direction of the velocity adjustment at a hop |
+| `frustrated` | `"keep"`, `"reflect"` | What happens to the velocity at a frustrated hop |
+| `decoherence` | `"edc"`, `"none"` | Energy-based decoherence correction on or off |
+| `decoherence_param_Eh` | 0.1 | $C$ of the EDC, in $E_h$ ($\ge 0$) |
+| `edc_convention` | `"sharc"`, `"granucci_persico"` | Which damping rate the EDC uses (below) |
+| `substep_interpolation` | `"midpoint"`, `"endpoint"` | §8.11 |
+| `dt_au`, `nsubsteps`, `energy_drift_limit_au` | 1.0, 25, 0.0184 | §8.10, §8.11 |
 
-$$
-P_{\lambda\to J} = \max\!\left(0,\; -\frac{2\,\Delta t}{|c_\lambda|^2}\,\mathrm{Re}\!\left(c_J^{*}\,c_\lambda\,T_{J\lambda}\right)\right).
-$$
+Only **`nacdr`** couplings (NAC vectors) exist. Deferred (not in the first release): A-FSSH, NPI, GFSH, `parallel_diff`, thermostats, adaptive time steps.
 
-A uniform random number $\zeta\in[0,1)$ selects the hop when $\sum_{K<J} P_{\lambda\to K} < \zeta \le \sum_{K\le J} P_{\lambda\to K}$. The random numbers come from `project.seed`, so runs are reproducible. SHARC's generalization for arbitrary representations is also planned.
-
-**Energy conservation at a hop** (rescaling along the velocity). With kinetic energy $K$:
-
-$$
-\mathbf v' = \alpha\,\mathbf v,\qquad \alpha = \sqrt{1 - \frac{E_J - E_\lambda}{K}} .
-$$
-
-If $K < E_J - E_\lambda$, the hop is **frustrated**: it is rejected and logged. Rescaling along the nonadiabatic coupling vector or the gradient difference is planned as an option.
-
-**Decoherence** (energy-based correction; Granucci & Persico 2007). After each step, every inactive amplitude decays:
+**Hopping probability, Tully FSSH** (`hopping = "fssh"`; Tully 1990, adiabatic basis). The flux out of the active state $\lambda$ into $j$ follows from the electronic equation, $\mathrm d|c_\lambda|^2/\mathrm dt = -\sum_j 2\,\mathrm{Re}(c_\lambda^{*}\,T_{\lambda j}\,c_j)$. It is accumulated over the substeps, with the amplitudes at the start of each substep $m$ and $\mathbf T$ at the same points $s_m$ as the propagator:
 
 $$
-c_J \leftarrow c_J\, e^{-\Delta t/\tau_J},\qquad
-\tau_J = \frac{\hbar}{|E_J - E_\lambda|}\left(1 + \frac{C}{K}\right),\qquad J\neq\lambda,
+g_{\lambda\to j} = \max\!\left(0,\;\sum_{m=1}^{N_s}\delta\,\frac{2\,\mathrm{Re}\big(c_\lambda^{*}\,T_{\lambda j}\,c_j\big)_m}{|c_\lambda|^2_m}\right),\qquad j\neq\lambda .
 $$
 
-and $c_\lambda$ is rescaled to restore $\sum|c_J|^2 = 1$. The planned default is $C = 0.1\,E_h$.
+(A tiny floor on $|c_\lambda|^2$ avoids a division by zero.) If $\sum_j g_{\lambda\to j} > 1$ the probabilities are scaled down proportionally so that the sum is 1.
+
+**Hopping probability, SHARC type** (`hopping = "sharc"`, the default; Mai, Marquetand & González, *Int. J. Quantum Chem.* **115**, 1215 (2015)). With $\mathbf c = \mathbf c(t)$, $\mathbf c' = \mathbf c(t+\Delta t)$ and $\mathbf P$ the step propagator of §8.11:
+
+$$
+h_{\lambda\to j} = \left(1 - \frac{|c'_\lambda|^2}{|c_\lambda|^2}\right)
+\frac{\mathrm{Re}\big(c'_j\,P_{j\lambda}^{*}\,c_\lambda^{*}\big)}{|c_\lambda|^2 - \mathrm{Re}\big(c'_\lambda\,P_{\lambda\lambda}^{*}\,c_\lambda^{*}\big)},\qquad j\neq\lambda .
+$$
+
+Negative values are set to 0, and if $|c'_\lambda|^2 \ge |c_\lambda|^2$ all are 0 (no population is leaving). The same proportional cap as above applies. If the denominator is $\le 10^{-14}$, all are 0. Both probabilities are invariant under a global phase of $\mathbf c$ (tested).
+
+**Hop decision.** One uniform random number $\xi\in[0,1)$ is drawn in **every** step, used or not (§8.14). With the states $j\ne\lambda$ in index order and the cumulative sums $S_j$ of the probabilities, the trajectory hops to the first $j$ with $\xi < S_j$; if there is none, it does not hop.
+
+**Velocity adjustment** for a hop $\lambda\to j$ at fixed $\mathbf q'$, with $\Delta E = E_j - E_\lambda$ (at $\mathbf q'$) and kinetic energy $K$ (after the velocity update of the step). Energy conservation requires $K_{\text{new}} = K - \Delta E$.
+
+- **`parallel_vel`** (adjust along the velocity): if $\Delta E \le K$, $\mathbf v' = \alpha\,\mathbf v$ with $\alpha = \sqrt{1 - \Delta E/K}$; otherwise the hop is **frustrated**. $K = 0$ and $\Delta E > 0$ is frustrated.
+- **`parallel_nac`** (adjust along the NAC): with $\mathbf u = \mathbf d_{\lambda j}$ (taken at $\mathbf q'$), $\mathbf v' = \mathbf v + \gamma\,\mathbf M^{-1}\mathbf u$, where energy conservation gives $a\gamma^2 + b\gamma + \Delta E = 0$ with $a = \tfrac12\mathbf u^{\mathsf T}\mathbf M^{-1}\mathbf u$ and $b = \mathbf v\cdot\mathbf u$. If the discriminant $D = b^2 - 4a\Delta E < 0$, the hop is frustrated. Otherwise $\gamma = (-b\pm\sqrt D)/(2a)$ with the root of **smaller $|\gamma|$** (computed as $\gamma = \Delta E/q$, $q = -(b + \mathrm{sign}(b)\sqrt D)/2$, which has no cancellation). If $a \le 10^{-30}$ the `parallel_vel` rule is used.
+- **Frustrated hop**, `frustrated = "keep"`: the velocity is unchanged and there is no hop. `"reflect"`: no hop, and the momentum component along $\mathbf u$ is reversed in the mass-weighted metric, $\mathbf v' = \mathbf v - 2\,\dfrac{\mathbf v\cdot\mathbf u}{\mathbf u^{\mathsf T}\mathbf M^{-1}\mathbf u}\,\mathbf M^{-1}\mathbf u$ (for `parallel_vel`, $\mathbf u = \mathbf M\mathbf v$, which gives $\mathbf v' = -\mathbf v$; for `parallel_nac`, $\mathbf u = \mathbf d_{\lambda j}$). Every frustrated event is recorded in the step record.
+
+**Energy-based decoherence correction (EDC)** (`decoherence = "edc"`), applied after the hop step to $\mathbf c'$, with $K$ the kinetic energy after the hop, $C$ = `decoherence_param_Eh` and, for every inactive state $j\neq\lambda$, the decoherence time $\tau_j = \dfrac{1}{|E_j - E_\lambda|}\Big(1 + \dfrac{C}{K}\Big)$:
+
+| `edc_convention` | Update of the inactive amplitudes | Source |
+|---|---|---|
+| `"sharc"` (default) | $c_j \leftarrow c_j\,\exp\!\big[-\tfrac12\,\Delta t\,|E_j-E_\lambda|\,(1 + C/K)^{-1}\big] = c_j\,e^{-\Delta t/(2\tau_j)}$ | SHARC 4.1 manual §8.7.1, eq. (8.25) |
+| `"granucci_persico"` | $c_j \leftarrow c_j\,e^{-\Delta t/\tau_j}$ | Granucci & Persico, *J. Chem. Phys.* **126**, 134114 (2007), as reproduced in Runeson, arXiv:2507.18381 (2025), Sec. III.3, eqs. (44a), (44b), (45) |
+
+In both, the active amplitude is then rescaled keeping its phase, $c_\lambda \leftarrow c_\lambda\,\sqrt{\big(1 - \sum_{j\neq\lambda}|c_j|^2\big)/|c_\lambda|^2}$ (manual eq. 8.26; Runeson eq. 45), so the norm is exactly 1. If $|E_j-E_\lambda| = 0$ or $K = 0$, $c_j$ is unchanged. **The `"sharc"` convention damps the amplitudes at half the rate of `"granucci_persico"`** (measured against SHARC 4.1: damping exponent $\kappa$ = 0.500000 for SHARC, 0.500000 for `"sharc"`, 1.000000 for `"granucci_persico"`). The default follows SHARC (owner decision 2026-11-08).
+
+> **Caveat on EDC.** EDC with $C = 0.1\,E_h$ **biases** simple one-dimensional benchmarks: with the Granucci–Persico rate it raised the upper-state yield on SAC at low momentum and destroyed the Stückelberg interference of DAC at high energy (numbers in §8.14). The time $\tau_j \propto 1/|\Delta E|$ becomes shorter than the time between two crossings when the gap is large. Runeson (arXiv:2507.18381, 2025) criticises the EDC for depending on the *total* kinetic energy of the system. Use `decoherence = "none"` (plain Tully FSSH) for such benchmarks, and validate the choice for your molecule.
+
+**Step order** (ours, documented; one nuclear step from $(\mathbf q,\mathbf v,\mathbf a = -\mathbf M^{-1}\mathbf g_\lambda(\mathbf q),\mathbf c,\lambda)$, with the snapshot $\text{snap}$ = energies, gradients, NACs at $\mathbf q$):
+
+1. $\mathbf q' = \mathbf q + \mathbf v\Delta t + \tfrac12\mathbf a\Delta t^2$.
+2. $\text{snap}' = $ model evaluated at $\mathbf q'$ (with the previous snapshot for sign continuity).
+3. $\mathbf v' = \mathbf v + \tfrac12(\mathbf a - \mathbf M^{-1}\mathbf g'_\lambda)\Delta t$ (with the old active state).
+4. Propagate $\mathbf c$ over $[t, t+\Delta t]$, with $\mathbf E$, $\mathbf d$ interpolated between $\text{snap}$ and $\text{snap}'$ and $\mathbf v$ between $\mathbf v$ and $\mathbf v'$; this gives $\mathbf c'$ and $\mathbf P$.
+5. Hopping probabilities of the chosen scheme; draw $\xi$.
+6. If there is a hop: velocity adjustment of $\mathbf v'$ (frustrated: keep or reflect, $\lambda$ unchanged); if it succeeds, $\lambda\leftarrow j$. The NAC used by `parallel_nac` is $\mathbf d_{\lambda j}$ of $\text{snap}'$.
+7. Decoherence on $\mathbf c'$, with $K$ from the final $\mathbf v'$ and $\mathbf E$ from $\text{snap}'$.
+8. $\mathbf a'$ is the gradient of the (new) active state at $\mathbf q'$, divided by $-\mathbf m$ (recomputed from the stored snapshot, not stored).
+9. Record the step; check the energy drift.
+
+The hop thus happens **after** the velocity update of the step and the rescaling is done at fixed $\mathbf q'$. Where SHARC's order differs, the difference is measured by black-box comparison (§8.14), not read from its source.
+
+**Outcomes of a trajectory:** `stopped` (a stop rule you gave was met), `finished` (`max_steps` reached without stopping) and `energy_drift`. Physical endings are outcomes, not errors; invalid options are a `ValueError` naming the option.
 
 **Assumptions:**
 - Classical nuclei.
@@ -1969,6 +2105,77 @@ $$
   - Agreement between $P_J$ and $\bar\rho_J$ indicates internally consistent dynamics.
 - **Lifetimes:** these come from kinetic fits, for example $P_{S_1}(t) = e^{-t/\tau}$, with fit uncertainties.
 - **Precision and ensemble size:** with $N = 100$, $\sigma_P \approx 0.05$ at $P = 0.5$. Differences smaller than about $2\sigma$ are not significant.
+
+### 8.14 Dynamics core: models, determinism, restart, performance and validation
+**[IMPLEMENTED]** (P7a-1, `gqteashmd.dynamics`, command `gqteashmd model-dynamics`, §5.7). The package imports nothing from `electronic/`, `stages/`, the orchestrator or `config/`; it takes its electronic data through a small protocol (`evaluate(q, previous) -> snapshot`) that the analytic models implement now and a PySCF adapter will implement in P7b. It uses NumPy only (SciPy only in tests and tools).
+
+**Models.** Tully's three one-dimensional two-state models (Tully 1990), mass 2000 $m_e$ by default, atomic units. $V_{ij}$ is the diabatic matrix; the adiabatic energies, gradients and NACs $d_{jk} = G_{jk}/(E_k - E_j)$ with $\mathbf G = \mathbf W^{\mathsf T}(\partial\mathbf V/\partial x)\mathbf W$ come from its eigendecomposition (checked against finite differences). A two-dimensional two-state test model also exists in the library.
+
+| Model | Parameters (default) | Diabatic matrix |
+|---|---|---|
+| `tully_sac` (simple avoided crossing) | $A$ 0.01, $B$ 1.6, $C$ 0.005, $D$ 1.0 | $V_{11} = \mathrm{sign}(x)\,A(1 - e^{-B|x|})$, $V_{22} = -V_{11}$, $V_{12} = C e^{-Dx^2}$ |
+| `tully_dac` (dual avoided crossing) | $A$ 0.1, $B$ 0.28, $C$ 0.015, $D$ 0.06, $E_0$ 0.05 | $V_{11} = 0$, $V_{22} = -A e^{-Bx^2} + E_0$, $V_{12} = C e^{-Dx^2}$ |
+| `tully_ecr` (extended coupling with reflection) | $A$ 6e-4, $B$ 0.1, $C$ 0.9 | $V_{11} = A$, $V_{22} = -A$, $V_{12} = B e^{Cx}$ for $x<0$ and $B(2 - e^{-Cx})$ for $x>0$ |
+
+**Initial conditions of an ensemble.** The packet $\psi(x)\propto\exp[-(x-x_0)^2/\sigma^2 + ikx]$ on the lower adiabatic state. Its density has standard deviation $\sigma/2$ and its Wigner function $s_p = 1/\sigma$ ($\hbar = 1$), so `sampling = "wigner"` draws $x\sim N(x_0,\sigma/2)$ and $p\sim N(k,1/\sigma)$; `"fixed"` gives every trajectory $x_0$ and $k/m$. The default width is $\sigma = 20/|k|$. A trajectory runs until $|x| > $ `x_exit` while moving outward (the stop rule); the branch is **transmitted** ($x>0$) or **reflected** ($x<0$) and **lower** or **upper** (the active state). Probabilities are fractions over the stopped trajectories with 95 % Wilson score intervals.
+
+**Determinism.** Exactly **one** uniform random number is drawn per nuclear step, whether it is used or not (also with `hopping = "none"`), and it is logged in the step record. Ensemble trajectory $i$ uses `default_rng(SeedSequence([seed, crc32(b"model-dynamics")]).spawn(i + 1)[i])`; the initial conditions use their own stream, `SeedSequence([seed, crc32(b"model-initial")])`. A `ReplaySource` fed with the logged numbers reproduces a trajectory exactly. The counts of an ensemble do **not** depend on `workers` (tested for 1, 2 and 4 workers; a 200-trajectory benchmark gave identical counts for 1, 2, 4, 8 and 16).
+
+**Restart (library).** `dynamics.restart.save_state(path, state, rng)` writes one atomic `.npz` and `load_state(path, model)` reads it; continuing gives a result **bit-identical** to an uninterrupted run (tested: 50 steps + save + load + 50 steps equals 100 steps, for both hopping schemes with EDC and with hops in the window). It stores $\mathbf q$, $\mathbf v$, $\mathbf c$, the electronic snapshot (energies, gradients, NACs, Hamiltonian, model eigenvectors), time, step, active state, $E_{\text{tot}}(0)$ and the random-source state (a JSON `meta` entry; floats round-trip exactly). It does **not** store the masses, the model parameters, the options or $\mathbf U$ (with no SOC $\mathbf U$ is trivial; P7a-2 must store it); you must supply the same model and options. `load_state` never evaluates the model. A missing, foreign or corrupt file, or a shape mismatch with the model, is a `ValueError`. The `model-dynamics` command does not write restart files (its trajectories are short); the `dynamics` stage of P7b will.
+
+**Performance** (this workstation, 16 logical CPUs, code on `/mnt/c`; Tully SAC, $k = 20$, $\Delta t = 1$ a.u., $N_s = 25$, about 2040 steps per trajectory): about 0.30 s per trajectory with `hopping = "sharc"` and 0.35 s with `"fssh"` (about 150 µs per step; vectorised over the substeps, 4–5 times faster than the first version). 200 trajectories: 65 s with `workers = 1`, 18 s with `workers = 8` (measured again in §5.7: 17.98 s). Eight workers give 3.6 times the speed of one; more than 8 does not help on this machine (4 performance cores). Workers are processes started with `spawn`; a script that calls `run_model_ensemble(..., workers > 1)` must guard its entry point with `if __name__ == "__main__":`.
+
+#### 8.14.1 Validation (measured)
+**Three independent checks, all measured.** Where a tolerance is given, it is the rule "$|\text{FSSH} - \text{exact}| \le 4\,\mathrm{SE} + 0.02$" with $\mathrm{SE} = \sqrt{P_{\text{ex}}(1-P_{\text{ex}})/n}$, set before the runs.
+
+**(a) Against the exact quantum solution.** The reference is our own exact solver (a test helper, `tests/validation/wavepacket.py`): a two-state split-operator FFT propagation in the diabatic basis (symmetric Strang step, $2\times2$ exponential from the eigendecomposition of $\mathbf V$ at every grid point), starting from the same packet, with an absorbing boundary near the grid edge whose absorbed density is projected on the local adiabatic states and added to that side's branch, so the bookkeeping is exact. Convergence (all 11 points): halving $\Delta x$ and $\Delta t$ changes the branches by at most $9.8\times10^{-6}$, a wider grid and absorber by at most $9.4\times10^{-6}$, and the norm is $1$ to $3\times10^{-12}$. SAC at $k = 30$: exact 0.714 against Landau–Zener 0.72.
+
+FSSH settings: `hopping = "sharc"`, `parallel_vel`, frustrated hops kept, $\Delta t = 0.5$ a.u., 25 substeps, 8 workers, seed 20261108, x0 = −10 (SAC, DAC) or −15 (ECR), 95 % Wilson intervals. "A" marks asserted branches.
+
+*SAC, no decoherence, n = 2000* (asserted at $k$ = 10, 15, 20, 30):
+
+| $k$ | transmitted lower | exact | transmitted upper | exact |
+|---|---|---|---|---|
+| 10 | 0.8530 | 0.8456 | 0.1450 [0.130, 0.161] | 0.1533 |
+| 15 | 0.6785 | 0.6770 | 0.3215 [0.301, 0.342] | 0.3230 |
+| 20 | 0.5245 | 0.5077 | 0.4755 [0.454, 0.497] | 0.4923 |
+| 30 | 0.3030 | 0.2857 | 0.6970 [0.677, 0.717] | 0.7143 |
+
+The largest difference is 0.017; the reflected branches are at most 0.002 (exact 0.001 at $k$ = 10).
+
+*DAC, no decoherence, n = 1000* ($\ln E$ = −1, 0, 1 asserted; mean energy $E = k^2/2m$ in $E_h$, so $k = \sqrt{2mE}$):
+
+| $\ln E$ ($k$) | transmitted lower | exact | transmitted upper | exact |
+|---|---|---|---|---|
+| −2 (23.27) | 0.799 | 0.9068 | 0.201 [0.177, 0.227] | 0.0932 |
+| −1 (38.36) | 0.617 | 0.6078 | 0.383 [0.353, 0.414] | 0.3922 |
+| 0 (63.25) | 0.753 | 0.7449 | 0.247 [0.221, 0.275] | 0.2551 |
+| 1 (104.27) | 0.151 | 0.1315 | 0.849 [0.826, 0.870] | 0.8685 |
+
+The three asserted points differ by at most 0.020. **The point $\ln E = -2$ is not asserted: FSSH 0.201 against exact 0.093 (difference 0.108, tolerance 0.057).** It is the low-energy Stückelberg region, where plain FSSH is known to deviate; an independent from-scratch FSSH (own adiabatic formulas, RK4 electrons, no `gqteashmd.dynamics` code, same streams) gives the same value at fixed $k$, so this is a property of the method. **Stated plainly: this point was classified as reported-only after the preliminary numbers had been seen**, not before. There is no reflection in any DAC run.
+
+*ECR, Granucci–Persico EDC, n = 1000* (asserted: transmitted upper and reflected lower):
+
+| $k$ | transmitted upper (A) | exact | reflected lower (A) | exact | tolerance (R lower) |
+|---|---|---|---|---|---|
+| 10 | 0.000 | 0.0000 | 0.069 | 0.0898 | 0.056 |
+| 20 | 0.000 | 0.0000 | 0.104 | 0.1570 | 0.066 |
+| 30 | 0.342 | 0.3742 | 0.013 | 0.0238 | 0.039 |
+
+The tightest margin is $k = 20$, reflected lower: difference −0.053 against 0.066. The other ECR branches at these momenta are reported (transmitted lower 0.701 / 0.647 / 0.606 against exact 0.7004 / 0.6038 / 0.5697; reflected upper 0.230 / 0.249 / 0.039 against 0.2098 / 0.2392 / 0.0323). *ECR with `edc_convention = "sharc"`, n = 1000*, run first as report-only and then asserted on the same branches because every branch at all three momenta met the rule (**this assertion was added after the numbers were seen**): reflected lower 0.0830 / 0.1200 / 0.0150 (differences −0.007 / −0.037 / −0.009; at $k = 20$ closer to exact than the Granucci–Persico −0.053), transmitted upper 0.000 / 0.000 / 0.3590.
+
+*Why SAC and DAC are asserted without decoherence.* The accuracy claim for FSSH on these two models is for Tully's plain FSSH, which is what a run with `decoherence = "none"` gives; the EDC runs (Granucci–Persico, $C$ = 0.1, n = 500) are reported and are biased: SAC transmitted upper 0.210 / 0.416 / 0.530 / 0.680 at $k$ = 10 / 15 / 20 / 30 (exact 0.1533 / 0.3230 / 0.4923 / 0.7143), and DAC transmitted upper 0.324 / 0.430 / 0.488 / 0.524 at $\ln E$ = −2 / −1 / 0 / 1 (exact 0.0932 / 0.3922 / 0.2551 / 0.8685). The damage was traced to the EDC, not to a bug: with decoherence off the core reproduces an independent plain-FSSH implementation count for count (SAC $k = 10$: 57/400 and DAC $k$ = 23.27: 66/400, identical).
+
+**(b) Against published values.** **Not done: skipped by design.** No open-access source tabulates the branching probabilities of Tully's models (the figures of Tully 1990, Mannouch & Richardson, *J. Chem. Phys.* **158**, 104111 (2023) and He et al., *J. Phys. Chem. Lett.* **13**, 6966 (2022) are not tabulated, and those papers use other conventions). No value was invented or read off a plot; the test skips with this explanation. The exact solver of (a) takes its place. Qualitatively our exact ECR values lie on the trend of Fig. 8 of Mannouch & Richardson.
+
+**(c) Against SHARC 4.1 as a black box** (`pytest -m sharc`, needs `SHARC_HOME` and `SHARC_PYTHON`; never in CI). Clean room: SHARC is **executed only**; its input formats and equations come from the public SHARC 4.1 manual, and nothing in the SHARC installation was read. The harness is `tools/sharc_compare/run_sharc_model.py` (a one-atom model, He, with the Tully potentials; `sharc.x` with `SHARC_ANALYTICAL`; for long ensembles our own provider writes `QM.out` in the documented format, shown equal to `SHARC_ANALYTICAL.py` to better than $10^{-9}$ on SAC, DAC and ECR). SHARC's 4.1 `driver.py` ANALYTICAL mode did not work on this installation, so `sharc.x` is used.
+
+- **Nuclear motion and hopping probabilities** (SAC, $x$ from −1 to 1, $k = 40$, $\Delta t = 0.5$ a.u., 200 steps, hopping off): positions agree to $7.5\times10^{-11}$ bohr and velocities to $2.1\times10^{-12}$ (a.u.). The populations agree **only with `substep_interpolation = "endpoint"`**: $\max\big||c_0|^2_{\text{ours}} - |c_0|^2_{\text{SHARC}}\big|$ is $1.4\times10^{-8}$ over the first 50 steps (asserted $< 10^{-6}$) and $6.15\times10^{-7}$ over all 200 (asserted $< 2\times10^{-6}$). With the default `"midpoint"` it is $2.1\times10^{-5}$ over 50 steps and $2.5\times10^{-4}$ over 200 (peak at the crossing), the difference halves when the number of substeps doubles (ratio 2.003), and the final populations differ by $2\times10^{-7}$. The remaining $6\times10^{-7}$ is SHARC against its own documented scheme (propagating SHARC's own energies, couplings and velocities with the manual's scheme reproduces SHARC to $6.2\times10^{-7}$ and our core to $6.0\times10^{-9}$).
+- **A replayed hop** (SAC, $x$ from −2 to 2, $k = 40$, $\Delta t = 1$ a.u., SHARC's own random numbers fed to our core): the same hop at step 136 (S0→S1), the same active-state sequence, velocities after the `parallel_vel` rescaling to $7.8\times10^{-11}$, and hop probabilities to $6.5\times10^{-7}$ with `"endpoint"` ($8.5\times10^{-5}$ with `"midpoint"`).
+- **EDC rate:** SHARC's inactive amplitudes decay with $\kappa = 0.500000$ (relative to $e^{-\Delta t/\tau}$); our `"sharc"` convention gives 0.500000 and `"granucci_persico"` 1.000000. Inactive populations at steps 150 / 200 / 300: SHARC 0.250656 / 0.121657 / 0.026135, ours (`"sharc"`) 0.250688 / 0.121669 / 0.026138, ours (`"granucci_persico"`) 0.302264 / 0.066121 / 0.002998.
+- **Ensembles** ($n = 500$, the same Wigner initial conditions fed to both programs, SHARC hopping, `parallel_vel`, frustrated hops kept, $\Delta t = 0.5$ a.u., 25 substeps; two-proportion $z$, asserted $|z| < 4$): SAC $k = 20$ without decoherence gives identical counts, 261 / 239 / 0 / 0 (transmitted lower / transmitted upper / reflected lower / reflected upper; $z = 0.00$ on every branch). ECR $k = 20$ with EDC `"sharc"` ($C$ = 0.1): transmitted lower 318 against SHARC 304 ($z = +0.91$), transmitted upper 0 against 0, reflected lower 55 against 72 ($z = -1.61$), reflected upper 127 against 124 ($z = +0.22$); the largest $|z|$ is 1.61. With the Granucci–Persico convention the largest was 2.44 (reflected lower, 47 against 72), which is what led to the two options. The identical SAC counts are a coincidence of the statistics, not a shared random stream (for 40 trajectories only 20 labels agreed).
+
+**Run times of the validation (slow tests).** The exact-comparison ensembles (`tests/validation/test_tully_exact.py -m slow`, 8 workers) take about **74 minutes**; the SHARC ensemble tests (`tests/validation/test_sharc_tully.py`, needs the SHARC variables) take about 1–1.5 hours (SHARC is about 15 times slower per trajectory than our core: a file round trip and an awk process per step). Neither is part of the fast tier.
 
 ---
 
@@ -2055,18 +2262,19 @@ $$
 
 ## 10. Known limitations
 
-- **Feature scope:** the stages `prepare`, `optimize`, `frequencies`, `sampling`, `excitations` and `selection` exist. Dynamics and analysis are planned (P7, P8), so the workflow ends with the selected initial conditions (`trajectories.json`) today. For that reason `pause_after = ["selection"]` has no effect yet: the last stage never pauses (§7.8); `pause_after = ["excitations"]` works.
+- **Feature scope:** the stages `prepare`, `optimize`, `frequencies`, `sampling`, `excitations` and `selection` exist. The `dynamics` stage and analysis are planned (P7b, P8), so the workflow ends with the selected initial conditions (`trajectories.json`) today. For that reason `pause_after = ["selection"]` has no effect yet: the last stage never pauses (§7.8); `pause_after = ["excitations"]` works.
 - **`sampling`:** harmonic and independent modes only (§8.8); no anharmonic or quasi-classical sampling, no sampling of an isotopically substituted molecule (the masses come from `frequencies`), samples are drawn on the S0 geometry of `frequencies` and not yet used by any later stage; the samples are not checked for chemical sense (very large amplitudes at high temperature or for floppy modes just above the cutoff are not detected).
 - **Electronic structure:** closed-shell singlet molecules with a restricted reference only; no triplet states; nonadiabatic couplings (SA-CASSCF only) and wavefunction overlaps exist only as a library and are not used by any command or stage yet (P7); the analytic Hessian exists for RHF/RKS only (SA-CASSCF uses finite differences, §8.7); TDA/TDDFT have no analytic couplings, and their overlaps use the excitation amplitudes X only (§8.6.8); the cost of the overlap engine grows with the number of determinants kept (`overlap_norm_kept`); overlap-based couplings carry noise of order $10^{-7}/\Delta t$ at default CASSCF convergence; no density fitting; no scratch-directory input key yet (the backend supports one, and writes no checkpoint file); TDDFT/TDA describe the S₁/S₀ crossing seam incorrectly (§8.6.4); DFT gradients omit the grid response, so use `grid_level` ≥ 5 for dynamics (§8.6.4). The SCF, CASSCF and TD calculations each have a retry ladder (§8.6.1, §8.6.8); a calculation that fails every rung stops.
 - **`excitations` and `selection`:** the spectrum is the vertical (nuclear-ensemble) spectrum with a Gaussian broadening: no vibronic structure, no refractive-index correction, no plot (`spectrum.csv` only), and it is not compared with an experiment. Each sample is computed from scratch (a full SCF and excited-state calculation per sample), with no parallelism inside a sample; the cost is $N_s+1$ calculations at the `[electronic]` level. The states are the adiabatic roots in order of energy at each geometry (no tracking between samples). Only singlets (S1, S2, ...) can be selected; no triplets. The bright-mode default `f_over_dE2` follows SHARC 4.1 `excite.py` as measured by black-box maximum likelihood (§8.9.4), not a published formula; it favours low-energy pairs, so one near-degenerate sample can dominate the normalization without an `energy_window_eV` (a warning is logged, §8.9.3). **SA-CASSCF:** every sample starts from SCF orbitals (`reset()` before each sample), so a displaced geometry can converge to a different active space than the reference, and nothing checks for this yet (a natural-occupation or energy-continuity check against `ref` is a P9 candidate); compare the per-state means in `excitations.json` with the reference values. The sample's total energy is not adjusted to the vertical excitation energy. Failed samples are excluded, which can bias the ensemble if failures cluster at certain geometries (the number of failures is in `excitations.json`).
 - **`optimize` and `frequencies`:** they work on the S0 surface of `[electronic]` only (no excited-state optimization, no constraints, no transition-state search). There is no input key for isotope masses, and no thermochemistry (zero-point energy, entropy), anharmonicity or frequency scaling. A finite-difference Hessian costs $1+6N_{\text{at}}$ gradients, which is large for SA-CASSCF with many atoms. The check of the project directory covers the scratch space; there is no separate check that the disk has room for PySCF's scratch files beyond `min_free_disk_mb`. A refused stale run still appends a provenance record (§7.5).
+- **Dynamics core (P7a-1):** it runs only on analytic models (Tully's three 1D models and a 2D test model) through `gqteashmd model-dynamics`; no molecule, no PySCF, no project, no `dynamics` stage yet (P7b). Only NAC-vector couplings (`nacdr`) exist: no overlap-based couplings or local diabatization, no spin–orbit coupling (a non-diagonal MCH→diagonal matrix $\mathbf U$ raises `NotImplementedError`), no LVC model (all P7a-2). Fixed time step, no thermostat, no A-FSSH/NPI/GFSH/`parallel_diff`. **EDC at $C = 0.1\,E_h$ biases the Tully benchmarks** (§8.12, §8.14.1), and the defaults mix conventions: the EDC follows SHARC but the substep interpolation is `"midpoint"` (SHARC's is `"endpoint"`), so populations differ from SHARC at the $10^{-4}$ level during a crossing unless you choose `"endpoint"`. The restart is a library function (not used by `model-dynamics`); it stores no model identity, options or $\mathbf U$, and the caller must supply the same ones. Published branching values were not available in tabulated form (§8.14.1(b)); DAC at $\ln E = -2$ deviates from the exact result (a property of FSSH). The validation ensembles take about 74 minutes (exact comparison) and 1–1.5 hours (SHARC) and are not in the fast test tier.
 - **Platform:** Linux only, with no batch-scheduler support. Runs are designed for a single workstation.
 - **Project-folder check:** the check for Windows drives and OneDrive (§7.9) looks at the text of the path. An absolute path that is a symbolic link into a Windows drive or a OneDrive folder is not detected.
 - **SHARC comparison is not automated:** the tests against SHARC 4.1 need a SHARC installation and run only on the development machine (`pytest -m sharc`); the continuous-integration workflow (first run 2026-11-07, passing) runs everything else.
 
 ## 11. Roadmap
 
-P1 foundation (done) → P2 input schema and pre-run checks (done) → P3a PySCF backend (done: energies, gradients, transition dipoles, `single-point`) → P3b couplings, overlaps, phase tracking and restarts (done, library only) → P3c hardening sweep (done) → P4 optimization, frequencies and Hessian (done: `optimize` and `frequencies` stages) → P5 Wigner sampling (done: `sampling` stage, validated against SHARC `wigner.py`) → P6 excitations and initial states (done: `excitations` and `selection` stages, compared with SHARC `SHARC_PYSCF.py` and `excite.py`) → **P7 dynamics (next)** → P8 analysis → P9 systematic validation against SHARC 4.1. This manual is updated with each step. Sections marked [PLANNED] become [IMPLEMENTED] when their sub-project is finished and validated.
+P1 foundation (done) → P2 input schema and pre-run checks (done) → P3a PySCF backend (done: energies, gradients, transition dipoles, `single-point`) → P3b couplings, overlaps, phase tracking and restarts (done, library only) → P3c hardening sweep (done) → P4 optimization, frequencies and Hessian (done: `optimize` and `frequencies` stages) → P5 Wigner sampling (done: `sampling` stage, validated against SHARC `wigner.py`) → P6 excitations and initial states (done: `excitations` and `selection` stages, compared with SHARC `SHARC_PYSCF.py` and `excite.py`) → P7a-1 dynamics core on analytic models (done on its branch: velocity Verlet, propagators, Tully/SHARC hopping, velocity adjustment, EDC, restarts, `model-dynamics`, validated against exact wavepackets and SHARC 4.1) → **P7a-2 (next): LVC model, local diabatization from overlaps, spin–orbit coupling, SHARC LVC comparisons** → P7b `dynamics` stage with PySCF → P8 analysis → P9 systematic validation against SHARC 4.1. This manual is updated with each step. Sections marked [PLANNED] become [IMPLEMENTED] when their sub-project is finished and validated.
 
 ## 12. References
 1. J. C. Tully, *J. Chem. Phys.* **93**, 1061 (1990): fewest-switches surface hopping.
@@ -2081,3 +2289,8 @@ P1 foundation (done) → P2 input schema and pre-run checks (done) → P3a PySCF
 9. C. Eckart, *Phys. Rev.* **47**, 552 (1935): the translation and rotation conditions.
 10. R. Crespo-Otero, M. Barbatti, *Theor. Chem. Acc.* **131**, 1237 (2012): spectrum simulation and decomposition with the nuclear ensemble (§8.9.2).
 11. M. Barbatti et al., *J. Photochem. Photobiol. A* **190**, 228 (2007): initial conditions for surface-hopping dynamics and the oscillator-strength criterion for the choice of the initial state (§8.9.3).
+12. J. C. Tully, *J. Chem. Phys.* **93**, 1061 (1990) (reference 1) also defines the three one-dimensional models of §8.14.
+13. S. Mai, P. Marquetand, L. González, *Int. J. Quantum Chem.* **115**, 1215 (2015): the propagator-based (SHARC-type) hopping probability of §8.12.
+14. J. E. Runeson, arXiv:2507.18381 (2025): a statement of the energy-based decoherence correction (Sec. III.3, eqs. 44-45) and its critique (dependence on the total kinetic energy).
+15. SHARC 4.1 manual (public user documentation, sharc-md.org): §8.7.1 (EDC, eqs. 8.25-8.26) and §8.33.1 (electronic propagation, eqs. 8.191-8.194), and the input formats used to run SHARC as a black box (§8.14.1(c)). SHARC's source code was not read.
+16. S. N. Mannouch, J. O. Richardson, *J. Chem. Phys.* **158**, 104111 (2023), and L. He et al., *J. Phys. Chem. Lett.* **13**, 6966 (2022): published FSSH results on Tully's models (figures only; not used as numerical references, §8.14.1(b)).

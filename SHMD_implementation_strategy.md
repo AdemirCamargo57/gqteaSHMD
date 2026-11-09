@@ -334,7 +334,7 @@ given: R(t), v(t), a(t), c(t), active state λ, previous electronic data E(t), U
 11. checks: total-energy drift, norm of c, overlap sanity; thermostat; output; restart
 ```
 
-The order of steps 6–10 (hop *before* the velocity half-step, and when to recompute gradients) differs between codes. Pin it down by reading `source/main.F90` and `nuclear.F90` and match SHARC exactly in "SHARC-compatibility mode". Otherwise trajectory-level comparisons will diverge for trivial reasons.
+The order of steps 6–10 (hop *before* the velocity half-step, and when to recompute gradients) differs between codes. **Clean-room note (P7a-1):** SHARC's source is not read (never copy or adapt it). The order used is **our documented step order**, written in USER_MANUAL.md §8.12 and the P7a-1 plan's Method reference: positions, evaluate, velocity completed with the old active gradient, electronic propagation, hopping probabilities and one random number, hop with the velocity adjustment at fixed positions, decoherence, new active gradient. **Differences from SHARC are measured by black-box comparison** (executing SHARC and comparing its output; USER_MANUAL.md §8.14.1(c)), e.g. the end-point substep interpolation and the EDC convention found that way. Otherwise trajectory-level comparisons could diverge for trivial reasons.
 
 ### 4.2 Representation handling (MCH versus diagonal): design for it from day 1
 
