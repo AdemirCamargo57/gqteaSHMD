@@ -257,3 +257,27 @@ def test_non_hermitian_input_is_hermitized():
     _, p_ref, _ = propagate(c, e, e, anti, anti, v, v, 0.5, 3)
     assert np.allclose(p.conj().T @ p, np.eye(3), atol=1e-12)
     assert np.max(np.abs(p - p_ref)) <= 1e-13
+
+
+@pytest.mark.parametrize("interpolation", ["midpoint", "endpoint"])
+def test_energies_are_added_for_a_non_contiguous_coupling_stack(monkeypatch, interpolation):
+    """The energies reach the diagonal of H_eff whatever the memory layout of the coupling
+    stack (an in-place add through a reshape would silently drop them on a copy)."""
+    from gqteashmd.dynamics import propagators
+
+    rng = np.random.default_rng(7)
+    e0, nac0, v0, c = _rand_setup(rng, n=3, f=2)
+    e1, nac1, v1, _ = _rand_setup(rng, n=3, f=2)
+    args = (c, e0, e1, nac0, nac1, v0, v1, 0.7, 5)
+    reference = propagate(*args, interpolation=interpolation)
+    original = propagators.substep_couplings
+
+    def fortran_ordered(*a, **kw):
+        t = np.asfortranarray(original(*a, **kw))
+        assert not t.flags.c_contiguous
+        return t
+
+    monkeypatch.setattr(propagators, "substep_couplings", fortran_ordered)
+    result = propagate(*args, interpolation=interpolation)
+    for got, ref in zip(result, reference, strict=True):
+        assert np.max(np.abs(got - ref)) <= 1e-13

@@ -97,3 +97,69 @@ def test_workers_give_the_same_counts_and_must_be_positive(tmp_path, capsys):
     capsys.readouterr()
     assert main(["model-dynamics", str(_write(tmp_path, INPUT + "workers = 0\n"))]) == 2
     assert "ensemble.workers" in capsys.readouterr().err
+
+
+def test_dynamics_section_defaults_are_the_library_defaults():
+    """[dynamics] takes every default from DynamicsOptions (dt_au: 1.0 here, required there)."""
+    import dataclasses
+
+    from gqteashmd.config.model_dynamics import DynamicsSection
+    from gqteashmd.dynamics.options import DynamicsOptions
+
+    section = DynamicsSection().model_dump()
+    library = dataclasses.asdict(DynamicsOptions(dt_au=1.0))
+    assert section == library
+    assert section["energy_drift_limit_au"] == 0.5 / 27.211386245988
+
+
+def test_model_parameters_reach_the_model(tmp_path, capsys):
+    """C = 0 removes the coupling: every trajectory stays on the lower state."""
+    out = tmp_path / "out.json"
+    text = INPUT.replace('name = "tully_sac"', 'name = "tully_sac"\n[model.parameters]\nC = 0.0')
+    assert main(["model-dynamics", str(_write(tmp_path, text)), "--json", str(out)]) == 0
+    capsys.readouterr()
+    data = json.loads(out.read_text())
+    assert data["model"]["parameters"] == {"C": 0.0}
+    assert data["counts"]["transmitted_lower"] == 5
+
+
+def test_explicit_sigma_is_passed_to_the_ensemble(tmp_path, capsys, monkeypatch):
+    from gqteashmd import cli
+    from gqteashmd.dynamics.ensemble import Branching
+
+    seen = {}
+
+    def fake(model, **kwargs):
+        seen.update(kwargs)
+        return Branching(transmitted_lower=kwargs["n_trajectories"], n_trajectories=5)
+
+    monkeypatch.setattr(cli, "run_model_ensemble", fake)
+    text = INPUT.replace("k = 30.0", "k = 30.0\nsigma = 0.25")
+    out = tmp_path / "out.json"
+    assert main(["model-dynamics", str(_write(tmp_path, text)), "--json", str(out)]) == 0
+    capsys.readouterr()
+    assert seen["sigma"] == 0.25 and seen["k"] == 30.0
+    assert json.loads(out.read_text())["initial"]["sigma"] == 0.25
+
+
+def test_max_steps_reached_counts_as_unfinished(tmp_path, capsys):
+    out = tmp_path / "out.json"
+    text = INPUT.replace("max_steps = 5000", "max_steps = 10")
+    assert main(["model-dynamics", str(_write(tmp_path, text)), "--json", str(out)]) == 0
+    capsys.readouterr()
+    data = json.loads(out.read_text())
+    assert data["counts"]["unfinished"] == 5
+    assert data["n_finished"] == 0
+    assert all(p == 0.0 for p in data["probabilities"].values())
+
+
+def test_an_error_inside_a_trajectory_is_not_reported_as_invalid_input(tmp_path, capsys):
+    """C = 0 at x0 = 0 makes the two states degenerate at the start: the input is valid, the
+    run fails (exit 1, a distinct message), not 'Invalid model-dynamics input' (exit 2)."""
+    text = INPUT.replace(
+        'name = "tully_sac"', 'name = "tully_sac"\n[model.parameters]\nC = 0.0'
+    ).replace("k = 30.0", 'k = 30.0\nx0 = 0.0\nsampling = "fixed"')
+    assert main(["model-dynamics", str(_write(tmp_path, text))]) == 1
+    err = capsys.readouterr().err
+    assert "run failed inside a trajectory" in err and "degenerate" in err
+    assert "Invalid model-dynamics input" not in err and "internal error" not in err

@@ -139,7 +139,8 @@ def propagate(
         e1, dtype=float
     )  # (N_s, n)
     h = -1j * substep_couplings(nac0, nac1, v0, v1, nsubsteps, interpolation)  # (N_s, n, n)
-    h.reshape(nsubsteps, n * n)[:, :: n + 1] += energies  # the diagonals, as a view
+    diag = np.arange(n)
+    h[:, diag, diag] += energies  # the diagonals (fancy indexing: no reliance on a view)
     h = 0.5 * (h + np.conj(h).swapaxes(-1, -2))
     w, u = np.linalg.eigh(h)
     factors = (u * np.exp(-1j * w * delta)[:, None, :]) @ np.conj(u).swapaxes(-1, -2)

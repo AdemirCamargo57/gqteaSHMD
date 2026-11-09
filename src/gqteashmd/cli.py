@@ -310,6 +310,11 @@ def _cmd_model_dynamics(args: argparse.Namespace) -> int:
     try:
         model = cfg.build_model()
         options = cfg.build_options()
+    except ValueError as exc:
+        raise ConfigError(f"Invalid model-dynamics input {args.input}: {exc}") from exc
+    # Every scalar argument below was validated by the input schema, so a ValueError from the
+    # run is raised inside a trajectory (e.g. degenerate states for chosen model parameters).
+    try:
         result = run_model_ensemble(
             model,
             n_trajectories=cfg.ensemble.n_trajectories,
@@ -325,7 +330,10 @@ def _cmd_model_dynamics(args: argparse.Namespace) -> int:
             workers=cfg.ensemble.workers,
         )
     except ValueError as exc:
-        raise ConfigError(f"Invalid model-dynamics input {args.input}: {exc}") from exc
+        raise ShmdError(
+            f"model-dynamics run failed inside a trajectory: {exc} "
+            "(check the model parameters and the [dynamics] settings)"
+        ) from exc
     counts, probs, intervals = result.counts(), result.probabilities(), result.intervals_95()
     print(
         f"Model dynamics: {cfg.model.name}, {cfg.ensemble.n_trajectories} trajectories, "

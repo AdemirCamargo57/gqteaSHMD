@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import inspect
 import tomllib
 from pathlib import Path
@@ -77,17 +78,27 @@ class InitialSection(_Section):
         return value
 
 
+_OPTION_DEFAULTS: dict[str, Any] = {
+    f.name: f.default for f in dataclasses.fields(DynamicsOptions) if f.name != "dt_au"
+}
+
+
 class DynamicsSection(_Section):
+    """``[dynamics]``: the fields of ``DynamicsOptions``; every default except ``dt_au`` (1.0
+    here, required in the library) is taken from it, so the two cannot drift apart."""
+
     dt_au: float = Field(default=1.0, gt=0)
-    nsubsteps: int = Field(default=25, ge=1)
-    hopping: Literal["sharc", "fssh", "none"] = "sharc"
-    ekin_correction: Literal["parallel_vel", "parallel_nac"] = "parallel_vel"
-    frustrated: Literal["keep", "reflect"] = "keep"
-    decoherence: Literal["edc", "none"] = "edc"
-    decoherence_param_Eh: float = Field(default=0.1, ge=0)
-    energy_drift_limit_au: float = Field(default=0.0184, gt=0)
-    edc_convention: Literal["sharc", "granucci_persico"] = "sharc"
-    substep_interpolation: Literal["midpoint", "endpoint"] = "midpoint"
+    nsubsteps: int = Field(default=_OPTION_DEFAULTS["nsubsteps"], ge=1)
+    hopping: Literal["sharc", "fssh", "none"] = _OPTION_DEFAULTS["hopping"]
+    ekin_correction: Literal["parallel_vel", "parallel_nac"] = _OPTION_DEFAULTS["ekin_correction"]
+    frustrated: Literal["keep", "reflect"] = _OPTION_DEFAULTS["frustrated"]
+    decoherence: Literal["edc", "none"] = _OPTION_DEFAULTS["decoherence"]
+    decoherence_param_Eh: float = Field(default=_OPTION_DEFAULTS["decoherence_param_Eh"], ge=0)
+    energy_drift_limit_au: float = Field(default=_OPTION_DEFAULTS["energy_drift_limit_au"], gt=0)
+    edc_convention: Literal["sharc", "granucci_persico"] = _OPTION_DEFAULTS["edc_convention"]
+    substep_interpolation: Literal["midpoint", "endpoint"] = _OPTION_DEFAULTS[
+        "substep_interpolation"
+    ]
 
 
 class EnsembleSection(_Section):

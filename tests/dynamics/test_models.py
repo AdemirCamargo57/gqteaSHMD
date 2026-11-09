@@ -102,3 +102,11 @@ def test_degenerate_states_raise():
 
     with pytest.raises(ValueError, match="degenerate"):
         Degenerate().evaluate(np.array([0.0]), None)
+
+
+@pytest.mark.parametrize(("model", "pts"), MODELS, ids=IDS)
+def test_coordinates_of_the_wrong_length_are_rejected(model, pts):
+    good = _qs(model, pts)[0]
+    for bad in (np.append(good, 0.1), good[:-1], np.zeros((1, model.n_dof))):
+        with pytest.raises(ValueError, match="n_dof"):
+            model.evaluate(bad, None)

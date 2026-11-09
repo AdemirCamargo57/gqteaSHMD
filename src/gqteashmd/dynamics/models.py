@@ -35,6 +35,10 @@ class DiabaticModel(ABC):
 
     def evaluate(self, q: np.ndarray, previous: ElectronicSnapshot | None) -> ElectronicSnapshot:
         q = np.asarray(q, dtype=float)
+        if q.shape != (self.n_dof,):
+            raise ValueError(
+                f"q must be a flat array of length n_dof = {self.n_dof}; got shape {q.shape}"
+            )
         v, dv = self.diabatic(q)
         energies, w = np.linalg.eigh(v)
         n = len(energies)

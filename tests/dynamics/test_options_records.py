@@ -67,6 +67,51 @@ def test_unknown_kind():
         source_from_state({"kind": "nope"})
 
 
+@pytest.mark.parametrize("name", ["PCG64", "PCG64DXSM", "MT19937", "Philox", "SFC64"])
+def test_every_whitelisted_bit_generator_round_trips(name):
+    src = GeneratorSource(np.random.Generator(getattr(np.random, name)(11)))
+    src.uniform()
+    other = source_from_state(json.loads(json.dumps(src.state())))
+    assert [src.uniform() for _ in range(3)] == [other.uniform() for _ in range(3)]
+
+
+@pytest.mark.parametrize("name", ["seed", "default_rng", "RandomState", "nope", 3])
+def test_a_restart_cannot_name_an_arbitrary_numpy_attribute(name):
+    """Restart files are untrusted input: only the bit generators are accepted, and nothing is
+    called before the check (``np.random.seed`` would reseed the legacy global RNG)."""
+    np.random.seed(123)
+    expected = np.random.random()
+    np.random.seed(123)
+    state = {"kind": "generator", "bit_generator": {"bit_generator": name, "state": {}}}
+    with pytest.raises(ValueError, match="bit generator"):
+        source_from_state(state)
+    assert np.random.random() == expected  # the global RNG was not touched
+
+
+@pytest.mark.parametrize(
+    "state",
+    [
+        {"kind": "generator"},
+        {"kind": "generator", "bit_generator": {}},
+        {"kind": "generator", "bit_generator": {"bit_generator": "PCG64", "state": "x"}},
+        {"kind": "replay", "values": [0.1]},
+        {"kind": "replay", "position": 0},
+    ],
+)
+def test_incomplete_or_malformed_source_states_are_value_errors(state):
+    with pytest.raises(ValueError, match="random source state"):
+        source_from_state(state)
+
+
+@pytest.mark.parametrize("position", [-1, 3, 1.5, True])
+def test_replay_position_must_be_inside_the_sequence(position):
+    with pytest.raises(ValueError, match="position"):
+        ReplaySource([0.1, 0.2], position)
+    with pytest.raises(ValueError, match="position"):
+        source_from_state({"kind": "replay", "position": position, "values": [0.1, 0.2]})
+    ReplaySource([0.1, 0.2], 2)  # at the end: valid, the next draw reports exhaustion
+
+
 def test_records():
     snap = ElectronicSnapshot(
         np.zeros(2), np.zeros((2, 1)), np.zeros((2, 2, 1)), np.zeros((2, 2), complex)

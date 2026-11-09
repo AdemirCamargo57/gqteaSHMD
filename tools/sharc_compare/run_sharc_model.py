@@ -204,9 +204,19 @@ class SharcOptions:
 
     @classmethod
     def from_dynamics_options(cls, options) -> SharcOptions:
+        """Map our options to SHARC's. SHARC has one EDC convention (its manual's eq. 8.25,
+        our ``"sharc"``), so ``decoherence = "edc"`` with ``"granucci_persico"`` is a
+        ``ValueError``. SHARC always interpolates at the substep end points (our
+        ``"endpoint"``); ``substep_interpolation`` is not passed and is deliberately allowed
+        to differ, so that the midpoint difference can be measured."""
         hopping = {"sharc": "sharc", "none": "off"}.get(options.hopping)
         if hopping is None:
             raise ValueError(f"SHARC has no {options.hopping!r} hopping (use sharc or none)")
+        if options.decoherence == "edc" and options.edc_convention != "sharc":
+            raise ValueError(
+                f"SHARC's EDC is the 'sharc' convention; got edc_convention = "
+                f"{options.edc_convention!r}"
+            )
         reflect = "none" if options.frustrated == "keep" else options.ekin_correction
         return cls(
             hopping=hopping,

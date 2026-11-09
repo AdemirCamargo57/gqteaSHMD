@@ -133,6 +133,10 @@ def test_edge_cases_and_errors():
     adj = adjust_velocity(v, m, 0.01, method="parallel_nac", nac=z, frustrated="keep")
     assert adj.accepted
     np.testing.assert_allclose(adj.velocity, v * np.sqrt(1 - 0.01 / 0.02))
+    # K = 0 and a zero NAC, downhill: no direction; the message names the NAC, not a method
+    with pytest.raises(ValueError, match="zero NAC") as info:
+        adjust_velocity(z, m, -0.01, method="parallel_nac", nac=z, frustrated="keep")
+    assert "use parallel_nac" not in str(info.value)
     # K = 0 with parallel_nac, downhill: works along the NAC
     adj = adjust_velocity(z, m, -0.01, method="parallel_nac", nac=np.ones(1), frustrated="keep")
     assert adj.accepted

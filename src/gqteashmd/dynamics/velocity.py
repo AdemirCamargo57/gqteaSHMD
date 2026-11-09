@@ -48,6 +48,8 @@ def adjust_velocity(
     ``parallel_vel`` with zero kinetic energy cannot put energy into a system at rest: for
     ``delta_e > 0`` the hop is frustrated, for ``delta_e < 0`` the direction is undefined and a
     ``ValueError`` is raised (use ``parallel_nac``); ``delta_e == 0`` leaves ``v`` unchanged.
+    ``parallel_nac`` with a vanishing NAC falls back to that rule; at rest and downhill it raises
+    a ``ValueError`` naming the zero NAC.
     """
     if method not in METHODS:
         raise ValueError(f"method must be one of {METHODS}, got {method!r}")
@@ -77,6 +79,11 @@ def adjust_velocity(
         return Adjustment(True, v.copy())
     if kin <= 0.0:
         if delta_e < 0.0:
+            if method == "parallel_nac":
+                raise ValueError(
+                    "cannot release energy into a system at rest: no adjustment direction "
+                    "(zero NAC)"
+                )
             raise ValueError(
                 "parallel_vel cannot put energy into a system at rest; use parallel_nac"
             )

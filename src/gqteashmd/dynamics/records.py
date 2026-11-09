@@ -15,7 +15,9 @@ class ElectronicSnapshot:
     gradients: np.ndarray  # (n, f) dE_k/dq
     nacs: np.ndarray  # (n, n, f) d_jk, antisymmetric in (j, k)
     hamiltonian: np.ndarray  # (n, n) complex MCH Hamiltonian
-    vectors: np.ndarray | None = None  # model-internal eigenvectors (opaque, phase continuity)
+    # Model-internal eigenvectors for phase continuity, opaque to the driver; shape (m, n)
+    # with one column per state (DiabaticModel: the diabatic->adiabatic matrix, m = n). Not U.
+    vectors: np.ndarray | None = None
 
 
 @dataclass(eq=False)
