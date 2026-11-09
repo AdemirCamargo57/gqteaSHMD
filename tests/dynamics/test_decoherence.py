@@ -55,6 +55,32 @@ def test_two_state_by_hand_sharc():
     assert np.angle(out[0]) == pytest.approx(0.0, abs=1e-15)
 
 
+@pytest.mark.parametrize(("convention", "f"), [("sharc", 0.5), (GP, 1.0)])
+@pytest.mark.parametrize("active", [0, 1, 2])
+def test_three_states_with_different_gaps_by_hand(convention, f, active):
+    """Each inactive amplitude decays with its own gap, keeping its phase; the active one is
+    rescaled keeping its phase (energies and amplitudes written out by hand)."""
+    e = np.array([-0.03, 0.01, 0.06])
+    c = np.array([0.5 * np.exp(0.3j), 0.6 * np.exp(-1.1j), np.sqrt(1 - 0.25 - 0.36) * 1j])
+    kin, dt, param = 0.02, 2.0, 0.1
+    out = apply_decoherence(c, active, e, kin, dt, scheme="edc", param=param, convention=convention)
+    expected = c.copy()
+    for j in range(3):
+        if j != active:
+            tau = (1.0 + param / kin) / abs(e[j] - e[active])
+            expected[j] = c[j] * np.exp(-f * dt / tau)
+    others = sum(abs(expected[j]) ** 2 for j in range(3) if j != active)
+    expected[active] = c[active] / abs(c[active]) * np.sqrt(1.0 - others)
+    np.testing.assert_allclose(out, expected, rtol=0, atol=1e-15)
+    np.testing.assert_allclose(np.angle(out), np.angle(c), rtol=0, atol=1e-14)
+    # the two gaps differ, so the two inactive amplitudes decay at different rates
+    inactive = [j for j in range(3) if j != active]
+    rates = [-np.log(abs(out[j]) / abs(c[j])) for j in inactive]
+    gaps = [abs(e[j] - e[active]) for j in inactive]
+    assert rates[0] / rates[1] == pytest.approx(gaps[0] / gaps[1], rel=1e-12)
+    assert rates[0] != pytest.approx(rates[1], rel=1e-3)
+
+
 def test_sharc_damping_exponent_is_half_the_granucci_persico_one():
     rng = np.random.default_rng(11)
     c = _rand_c(rng, 4)

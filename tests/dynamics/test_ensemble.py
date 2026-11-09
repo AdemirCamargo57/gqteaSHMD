@@ -72,7 +72,9 @@ def test_sac_ensemble_probabilities_sum_to_one_and_are_deterministic():
     assert a == b
     assert a.n_finished == 12 and a.unfinished == 0 and a.energy_drift == 0
     assert sum(a.probabilities().values()) == pytest.approx(1.0)
-    assert a.reflected_lower == 0 and a.reflected_upper == 0  # E >> barrier-free regime
+    # Not an invariant: at k = 30 (E = 0.225 Eh, far above the SAC asymptotes at +-0.01 Eh)
+    # reflection is energetically possible but negligible; this seed gives none.
+    assert a.reflected_lower == 0 and a.reflected_upper == 0
 
 
 def test_counts_do_not_depend_on_the_number_of_workers():

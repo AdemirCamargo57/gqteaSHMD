@@ -29,9 +29,17 @@ def test_restart_is_bit_identical(tmp_path, scheme):
     options = DynamicsOptions(dt_au=2.0, hopping=scheme, decoherence="edc")
     start = _sac_state(model)
 
+    hops: list[int] = []
     full, _ = run_trajectory(
-        model, start, options, GeneratorSource(np.random.default_rng(5)), max_steps=100
+        model,
+        start,
+        options,
+        GeneratorSource(np.random.default_rng(5)),
+        max_steps=100,
+        on_step=lambda r: hops.extend([r.step] if r.hop_to is not None else []),
     )
+    # hops on both sides of the save at step 50 (measured: steps 32 and 89, both schemes)
+    assert any(h <= 50 for h in hops) and any(h > 50 for h in hops)
 
     rng = GeneratorSource(np.random.default_rng(5))
     half, _ = run_trajectory(model, start, options, rng, max_steps=50)

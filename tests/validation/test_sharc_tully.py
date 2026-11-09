@@ -16,6 +16,11 @@ Findings (details in the Task 9 report):
   ``edc_convention = "sharc"`` (the default); ``"granucci_persico"`` damps by exp(-dt/tau).
   ``test_edc_rate_definition`` measures both against SHARC.
 
+Every test here compares single trajectories and is asserted. The ensemble comparison of
+branching ratios (SAC k = 20, ECR k = 20, n = 500, about 1 h) is a report script,
+``tools/sharc_compare/tully_ensembles.py``: its z-test could not detect the factor 2 of the
+EDC rate that ``test_edc_rate_definition`` measures directly.
+
 Run with ``-s`` to see every number.
 """
 
@@ -24,21 +29,16 @@ from __future__ import annotations
 import importlib.util
 import math
 import os
-import shutil
 import sys
 import time
-import zlib
-from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass, replace
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
 import pytest
 from scipy.linalg import expm
 
-from gqteashmd.dynamics import ensemble
 from gqteashmd.dynamics.driver import initial_state, run_trajectory
-from gqteashmd.dynamics.ensemble import BRANCHES, run_model_ensemble, wavepacket_initial_conditions
 from gqteashmd.dynamics.models import (
     TullyDualAvoidedCrossing,
     TullyExtendedCoupling,
@@ -72,9 +72,6 @@ pytestmark = [
     ),
 ]
 
-SEED = 20261108
-SHARC_WORKERS = 14
-OUR_WORKERS = 8
 AU_TIME_IN_FS = rsm.AU_TIME_IN_FS
 MODELS = {
     "SAC": TullySimpleAvoidedCrossing,
@@ -305,6 +302,7 @@ def test_hopping_with_replayed_random_numbers(tmp_path):
     assert hops and len(hops) == len(s.hop_lines)
     assert np.array_equal(active, s.active[1:])
     assert dv < 1e-8
+    assert dprob < 1e-5  # measured 6.5e-7 with end-point substeps
 
 
 # --- 4. EDC: SHARC damps at half our rate -------------------------------------------------------
@@ -368,120 +366,3 @@ def test_edc_rate_definition(tmp_path):
     # Agreement to ~1e-4 relative (measured 3.2e-5 at step 150; dt = 1 au, so the dt^2
     # propagator residual of section 2 is ~4x larger here).
     assert np.allclose(pop_inactive["sharc"], s_inactive, rtol=5e-4, atol=0.0)
-
-
-# --- 5. ensembles: branching ratios with the same initial conditions ---------------------------
-
-
-@dataclass(frozen=True)
-class Point:
-    model: str
-    k: float
-    x0: float
-    x_exit: float
-    decoherence: str  # Task 8's asserted setting of this model
-    n: int = 500
-    edc_convention: str = "sharc"  # the convention SHARC itself uses (Task 9b)
-
-    @property
-    def sigma(self) -> float:
-        return 20.0 / self.k
-
-
-POINTS = (Point("SAC", 20.0, -10.0, 10.0, "none"), Point("ECR", 20.0, -15.0, 12.0, "edc"))
-
-
-def two_proportion_z(c1: int, n1: int, c2: int, n2: int) -> float:
-    pooled = (c1 + c2) / (n1 + n2)
-    var = pooled * (1.0 - pooled) * (1.0 / n1 + 1.0 / n2)
-    return 0.0 if var == 0.0 else (c1 / n1 - c2 / n2) / math.sqrt(var)
-
-
-def _sharc_ensemble(point: Point, options: DynamicsOptions, base: Path) -> dict[str, int]:
-    cls = MODELS[point.model]
-    mass = float(cls().masses[0])
-    tag = zlib.crc32(b"model-initial")
-    assert tag == ensemble._INITIAL_TAG  # the stream run_model_ensemble draws from
-    rng = np.random.default_rng(np.random.SeedSequence([SEED, tag]))
-    q0, v0 = wavepacket_initial_conditions(
-        point.n, point.x0, point.k, point.sigma, mass, rng, "wigner"
-    )
-    seeds = np.random.SeedSequence([SEED, zlib.crc32(b"sharc-rngseed")]).generate_state(point.n)
-    max_steps = 200_000
-
-    def one(i: int) -> str:
-        work = base / f"traj{i:04d}"
-        traj = _sharc(
-            cls,
-            float(q0[i, 0]),
-            float(v0[i, 0]),
-            max_steps,
-            options,
-            int(seeds[i]) % 2_000_000_000 + 1,
-            work,
-            provider="fast",
-            detailed=False,
-            x_exit=point.x_exit,
-            timeout_s=3600.0,
-        )
-        shutil.rmtree(work)
-        if not traj.stopped:
-            return "unfinished"
-        side = "transmitted" if traj.final_x_bohr > 0 else "reflected"
-        return f"{side}_{'lower' if traj.final_state == 0 else 'upper'}"
-
-    with ThreadPoolExecutor(max_workers=SHARC_WORKERS) as pool:
-        labels = list(pool.map(one, range(point.n)))
-    return {name: labels.count(name) for name in (*BRANCHES, "unfinished")}
-
-
-@pytest.mark.parametrize("point", POINTS, ids=lambda p: f"{p.model}-k{p.k:g}-{p.decoherence}")
-def test_branching_matches_sharc(point, tmp_path):
-    options = DynamicsOptions(
-        dt_au=0.5,
-        nsubsteps=25,
-        hopping="sharc",
-        ekin_correction="parallel_vel",
-        frustrated="keep",
-        decoherence=point.decoherence,
-        edc_convention=point.edc_convention,
-    )
-    start = time.perf_counter()
-    ours = run_model_ensemble(
-        MODELS[point.model](),
-        n_trajectories=point.n,
-        x0=point.x0,
-        k=point.k,
-        sigma=point.sigma,
-        initial_state=0,
-        options=options,
-        seed=SEED,
-        x_exit=point.x_exit,
-        max_steps=1_000_000,
-        sampling="wigner",
-        workers=OUR_WORKERS,
-    )
-    t_ours = time.perf_counter() - start
-    start = time.perf_counter()
-    sharc = _sharc_ensemble(point, options, tmp_path)
-    t_sharc = time.perf_counter() - start
-    n_ours, n_sharc = ours.n_finished, sum(sharc[b] for b in BRANCHES)
-    print(
-        f"\n[{point.model} k={point.k:g} {point.decoherence} ({point.edc_convention})] "
-        f"n={point.n}; ours {t_ours:.0f} s "
-        f"(unfinished {ours.unfinished}, drift {ours.energy_drift}); SHARC {t_sharc:.0f} s "
-        f"(unfinished {sharc['unfinished']})"
-    )
-    failures = []
-    for branch in BRANCHES:
-        c_ours, c_sharc = getattr(ours, branch), sharc[branch]
-        z = two_proportion_z(c_ours, n_ours, c_sharc, n_sharc)
-        print(
-            f"  {branch:18s} ours {c_ours:4d} ({c_ours / n_ours:.4f})  SHARC {c_sharc:4d} "
-            f"({c_sharc / n_sharc:.4f})  z {z:+.2f}"
-        )
-        if not abs(z) < 4.0:
-            failures.append(f"{branch}: z = {z:+.2f}")
-    assert ours.unfinished == 0 and ours.energy_drift == 0
-    assert sharc["unfinished"] == 0
-    assert failures == []

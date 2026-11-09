@@ -215,18 +215,55 @@ def test_frustrated_hop_is_recorded(frustrated):
         assert first.v[0] > 0.0
 
 
-def test_same_seed_gives_identical_records_and_replay_reproduces():
+@pytest.mark.parametrize("scheme", ["sharc", "fssh"])
+def test_same_seed_gives_identical_records_and_replay_reproduces(scheme):
+    """The window contains hops (SAC from x = -1.5, k = 30, dt = 2, seed 5: steps 32 and 89),
+    so the replay also reproduces the hop decisions and the velocity adjustments."""
     model = TullySimpleAvoidedCrossing()
-    options = DynamicsOptions(dt_au=1.0)
-    state = _start(model, x0=-4.0, k=20.0)
-    _, out_a, rec_a = _run(model, state, options, GeneratorSource(np.random.default_rng(11)), 800)
-    _, out_b, rec_b = _run(model, state, options, GeneratorSource(np.random.default_rng(11)), 800)
+    options = DynamicsOptions(dt_au=2.0, hopping=scheme)
+    state = _start(model, x0=-1.5, k=30.0)
+    _, out_a, rec_a = _run(model, state, options, GeneratorSource(np.random.default_rng(5)), 100)
+    _, out_b, rec_b = _run(model, state, options, GeneratorSource(np.random.default_rng(5)), 100)
     assert out_a is out_b
     _assert_records_equal(rec_a, rec_b)
+    assert [r.step for r in rec_a if r.hop_to is not None] == [32, 89]
     logged = [r.random_number for r in rec_a]
-    _, out_c, rec_c = _run(model, state, options, ReplaySource(logged), 800)
+    _, out_c, rec_c = _run(model, state, options, ReplaySource(logged), 100)
     assert out_c is out_a
     _assert_records_equal(rec_a, rec_c)
+
+
+def test_hop_uses_the_nac_at_the_new_geometry():
+    """parallel_nac adjusts v' along d'_{lambda j} of snap' (at q'), not along d of snap (q).
+    2D model near its conical intersection (-0.25, 0), where the NAC direction turns by about
+    45 degrees over one step; xi = 0 forces the hop 1 -> 0."""
+    from gqteashmd.dynamics.integrators import acceleration, verlet_positions, verlet_velocities
+    from gqteashmd.dynamics.models import TwoDimensionalCrossing
+    from gqteashmd.dynamics.velocity import adjust_velocity
+
+    model = TwoDimensionalCrossing()
+    m, dt = model.masses, 5.0
+    options = DynamicsOptions(
+        dt_au=dt, hopping="sharc", ekin_correction="parallel_nac", decoherence="none"
+    )
+    state = initial_state(model, np.array([-0.24, 0.01]), np.array([-2e-3, 0.0]), 1)
+    state.c = np.array([-0.6, 0.8], dtype=complex)
+    snap0 = state.snapshot
+    a = acceleration(snap0.gradients[1], m)
+    q1 = verlet_positions(state.q, state.v, a, dt)
+    snap1 = model.evaluate(q1, snap0)
+    v1 = verlet_velocities(state.v, a, acceleration(snap1.gradients[1], m), dt)
+    d0, d1 = snap0.nacs[1, 0], snap1.nacs[1, 0]
+    cosine = d0 @ d1 / (np.linalg.norm(d0) * np.linalg.norm(d1))
+    assert cosine < 0.9  # the NAC really turns over this step
+    delta_e = float(snap1.energies[0] - snap1.energies[1])
+    with_new = adjust_velocity(v1, m, delta_e, method="parallel_nac", nac=d1, frustrated="keep")
+    with_old = adjust_velocity(v1, m, delta_e, method="parallel_nac", nac=d0, frustrated="keep")
+
+    new, rec = step(model, state, options, ReplaySource([0.0]))
+    assert (rec.hop_from, rec.hop_to) == (1, 0)
+    assert np.array_equal(new.v, with_new.velocity)
+    assert np.max(np.abs(new.v - with_old.velocity)) > 1e-6
 
 
 def test_energy_drift_outcome():
