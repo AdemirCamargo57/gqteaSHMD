@@ -176,6 +176,53 @@ def test_vectorized_fssh_matches_the_loop_reference(ns, dt):
         assert np.array_equal(got, fssh_probabilities(active, list(amps), nac0, nac1, v0, v1, dt))
 
 
+def _fssh_endpoint_loop(active, substep_amplitudes, nac0, nac1, v0, v1, dt):
+    """Tully flux with T at s = m/N, T = v.d interpolated linearly (the propagator's points)."""
+    from gqteashmd.dynamics.propagators import coupling_matrix
+
+    ns = len(substep_amplitudes)
+    n = substep_amplitudes[0].shape[0]
+    delta = dt / ns
+    t0, t1 = coupling_matrix(nac0, v0), coupling_matrix(nac1, v1)
+    flux = np.zeros(n)
+    for m, c in enumerate(substep_amplitudes, start=1):
+        pop = abs(c[active]) ** 2
+        if pop <= 1e-14:
+            continue
+        t = t0 + (m / ns) * (t1 - t0)
+        flux += delta * 2.0 * np.real(np.conj(c[active]) * t[active, :] * c) / pop
+    h = np.maximum(flux, 0.0)
+    h[active] = 0.0
+    total = h.sum()
+    return h / total if total > 1.0 else h
+
+
+@pytest.mark.parametrize("ns", [1, 3, 25])
+def test_fssh_endpoint_matches_its_loop_reference(ns):
+    rng = np.random.default_rng(40 + ns)
+    n, f = 3, 2
+    nac0, nac1 = rng.normal(size=(2, n, n, f))
+    nac0, nac1 = nac0 - nac0.transpose(1, 0, 2), nac1 - nac1.transpose(1, 0, 2)
+    v0, v1 = rng.normal(size=(2, f))
+    amps = rng.normal(size=(ns, n)) + 1j * rng.normal(size=(ns, n))
+    amps /= np.linalg.norm(amps, axis=1, keepdims=True)
+    for active in range(n):
+        got = fssh_probabilities(active, amps, nac0, nac1, v0, v1, 0.2, interpolation="endpoint")
+        ref = _fssh_endpoint_loop(active, list(amps), nac0, nac1, v0, v1, 0.2)
+        assert np.max(np.abs(got - ref)) <= 1e-13
+        mid = fssh_probabilities(active, amps, nac0, nac1, v0, v1, 0.2)
+        assert np.array_equal(mid, fssh_probabilities(
+            active, amps, nac0, nac1, v0, v1, 0.2, interpolation="midpoint"
+        ))  # fmt: skip
+    args = (0, amps[0], amps[-1], np.eye(n), amps, nac0, nac1, v0, v1, 0.2)
+    assert np.array_equal(
+        hopping_probabilities("fssh", *args, interpolation="endpoint"),
+        fssh_probabilities(0, amps, nac0, nac1, v0, v1, 0.2, interpolation="endpoint"),
+    )
+    with pytest.raises(ValueError, match="interpolation"):
+        fssh_probabilities(0, amps, nac0, nac1, v0, v1, 0.2, interpolation="x")
+
+
 def test_fssh_with_every_substep_below_the_floor_is_zero():
     nac = np.zeros((2, 2, 1))
     nac[0, 1, 0], nac[1, 0, 0] = 1.0, -1.0

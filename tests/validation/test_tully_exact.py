@@ -15,6 +15,8 @@ which FSSH is known to be accurate there; the other setting is run with n = 500 
   (same random numbers) gave the identical count.
 - ECR: EDC (C = 0.1 Eh), since the reflection channels need decoherence (Tully 1990; Subotnik &
   Shenvi 2011).
+Every EDC run here uses ``edc_convention = "granucci_persico"`` (the form these points were
+validated with); the SHARC-manual convention (the core's default) is run for ECR separately.
 n = 2000 (SAC) and 1000 (DAC, ECR; controller ruling on wall time) trajectories.
 
 Assertions, only where FSSH is known to be accurate: |P_FSSH - P_exact| <= 4 SE + 0.02, with
@@ -141,7 +143,16 @@ def exact(point: Point, refine: int = 1, half_width: float = HALF_WIDTH) -> dict
     )
 
 
-def fssh(point: Point, *, n: int, decoherence: str, workers: int = WORKERS):
+def fssh(
+    point: Point,
+    *,
+    n: int,
+    decoherence: str,
+    workers: int = WORKERS,
+    edc_convention: str = "granucci_persico",
+):
+    """The FSSH ensemble. EDC defaults to the Granucci-Persico form these runs were validated
+    with (Task 8); ``edc_convention = "sharc"`` gives the SHARC 4.1 manual's eq. (8.25)."""
     options = DynamicsOptions(
         dt_au=0.5,
         nsubsteps=25,
@@ -149,6 +160,7 @@ def fssh(point: Point, *, n: int, decoherence: str, workers: int = WORKERS):
         ekin_correction="parallel_vel",
         frustrated="keep",
         decoherence=decoherence,
+        edc_convention=edc_convention,
     )
     start = time.perf_counter()
     result = run_model_ensemble(
@@ -172,8 +184,15 @@ def tolerance(p_exact: float, n: int) -> float:
     return 4.0 * math.sqrt(max(p_exact * (1.0 - p_exact), 0.0) / n) + 0.02
 
 
-def compare(point: Point, ref: dict, result, seconds: float, tag: str) -> list[str]:
-    """Print the comparison table; return the asserted branches that fail."""
+def compare(
+    point: Point, ref: dict, result, seconds: float, tag: str, *, asserted_tag: str | None = None
+) -> list[str]:
+    """Print the comparison table; return the asserted branches that fail.
+
+    A branch is asserted when it is in ``point.asserted`` and ``tag`` equals ``asserted_tag``
+    (default: the point's own decoherence setting).
+    """
+    asserted_tag = point.decoherence if asserted_tag is None else asserted_tag
     probs, intervals, n = result.probabilities(), result.intervals_95(), result.n_finished
     print(
         f"\n[{point.model} {point.label} k={point.k:.3f} {tag}] n_finished={n} "
@@ -185,7 +204,7 @@ def compare(point: Point, ref: dict, result, seconds: float, tag: str) -> list[s
         lo, hi = intervals[branch]
         diff = probs[branch] - ref[branch]
         tol = tolerance(ref[branch], n)
-        asserted = branch in point.asserted and tag == point.decoherence
+        asserted = branch in point.asserted and tag == asserted_tag
         ok = abs(diff) <= tol
         print(
             f"  {branch:18s} FSSH {probs[branch]:.4f} [{lo:.4f}, {hi:.4f}]  exact "
@@ -264,6 +283,22 @@ def test_fssh_other_decoherence_reported(point):
     result, seconds = fssh(point, n=N_REPORTED, decoherence=other)
     compare(point, exact(point), result, seconds, other)
     assert result.energy_drift == 0
+
+
+ECR_POINTS = tuple(p for p in POINTS if p.model == "ECR")
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("point", ECR_POINTS, ids=_ids)
+def test_fssh_ecr_with_sharc_edc_matches_exact(point):
+    """ECR with the SHARC 4.1 manual's EDC (eq. 8.25; half the Granucci-Persico rate), n = 1000,
+    under the same rule and asserted branches as the Granucci-Persico run (Task 9b). It was first
+    run report-only; every branch at all three momenta met the rule, so it is asserted."""
+    result, seconds = fssh(point, n=point.n_trajectories, decoherence="edc", edc_convention="sharc")
+    failures = compare(point, exact(point), result, seconds, "edc-sharc", asserted_tag="edc-sharc")
+    assert result.energy_drift == 0
+    assert result.unfinished <= 0.001 * point.n_trajectories
+    assert failures == []
 
 
 # --- published values ------------------------------------------------------------------------

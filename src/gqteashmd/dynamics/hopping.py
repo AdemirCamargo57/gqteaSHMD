@@ -6,7 +6,7 @@ from collections.abc import Sequence
 
 import numpy as np
 
-from gqteashmd.dynamics.propagators import midpoint_couplings
+from gqteashmd.dynamics.propagators import substep_couplings
 
 DENOMINATOR_FLOOR = 1e-14
 
@@ -24,18 +24,21 @@ def fssh_probabilities(
     v0: np.ndarray,
     v1: np.ndarray,
     dt: float,
+    *,
+    interpolation: str = "midpoint",
 ) -> np.ndarray:
-    """Tully flux from ``active``, T taken at substep midpoints like the propagator.
+    """Tully flux from ``active``, T taken at the same substep points as the propagator.
 
     ``substep_amplitudes`` are the amplitudes at the start of each substep, (N_s, n) (from
-    ``propagate``; a sequence of N_s vectors is also accepted). Substeps with
+    ``propagate``; a sequence of N_s vectors is also accepted). ``interpolation`` must be the
+    one ``propagate`` used (``"midpoint"`` or ``"endpoint"``). Substeps with
     |c_active|^2 <= ``DENOMINATOR_FLOOR`` contribute nothing. Returns (n,) with 0 at
     ``active``; capped so the sum is <= 1 (scaled proportionally).
     """
     amps = np.asarray(substep_amplitudes, dtype=complex)
     ns = amps.shape[0]
     delta = dt / ns
-    t_active = midpoint_couplings(nac0, nac1, v0, v1, ns)[:, active, :]  # (N_s, n)
+    t_active = substep_couplings(nac0, nac1, v0, v1, ns, interpolation)[:, active, :]  # (N_s, n)
     c_active = amps[:, active]
     pop = np.abs(c_active) ** 2
     keep = pop > DENOMINATOR_FLOOR
@@ -97,11 +100,15 @@ def hopping_probabilities(
     v0: np.ndarray,
     v1: np.ndarray,
     dt: float,
+    *,
+    interpolation: str = "midpoint",
 ) -> np.ndarray:
     if scheme == "sharc":
         return sharc_probabilities(active, c_old, c_new, propagator)
     if scheme == "fssh":
-        return fssh_probabilities(active, substep_amplitudes, nac0, nac1, v0, v1, dt)
+        return fssh_probabilities(
+            active, substep_amplitudes, nac0, nac1, v0, v1, dt, interpolation=interpolation
+        )
     if scheme == "none":
         return np.zeros(c_old.shape[0])
     raise ValueError(f"hopping must be 'sharc', 'fssh' or 'none', got {scheme!r}")

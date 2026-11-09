@@ -175,6 +175,78 @@ def test_vectorized_propagate_matches_the_loop_on_the_sac_model():
         assert np.max(np.abs(np.asarray(a) - np.array(b))) <= 1e-13
 
 
+def _propagate_endpoint_loop(c, e0, e1, nac0, nac1, v0, v1, dt, nsubsteps):
+    """SHARC 4.1 manual eqs. (8.191)-(8.194): substep i = 1..N uses s = i/N, with H and the
+    coupling T = v.K each interpolated linearly between the step ends."""
+    c = np.asarray(c, dtype=complex)
+    n = c.shape[0]
+    delta = dt / nsubsteps
+    t0, t1 = coupling_matrix(nac0, v0), coupling_matrix(nac1, v1)
+    p = np.eye(n, dtype=complex)
+    current = c.copy()
+    starts = []
+    for i in range(1, nsubsteps + 1):
+        s = i / nsubsteps
+        h = np.diag(e0 + s * (e1 - e0)) - 1j * (t0 + s * (t1 - t0))
+        p_i = expm(-1j * h * delta)
+        starts.append(current.copy())
+        current = p_i @ current
+        p = p_i @ p
+    return current, p, starts
+
+
+@pytest.mark.parametrize("ns", [1, 2, 7, 25])
+@pytest.mark.parametrize("seed", [0, 1])
+def test_endpoint_matches_the_manual_loop_reference(ns, seed):
+    rng = np.random.default_rng(200 + seed)
+    e0, nac0, v0, c = _rand_setup(rng, n=3, f=2)
+    e1, nac1, v1, _ = _rand_setup(rng, n=3, f=2)
+    got = propagate(c, e0, e1, nac0, nac1, v0, v1, 0.7, ns, interpolation="endpoint")
+    ref = _propagate_endpoint_loop(c, e0, e1, nac0, nac1, v0, v1, 0.7, ns)
+    for a, b in zip(got, ref, strict=True):
+        assert np.max(np.abs(np.asarray(a) - np.array(b))) <= 1e-12
+    p = got[1]
+    assert np.allclose(p.conj().T @ p, np.eye(3), atol=1e-12)
+    assert np.isclose(np.linalg.norm(got[0]), 1.0, atol=1e-12)
+
+
+def test_midpoint_is_the_default():
+    rng = np.random.default_rng(5)
+    e0, nac0, v0, c = _rand_setup(rng)
+    e1, nac1, v1, _ = _rand_setup(rng)
+    a = propagate(c, e0, e1, nac0, nac1, v0, v1, 0.5, 4)
+    b = propagate(c, e0, e1, nac0, nac1, v0, v1, 0.5, 4, interpolation="midpoint")
+    for x, y in zip(a, b, strict=True):
+        assert np.array_equal(x, y)
+    with pytest.raises(ValueError, match="interpolation"):
+        propagate(c, e0, e1, nac0, nac1, v0, v1, 0.5, 4, interpolation="left")
+
+
+def test_endpoint_and_midpoint_converge_to_the_same_limit():
+    """With v constant both schemes integrate the same linear H(s) and T(s); against a fine
+    reference the end-point error falls as 1/N_s, the midpoint error as 1/N_s^2."""
+    rng = np.random.default_rng(9)
+    e0, nac0, v, c = _rand_setup(rng, n=3, f=2)
+    e1, nac1, _, _ = _rand_setup(rng, n=3, f=2)
+    dt = 1.5
+    ref, _, _ = propagate(c, e0, e1, nac0, nac1, v, v, dt, 4096)
+    errors = {}
+    for scheme in ("midpoint", "endpoint"):
+        errors[scheme] = [
+            np.max(
+                np.abs(
+                    propagate(c, e0, e1, nac0, nac1, v, v, dt, ns, interpolation=scheme)[0] - ref
+                )
+            )
+            for ns in (16, 32, 64)
+        ]
+    end, mid = errors["endpoint"], errors["midpoint"]
+    for k in range(2):
+        assert 1.8 < end[k] / end[k + 1] < 2.2, end
+        assert 3.6 < mid[k] / mid[k + 1] < 4.4, mid
+    assert mid[-1] < end[-1]
+
+
 def test_non_hermitian_input_is_hermitized():
     """A slightly non-antisymmetric d (rounding in a model) gives the Hermitian-part result."""
     rng = np.random.default_rng(7)

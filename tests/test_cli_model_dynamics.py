@@ -46,6 +46,23 @@ def test_model_dynamics_prints_a_table_and_writes_json(tmp_path, capsys):
     assert not (tmp_path / "run").exists()
 
 
+def test_edc_convention_and_substep_interpolation_keys(tmp_path, capsys):
+    out = tmp_path / "out.json"
+    text = (
+        INPUT
+        + '[dynamics]\nedc_convention = "granucci_persico"\nsubstep_interpolation = "endpoint"\n'
+    )
+    assert main(["model-dynamics", str(_write(tmp_path, text)), "--json", str(out)]) == 0
+    capsys.readouterr()
+    dynamics = json.loads(out.read_text())["dynamics"]
+    assert dynamics["edc_convention"] == "granucci_persico"
+    assert dynamics["substep_interpolation"] == "endpoint"
+    bad = INPUT + '[dynamics]\nedc_convention = "gp"\nsubstep_interpolation = "left"\n'
+    assert main(["model-dynamics", str(_write(tmp_path, bad))]) == 2
+    err = capsys.readouterr().err
+    assert "dynamics.edc_convention" in err and "dynamics.substep_interpolation" in err
+
+
 def test_all_violations_are_reported_and_name_the_key(tmp_path, capsys):
     bad = INPUT.replace("k = 30.0", "k = 0.0\nbogus = 1").replace(
         'name = "tully_sac"', 'name = "tully_sac"\n[model.parameters]\nZ = 1.0'

@@ -13,6 +13,11 @@ def test_defaults():
     assert (o.nsubsteps, o.hopping, o.ekin_correction) == (25, "sharc", "parallel_vel")
     assert (o.frustrated, o.decoherence, o.decoherence_param_Eh) == ("keep", "edc", 0.1)
     assert o.energy_drift_limit_au == pytest.approx(0.5 / 27.211386245988)
+    assert (o.edc_convention, o.substep_interpolation) == ("sharc", "midpoint")
+    o = DynamicsOptions(
+        dt_au=1.0, edc_convention="granucci_persico", substep_interpolation="endpoint"
+    )
+    assert (o.edc_convention, o.substep_interpolation) == ("granucci_persico", "endpoint")
 
 
 @pytest.mark.parametrize(
@@ -29,6 +34,8 @@ def test_defaults():
         ("decoherence", "x"),
         ("decoherence_param_Eh", -0.1),
         ("energy_drift_limit_au", 0.0),
+        ("edc_convention", "gp"),
+        ("substep_interpolation", "left"),
     ],
 )
 def test_validation_names_field(field, bad):

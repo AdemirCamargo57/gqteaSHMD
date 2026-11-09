@@ -7,12 +7,13 @@ Step order, from (q, v, a = -M^-1 g_lambda(q), c, lambda) at time t:
    guards against non-diagonal (spin-orbit) Hamiltonians, which need P7a-2.
 3. v' = v + (a - M^-1 g'_lambda) dt / 2, with the gradient of the *old* active state at q'.
 4. Propagate c over [t, t + dt] with E, d interpolated between snap and snap' and v between
-   v and v'; this gives c' and the step propagator P.
+   v and v' (``options.substep_interpolation``); this gives c' and the step propagator P.
 5. Hopping probabilities from lambda (``options.hopping``); draw exactly one xi ~ U[0, 1),
    also when hopping is ``"none"``.
 6. If a target j is chosen: adjust v' for dE = E'_j - E'_lambda (NAC d'_lambda j for
    ``parallel_nac``). Accepted: lambda <- j. Frustrated: lambda unchanged, v' kept or reflected.
-7. Decoherence on c' with K = v'^T M v' / 2 and the energies of snap'.
+7. Decoherence on c' with K = v'^T M v' / 2 and the energies of snap'
+   (``options.edc_convention``).
 8. a' = -M^-1 g'_lambda for the (possibly new) active state; it is recomputed from the stored
    snapshot at the start of the next step, so it is not part of the state.
 9. Record; ``run_trajectory`` checks the energy drift |E_tot - E_tot(0)|.
@@ -137,6 +138,7 @@ def step(
         v1,
         dt,
         options.nsubsteps,
+        interpolation=options.substep_interpolation,
     )
 
     # 5: probabilities and the one random number of this step
@@ -152,6 +154,7 @@ def step(
         v0,
         v1,
         dt,
+        interpolation=options.substep_interpolation,
     )
     xi = float(rng.uniform())
 
@@ -186,6 +189,7 @@ def step(
         dt,
         scheme=options.decoherence,
         param=options.decoherence_param_Eh,
+        convention=options.edc_convention,
     )
 
     # 8-9: a' follows from snap1.gradients[lam] at the next step; record

@@ -86,6 +86,8 @@ class DynamicsSection(_Section):
     decoherence: Literal["edc", "none"] = "edc"
     decoherence_param_Eh: float = Field(default=0.1, ge=0)
     energy_drift_limit_au: float = Field(default=0.0184, gt=0)
+    edc_convention: Literal["sharc", "granucci_persico"] = "sharc"
+    substep_interpolation: Literal["midpoint", "endpoint"] = "midpoint"
 
 
 class EnsembleSection(_Section):

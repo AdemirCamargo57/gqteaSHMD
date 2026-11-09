@@ -102,7 +102,9 @@ def test_step_follows_the_documented_order():
         "sharc", 0, state.c, c1, p, amps, snap.nacs, snap1.nacs, state.v, v1, 2.0
     )
     kin = 0.5 * float(np.sum(m * v1 * v1))
-    c2 = apply_decoherence(c1, 0, snap1.energies, kin, 2.0, scheme="edc", param=0.1)
+    c2 = apply_decoherence(
+        c1, 0, snap1.energies, kin, 2.0, scheme="edc", param=0.1, convention="sharc"
+    )
 
     new, rec = step(model, state, options, ReplaySource([0.999999]))
     assert np.array_equal(new.q, q1)
@@ -119,6 +121,48 @@ def test_step_follows_the_documented_order():
     assert new.e_total_initial == state.e_total_initial
     # the input state is not modified
     assert state.step == 0 and np.array_equal(state.q, np.array([-1.0]))
+
+
+@pytest.mark.parametrize("hopping", ["sharc", "fssh"])
+def test_step_passes_the_interpolation_and_edc_convention(hopping):
+    """substep_interpolation reaches propagate and the FSSH flux; edc_convention reaches EDC."""
+    from gqteashmd.dynamics.decoherence import apply_decoherence
+    from gqteashmd.dynamics.hopping import hopping_probabilities
+    from gqteashmd.dynamics.integrators import acceleration, verlet_positions, verlet_velocities
+    from gqteashmd.dynamics.propagators import propagate
+
+    model = TullySimpleAvoidedCrossing()
+    options = DynamicsOptions(
+        dt_au=2.0,
+        hopping=hopping,
+        substep_interpolation="endpoint",
+        edc_convention="granucci_persico",
+    )
+    state = _start(model, x0=-0.5)
+    state.c = np.array([0.8, 0.6j], dtype=complex)
+    snap, m = state.snapshot, model.masses
+    a = acceleration(snap.gradients[0], m)
+    q1 = verlet_positions(state.q, state.v, a, 2.0)
+    snap1 = model.evaluate(q1, snap)
+    v1 = verlet_velocities(state.v, a, acceleration(snap1.gradients[0], m), 2.0)
+    c1, p, amps = propagate(
+        state.c, snap.energies, snap1.energies, snap.nacs, snap1.nacs, state.v, v1, 2.0, 25,
+        interpolation="endpoint",
+    )  # fmt: skip
+    probs = hopping_probabilities(
+        hopping, 0, state.c, c1, p, amps, snap.nacs, snap1.nacs, state.v, v1, 2.0,
+        interpolation="endpoint",
+    )  # fmt: skip
+    kin = 0.5 * float(np.sum(m * v1 * v1))
+    c2 = apply_decoherence(
+        c1, 0, snap1.energies, kin, 2.0, scheme="edc", param=0.1, convention="granucci_persico"
+    )
+    new, rec = step(model, state, options, ReplaySource([0.999999]))
+    assert np.array_equal(new.c, c2)
+    assert np.array_equal(rec.probabilities, probs)
+    default, _ = step(model, state, replace(options, substep_interpolation="midpoint"),
+                      ReplaySource([0.999999]))  # fmt: skip
+    assert np.max(np.abs(default.c - new.c)) > 1e-7
 
 
 def test_one_random_number_per_step_even_without_hopping():

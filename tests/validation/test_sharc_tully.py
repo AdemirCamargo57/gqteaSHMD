@@ -9,13 +9,12 @@ our awk implementation of the same diabatic matrices (``fast``, about 100x faste
 Findings (details in the Task 9 report):
 
 - Nuclear motion (velocity Verlet) agrees to 1e-10 bohr.
-- The amplitudes differ systematically by a first-order term in the substep length: SHARC
-  interpolates H and v.K at the substep *ends*, s = i/N (manual eqs. 8.191-8.194); we use the
-  *midpoints*, s = (i - 1/2)/N (method reference 2). The difference halves when N doubles, and
-  propagating SHARC's own E, K, v with the manual's formula reproduces SHARC's |c|^2.
-- SHARC's EDC damps the amplitudes by exp(-dt/(2 tau)) (manual eq. 8.25); ours by
-  exp(-dt/tau) (method reference 7, Granucci & Persico 2007). SHARC's decoherence rate is half
-  ours; ``test_edc_rate_definition`` measures it.
+- SHARC interpolates H and v.K at the substep *ends*, s = i/N (manual eqs. 8.191-8.194). With
+  ``substep_interpolation = "endpoint"`` our core follows it (|c|^2 to < 1e-6); our default
+  midpoints, s = (i - 1/2)/N, differ by a first-order term in the substep length (reported).
+- SHARC's EDC damps the amplitudes by exp(-dt/(2 tau)) (manual eq. 8.25), which is our
+  ``edc_convention = "sharc"`` (the default); ``"granucci_persico"`` damps by exp(-dt/tau).
+  ``test_edc_rate_definition`` measures both against SHARC.
 
 Run with ``-s`` to see every number.
 """
@@ -30,7 +29,7 @@ import sys
 import time
 import zlib
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import numpy as np
@@ -192,22 +191,16 @@ def test_fast_provider_matches_sharc_analytical(name, tmp_path):
 STEP_X0, STEP_V0, STEP_N = -1.0, 0.02, 200  # SAC, k = 40: x from -1 to +1 through the crossing
 
 
-def test_hopping_off_step_by_step(tmp_path):
-    options = DynamicsOptions(dt_au=0.5, nsubsteps=25, hopping="none", decoherence="none")
-    sharc = _sharc(
-        TullySimpleAvoidedCrossing, STEP_X0, STEP_V0, STEP_N, options, 1, tmp_path / "sharc"
-    )
-    assert sharc.dt_au == 0.5 and len(sharc.steps) == STEP_N + 1
-    assert np.all(sharc.active == 0)
-    ours = _ours(TullySimpleAvoidedCrossing, sharc, STEP_X0, STEP_V0, STEP_N, options)
+def _compare_steps(label, sharc, ours):
+    """Print and return (max|dx|, max|dv|, |d|c0|^2| per step) of our records vs SHARC."""
     q = np.array([r.q[0] for r in ours])
     v = np.array([r.v[0] for r in ours])
     pop = np.array([abs(r.c[0]) ** 2 for r in ours])
     s_pop = np.abs(sharc.c[1:, 0]) ** 2
     dq, dv, dp = np.abs(q - sharc.q[1:, 0]), np.abs(v - sharc.v[1:, 0]), np.abs(pop - s_pop)
     print(
-        f"\n[SAC hopping off] x {STEP_X0} -> {q[-1]:.4f}, mass {sharc.masses_me[0]!r} m_e; "
-        f"final |c_0|^2 ours {pop[-1]:.10f} SHARC {s_pop[-1]:.10f}"
+        f"\n[SAC hopping off, {label}] x {STEP_X0} -> {q[-1]:.4f}, mass "
+        f"{sharc.masses_me[0]!r} m_e; final |c_0|^2 ours {pop[-1]:.10f} SHARC {s_pop[-1]:.10f}"
     )
     for k in (1, 10, 25, 50, 100, 150, 200):
         print(
@@ -215,27 +208,55 @@ def test_hopping_off_step_by_step(tmp_path):
             f"max|d|c0|^2| {dp[:k].max():.2e}"
         )
     print(f"  |d|c0|^2| per step 1..10: {' '.join(f'{d:.1e}' for d in dp[:10])}")
+    return dq, dv, dp, pop, s_pop
 
-    # Nuclear motion: the same velocity Verlet.
-    assert dq.max() < 1e-8 and dv.max() < 1e-10
-    # Amplitudes: the documented substep-quadrature difference (module docstring), so the
-    # brief's 1e-6 for the first 50 steps is not met (measured ~2e-5); asserted instead:
+
+def test_hopping_off_step_by_step(tmp_path):
+    """SHARC_ANALYTICAL.py run against our core with the end-point substep interpolation
+    (SHARC's scheme; asserted) and with our midpoint default (the documented difference)."""
+    endpoint = DynamicsOptions(
+        dt_au=0.5,
+        nsubsteps=25,
+        hopping="none",
+        decoherence="none",
+        substep_interpolation="endpoint",
+    )
+    sharc = _sharc(
+        TullySimpleAvoidedCrossing, STEP_X0, STEP_V0, STEP_N, endpoint, 1, tmp_path / "sharc"
+    )
+    assert sharc.dt_au == 0.5 and len(sharc.steps) == STEP_N + 1
+    assert np.all(sharc.active == 0)
+
+    # End-point interpolation: our core follows SHARC.
+    ours = _ours(TullySimpleAvoidedCrossing, sharc, STEP_X0, STEP_V0, STEP_N, endpoint)
+    dq, dv, dp, pop, s_pop = _compare_steps("endpoint", sharc, ours)
     end = _documented_propagation(sharc, 25, "sharc")
-    mid = _documented_propagation(sharc, 25, "ours")
+    d_end_ours = np.max(np.abs(np.abs(end[1:, 0]) ** 2 - pop))
     d_end = np.max(np.abs(np.abs(end[:, 0]) ** 2 - np.abs(sharc.c[:, 0]) ** 2))
-    d_mid_ours = np.max(np.abs(np.abs(mid[1:, 0]) ** 2 - pop))
     print(
         f"  on SHARC's E, K, v: manual scheme vs SHARC max|d|c0|^2| {d_end:.2e}; "
-        f"our scheme vs our core max|d|c0|^2| {d_mid_ours:.2e}"
+        f"vs our endpoint core {d_end_ours:.2e}"
     )
-    assert d_end < 2e-6  # the manual's scheme reproduces SHARC (residual ~ dt^2, not ~ 1/N)
-    assert d_mid_ours < 1e-8  # our scheme on SHARC's data reproduces our core
-    assert abs(pop[-1] - s_pop[-1]) < 1e-5  # after the crossing the populations agree
+    assert dq.max() < 1e-8 and dv.max() < 1e-10  # the same velocity Verlet
+    assert dp[:50].max() < 1e-6
+    assert dp.max() < 2e-6
+    assert d_end_ours < 1e-8  # the manual's scheme on SHARC's data is our endpoint core
+    assert d_end < 2e-6  # and reproduces SHARC (a residual ~ dt^2, not ~ 1/N, remains)
 
-    # The difference is first order in the substep: N = 25 -> 50 halves it (fast provider).
+    # Midpoint (our default): the documented first-order substep difference, reported.
+    midpoint = replace(endpoint, substep_interpolation="midpoint")
+    ours_mid = _ours(TullySimpleAvoidedCrossing, sharc, STEP_X0, STEP_V0, STEP_N, midpoint)
+    _, _, dp_mid, pop_mid, _ = _compare_steps("midpoint", sharc, ours_mid)
+    mid = _documented_propagation(sharc, 25, "ours")
+    d_mid_ours = np.max(np.abs(np.abs(mid[1:, 0]) ** 2 - pop_mid))
+    print(f"  our midpoint scheme on SHARC's E, K, v vs our core max|d|c0|^2| {d_mid_ours:.2e}")
+    assert d_mid_ours < 1e-8
+    assert abs(pop_mid[-1] - s_pop[-1]) < 1e-5  # after the crossing the populations agree
+
+    # The midpoint difference is first order in the substep: N = 25 -> 50 halves it.
     peaks = {}
     for nsub in (25, 50):
-        opt = DynamicsOptions(dt_au=0.5, nsubsteps=nsub, hopping="none", decoherence="none")
+        opt = replace(midpoint, nsubsteps=nsub)
         s = _sharc(
             TullySimpleAvoidedCrossing,
             STEP_X0,
@@ -250,7 +271,7 @@ def test_hopping_off_step_by_step(tmp_path):
         p_ours = np.array([abs(r.c[0]) ** 2 for r in o])
         peaks[nsub] = np.max(np.abs(p_ours - np.abs(s.c[1:, 0]) ** 2))
     ratio = peaks[25] / peaks[50]
-    print(f"  max|d|c0|^2| N=25 {peaks[25]:.3e}, N=50 {peaks[50]:.3e}, ratio {ratio:.3f}")
+    print(f"  midpoint max|d|c0|^2| N=25 {peaks[25]:.3e}, N=50 {peaks[50]:.3e}, ratio {ratio:.3f}")
     assert 1.8 < ratio < 2.2
     assert peaks[25] < 1e-3
 
@@ -259,9 +280,15 @@ def test_hopping_off_step_by_step(tmp_path):
 
 
 def test_hopping_with_replayed_random_numbers(tmp_path):
-    """SAC (x -2 -> 2, k = 40, dt = 1): with SHARC's random number of every step our core hops
-    at the same steps to the same states, and conserves energy across the hop as SHARC does."""
-    options = DynamicsOptions(dt_au=1.0, nsubsteps=25, hopping="sharc", decoherence="none")
+    """SAC (x -2 -> 2, k = 40, dt = 1, end-point substeps): with SHARC's random number of every
+    step our core hops at the same steps to the same states, with the same velocities."""
+    options = DynamicsOptions(
+        dt_au=1.0,
+        nsubsteps=25,
+        hopping="sharc",
+        decoherence="none",
+        substep_interpolation="endpoint",
+    )
     s = _sharc(
         TullySimpleAvoidedCrossing, -2.0, 0.02, 200, options, 9, tmp_path / "s", provider="fast"
     )
@@ -295,34 +322,52 @@ def _edc_kappa(c, active, energies, e_kin, dt, steps, param=0.1):
 
 def test_edc_rate_definition(tmp_path):
     """Far from the coupling (SAC, x > 5) only EDC changes |c_inactive|: SHARC kappa = 1/2
-    (manual eq. 8.25), ours kappa = 1 (method reference 7). Same random numbers, same hop."""
-    options = DynamicsOptions(dt_au=1.0, nsubsteps=25, hopping="sharc", decoherence="edc")
+    (manual eq. 8.25); ours kappa = 1/2 with ``edc_convention = "sharc"`` and 1 with
+    ``"granucci_persico"``. Same random numbers, same hop."""
+    options = DynamicsOptions(
+        dt_au=1.0,
+        nsubsteps=25,
+        hopping="sharc",
+        decoherence="edc",
+        edc_convention="sharc",
+        substep_interpolation="endpoint",
+    )
     s = _sharc(
         TullySimpleAvoidedCrossing, -2.0, 0.02, 500, options, 9, tmp_path / "s", provider="fast"
-    )
-    ours = _ours(
-        TullySimpleAvoidedCrossing, s, -2.0, 0.02, 500, options, list(s.random_numbers[1:])
     )
     steps = [k for k in range(len(s.steps) - 1) if s.q[k, 0] > 5.0][:20]
     assert len(steps) == 20
     k_sharc = _edc_kappa(s.c, s.active, s.energies, s.e_kinetic, 1.0, steps)
-    c_ours = [s.c[0]] + [r.c for r in ours]
-    a_ours = [s.active[0]] + [r.active for r in ours]
-    e_ours = [s.energies[0]] + [r.energies for r in ours]
-    k_ours_kin = [s.e_kinetic[0]] + [r.e_kinetic for r in ours]
-    k_ours = _edc_kappa(c_ours, a_ours, e_ours, k_ours_kin, 1.0, steps)
-    print(
-        f"\n[EDC] kappa SHARC {k_sharc.min():.6f}..{k_sharc.max():.6f}, "
-        f"ours {k_ours.min():.6f}..{k_ours.max():.6f}; SHARC hops {s.hop_lines}"
-    )
+    print(f"\n[EDC] kappa SHARC {k_sharc.min():.6f}..{k_sharc.max():.6f}; hops {s.hop_lines}")
+    assert np.allclose(k_sharc, 0.5, atol=0.01)
+    pop_inactive = {}
+    for convention, expected in (("sharc", 0.5), ("granucci_persico", 1.0)):
+        opt = replace(options, edc_convention=convention)
+        ours = _ours(
+            TullySimpleAvoidedCrossing, s, -2.0, 0.02, 500, opt, list(s.random_numbers[1:])
+        )
+        c_ours = [s.c[0]] + [r.c for r in ours]
+        a_ours = [s.active[0]] + [r.active for r in ours]
+        e_ours = [s.energies[0]] + [r.energies for r in ours]
+        kin = [s.e_kinetic[0]] + [r.e_kinetic for r in ours]
+        k_ours = _edc_kappa(c_ours, a_ours, e_ours, kin, 1.0, steps)
+        pop_inactive[convention] = [abs(c_ours[k][1 - a_ours[k]]) ** 2 for k in (150, 200, 300)]
+        print(f"  ours ({convention}): kappa {k_ours.min():.6f}..{k_ours.max():.6f}")
+        if convention == "sharc":
+            assert np.array_equal(np.array(a_ours[1:]), s.active[1:])
+        assert np.allclose(k_ours, expected, atol=0.01)
+    s_inactive = [abs(s.c[k][1 - s.active[k]]) ** 2 for k in (150, 200, 300)]
     print(
         "  |c_inactive|^2 at steps 150/200/300: SHARC "
-        + " ".join(f"{abs(s.c[k][1 - s.active[k]]) ** 2:.4f}" for k in (150, 200, 300))
-        + ", ours "
-        + " ".join(f"{abs(c_ours[k][1 - a_ours[k]]) ** 2:.4f}" for k in (150, 200, 300))
+        + " ".join(f"{p:.6f}" for p in s_inactive)
+        + "; ours sharc "
+        + " ".join(f"{p:.6f}" for p in pop_inactive["sharc"])
+        + "; ours granucci_persico "
+        + " ".join(f"{p:.6f}" for p in pop_inactive["granucci_persico"])
     )
-    assert np.allclose(k_sharc, 0.5, atol=0.01)
-    assert np.allclose(k_ours, 1.0, atol=0.01)
+    # Agreement to ~1e-4 relative (measured 3.2e-5 at step 150; dt = 1 au, so the dt^2
+    # propagator residual of section 2 is ~4x larger here).
+    assert np.allclose(pop_inactive["sharc"], s_inactive, rtol=5e-4, atol=0.0)
 
 
 # --- 5. ensembles: branching ratios with the same initial conditions ---------------------------
@@ -336,6 +381,7 @@ class Point:
     x_exit: float
     decoherence: str  # Task 8's asserted setting of this model
     n: int = 500
+    edc_convention: str = "sharc"  # the convention SHARC itself uses (Task 9b)
 
     @property
     def sigma(self) -> float:
@@ -398,6 +444,7 @@ def test_branching_matches_sharc(point, tmp_path):
         ekin_correction="parallel_vel",
         frustrated="keep",
         decoherence=point.decoherence,
+        edc_convention=point.edc_convention,
     )
     start = time.perf_counter()
     ours = run_model_ensemble(
@@ -420,7 +467,8 @@ def test_branching_matches_sharc(point, tmp_path):
     t_sharc = time.perf_counter() - start
     n_ours, n_sharc = ours.n_finished, sum(sharc[b] for b in BRANCHES)
     print(
-        f"\n[{point.model} k={point.k:g} {point.decoherence}] n={point.n}; ours {t_ours:.0f} s "
+        f"\n[{point.model} k={point.k:g} {point.decoherence} ({point.edc_convention})] "
+        f"n={point.n}; ours {t_ours:.0f} s "
         f"(unfinished {ours.unfinished}, drift {ours.energy_drift}); SHARC {t_sharc:.0f} s "
         f"(unfinished {sharc['unfinished']})"
     )
