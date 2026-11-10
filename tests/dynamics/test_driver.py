@@ -1,9 +1,12 @@
 from dataclasses import fields, replace
+from functools import cache
+from pathlib import Path
 
 import numpy as np
 import pytest
 
 from gqteashmd.dynamics.driver import Outcome, initial_state, run_trajectory, step
+from gqteashmd.dynamics.lvc import LVCModel, lvc_wigner_samples
 from gqteashmd.dynamics.models import TullySimpleAvoidedCrossing
 from gqteashmd.dynamics.options import DynamicsOptions
 from gqteashmd.dynamics.randomness import GeneratorSource, ReplaySource
@@ -299,26 +302,319 @@ def test_stop_callback_and_finished():
 
 
 class _SocModel(TullySimpleAvoidedCrossing):
-    """Returns a non-diagonal MCH Hamiltonian once a previous snapshot exists."""
+    """Tully SAC with a constant off-diagonal MCH Hamiltonian element 0.01 Eh.
 
-    def __init__(self, always: bool = False) -> None:
+    ``when = "later"``: only once a previous snapshot exists; ``"always"``: at every geometry;
+    ``"first"``: only at the first geometry (previous is None).
+    """
+
+    def __init__(self, when: str = "later") -> None:
         super().__init__()
-        self.always = always
+        self.when = when
 
     def evaluate(self, q, previous):
         snap = super().evaluate(q, previous)
-        if previous is None and not self.always:
+        coupled = {"later": previous is not None, "always": True, "first": previous is None}
+        if not coupled[self.when]:
             return snap
         h = snap.hamiltonian.copy()
         h[0, 1] = h[1, 0] = 0.01
         return replace(snap, hamiltonian=h)
 
 
-def test_soc_guard_propagates():
+def test_hamiltonian_becoming_non_diagonal_is_refused():
+    """Ruling J: U was None (the identity) and H^MCH gains an off-diagonal element."""
     options = DynamicsOptions(dt_au=1.0)
-    model = _SocModel()
+    model = _SocModel("later")
     state = _start(model)
-    with pytest.raises(NotImplementedError, match="P7a-2"):
+    assert state.u is None
+    with pytest.raises(ValueError, match="became non-diagonal during the trajectory"):
         step(model, state, options, ReplaySource([0.5]))
-    with pytest.raises(NotImplementedError, match="P7a-2"):
-        _start(_SocModel(always=True))
+
+
+def test_hamiltonian_becoming_diagonal_keeps_tracking_u():
+    """Ruling J, reverse: a U other than None stays in use when H^MCH turns diagonal."""
+    from gqteashmd.dynamics.representation import diagonal_basis
+
+    options = DynamicsOptions(dt_au=1.0)
+    model = _SocModel("first")
+    state = _start(model, x0=-1.0)
+    assert state.u is not None
+    new, rec = step(model, state, options, ReplaySource([0.5]))
+    assert new.u is not None and rec.u is not None
+    _, expected = diagonal_basis(new.snapshot.hamiltonian, state.u)
+    assert np.array_equal(new.u, expected)
+    assert abs(np.linalg.norm(new.c) - 1.0) <= 1e-12
+
+
+def test_constant_off_diagonal_coupling_runs_in_the_diagonal_basis():
+    """A constant MCH-basis coupling is a constant diabatic SOC only where the NAC vanishes, so
+    the run stays at x < -7 (through the coupling region from x = -3 this model is not
+    conservative: measured drift 8.6e-3 Eh; here 2e-12 Eh)."""
+    model = _SocModel("always")
+    options = DynamicsOptions(dt_au=1.0, hopping="none")
+    state = _start(model, x0=-10.0)
+    assert state.u is not None
+    _, outcome, records = _run(
+        model, state, options, GeneratorSource(np.random.default_rng(0)), max_steps=300
+    )
+    assert outcome is Outcome.FINISHED
+    assert all(r.u is not None for r in records)
+    assert max(abs(r.e_total - state.e_total_initial) for r in records) < 1e-5
+
+
+# ---- P7a-2: the diagonal representation on the LVC fixtures (Method reference 4-12) ----
+
+LVC = Path(__file__).resolve().parents[1] / "data" / "lvc"
+FSSH_SOC_MESSAGE = "hopping = 'fssh' needs the MCH basis"
+PARALLEL_NAC_SOC_MESSAGE = "parallel_nac needs a real coupling vector"
+H_FD = 1e-5
+
+
+@cache
+def _lvc(name: str = "lvc_soc.template") -> LVCModel:
+    return LVCModel.from_template(LVC / name)
+
+
+def _sample(model, seed=7):
+    q, v = lvc_wigner_samples(model, 1, np.random.default_rng(seed))
+    return q[0], v[0]
+
+
+def _lvc_start(model, active=1, seed=7, c0=None):
+    q, v = _sample(model, seed)
+    return initial_state(model, q, v, active, c0)
+
+
+def _lvc_run(options, steps, *, rng=None, name="lvc_soc.template", active=1):
+    model = _lvc(name)
+    state = _lvc_start(model, active)
+    rng = GeneratorSource(np.random.default_rng(3)) if rng is None else rng
+    final, outcome, records = _run(model, state, options, rng, max_steps=steps)
+    return state, final, outcome, records
+
+
+@cache
+def _soc_drift(dt: float, steps: int, transformation: str = "ngt") -> float:
+    options = DynamicsOptions(dt_au=dt, hopping="none", gradient_transformation=transformation)
+    state, _, outcome, records = _lvc_run(options, steps)
+    assert outcome is Outcome.FINISHED
+    assert all(r.u is not None for r in records)  # the spin-orbit path is really used
+    return max(abs(r.e_total - state.e_total_initial) for r in records)
+
+
+def test_soc_energy_conservation_scales_as_dt_squared():
+    """lvc_soc from a Wigner sample in S1, hopping off, 2000 steps at dt = 0.5 (and 4000 at
+    0.25): max |E_tot - E_tot(0)| < 1e-5 Eh, ratio of the two drifts in [3, 5]."""
+    coarse = _soc_drift(0.5, 2000)
+    fine = _soc_drift(0.25, 4000)
+    assert coarse < 1e-5, coarse
+    assert 3.0 <= coarse / fine <= 5.0, (coarse, fine)
+
+
+def test_soc_hops_keep_total_energy_continuous():
+    """hopping = "sharc" with xi = 0 every step: |E_tot(step) - E_tot(step - 1)| < 1e-8 Eh at
+    every hop step."""
+    options = DynamicsOptions(dt_au=0.5, hopping="sharc")
+    state, _, _, records = _lvc_run(options, 1000, rng=ReplaySource([0.0] * 1000))
+    previous = [state.e_total_initial] + [r.e_total for r in records]
+    hops = [i for i, r in enumerate(records) if r.hop_to is not None]
+    assert len(hops) >= 2
+    for i in hops:
+        r = records[i]
+        assert r.active == r.hop_to and not r.frustrated
+        assert abs(r.e_total - previous[i]) < 1e-8, (i, r.e_total - previous[i])
+
+
+def test_without_the_gradient_transformation_energy_is_not_conserved():
+    """gradient_transformation = "none" drops the off-diagonal G^MCH terms: drift > 10 x ngt."""
+    assert _soc_drift(0.5, 2000, "none") > 10.0 * _soc_drift(0.5, 2000)
+
+
+def test_diagonal_gradient_matches_finite_differences_along_the_trajectory():
+    """At 5 recorded steps, g^diag_lambda = d E^diag_lambda / dq (central differences of
+    model.evaluate + diagonal_basis at q +- h e_k) to 1e-6."""
+    from gqteashmd.dynamics.driver import active_gradient
+    from gqteashmd.dynamics.representation import diagonal_basis
+
+    model = _lvc()
+    options = DynamicsOptions(dt_au=0.5, hopping="sharc")
+    state = _lvc_start(model)
+    rng = GeneratorSource(np.random.default_rng(3))
+    worst = 0.0
+    for i in range(1, 501):
+        state, _ = step(model, state, options, rng)
+        if i % 100:
+            continue
+        assert state.u is not None
+        g = active_gradient(state, options)
+        fd = np.empty(model.n_dof)
+        for k in range(model.n_dof):
+            e = []
+            for sign in (1.0, -1.0):
+                q = state.q.copy()
+                q[k] += sign * H_FD
+                snap = model.evaluate(q, state.snapshot)
+                e.append(diagonal_basis(snap.hamiltonian, state.u)[0][state.active])
+            fd[k] = (e[0] - e[1]) / (2.0 * H_FD)
+        worst = max(worst, float(np.max(np.abs(g - fd))))
+    assert worst <= 1e-6, worst
+
+
+def _forced_stream(n: int) -> ReplaySource:
+    """The seed-21 generator's first n numbers with every 10th replaced by 0: the hop
+    probabilities on lvc_soc are small (max about 7e-6 per step from this sample), so the
+    forced attempts make the window contain hops (measured: steps 1, 21, 24, 61, 101)."""
+    values = np.random.default_rng(21).random(n)
+    values[::10] = 0.0
+    return ReplaySource([float(x) for x in values])
+
+
+def test_eselect_wider_than_every_gap_is_bit_identical():
+    base = _lvc_run(DynamicsOptions(dt_au=0.5), 300, rng=_forced_stream(300))[3]
+    wide = _lvc_run(DynamicsOptions(dt_au=0.5, eselect_Eh=10.0), 300, rng=_forced_stream(300))[3]
+    assert any(r.hop_to is not None for r in base)
+    _assert_records_equal(base, wide)
+
+
+def test_eselect_narrow_changes_the_trajectory_and_conserves_energy():
+    base = _lvc_run(DynamicsOptions(dt_au=0.5), 500)[3]
+    state, _, outcome, narrow = _lvc_run(DynamicsOptions(dt_au=0.5, eselect_Eh=0.05), 500)
+    assert outcome is Outcome.FINISHED
+    assert max(float(np.max(np.abs(a.q - b.q))) for a, b in zip(base, narrow, strict=True)) > 0
+    drift = max(abs(r.e_total - state.e_total_initial) for r in narrow)
+    assert drift < 1e-3, drift
+
+
+def test_fssh_with_spin_orbit_coupling_is_refused():
+    model = _lvc()
+    q, v = _sample(model)
+    fssh = DynamicsOptions(dt_au=0.5, hopping="fssh")
+    with pytest.raises(ValueError, match=FSSH_SOC_MESSAGE):
+        initial_state(model, q, v, 1, options=fssh)
+    state = initial_state(model, q, v, 1)  # without options the check is made at every step
+    with pytest.raises(ValueError, match=FSSH_SOC_MESSAGE):
+        step(model, state, fssh, ReplaySource([0.5]))
+    # without spin-orbit coupling fssh is fine
+    singlets = _lvc("lvc_singlets.template")
+    q, v = _sample(singlets)
+    initial_state(singlets, q, v, 1, options=fssh)
+
+
+def test_parallel_nac_with_spin_orbit_coupling_raises_at_the_first_hop():
+    """xi = 0: a target exists exactly when a probability is positive; every step before the
+    one that raises had none."""
+    model = _lvc()
+    options = DynamicsOptions(dt_au=0.5, ekin_correction="parallel_nac")
+    state = _lvc_start(model)
+    rng = ReplaySource([0.0] * 500)
+    for _ in range(500):
+        try:
+            state, rec = step(model, state, options, rng)
+        except ValueError as exc:
+            assert PARALLEL_NAC_SOC_MESSAGE in str(exc)
+            break
+        assert not np.any(rec.probabilities > 0)
+        assert rec.hop_to is None and not rec.frustrated
+    else:
+        pytest.fail("no hop was attempted")
+
+
+def test_parallel_nac_on_the_singlet_lvc_hops_and_conserves_energy():
+    """No SOC (U = None): parallel_nac uses snapshot.nacs; xi = 0 forces the hops."""
+    options = DynamicsOptions(dt_au=0.5, ekin_correction="parallel_nac")
+    state, _, outcome, records = _lvc_run(
+        options, 1000, rng=ReplaySource([0.0] * 1000), name="lvc_singlets.template", active=2
+    )
+    assert outcome is Outcome.FINISHED
+    assert state.u is None and all(r.u is None for r in records)
+    assert sum(r.hop_to is not None for r in records) >= 1
+    drift = max(abs(r.e_total - state.e_total_initial) for r in records)
+    assert drift < 1e-5, drift
+
+
+def test_initial_state_maps_the_mch_state_to_the_diagonal_state():
+    """Item 12: c^diag = U0^dagger c^MCH, lambda = argmax |c^diag|^2 and
+    E_tot(0) = E^diag_lambda + K."""
+    from gqteashmd.dynamics.driver import kinetic_energy
+    from gqteashmd.dynamics.representation import diagonal_basis
+
+    model = _lvc()
+    q, v = _sample(model)
+    e_diag, u = diagonal_basis(model.evaluate(q, None).hamiltonian, None, first_step=True)
+    assert u is not None
+    state = initial_state(model, q, v, 1)
+    assert np.array_equal(state.u, u)
+    expected = u.conj().T @ np.eye(model.n_states)[1]
+    assert np.allclose(state.c, expected, atol=1e-15, rtol=0)
+    assert state.active == int(np.argmax(np.abs(state.c) ** 2))
+    assert state.active != 1  # the diagonal states are energy-ordered (triplets below S1)
+    assert state.e_total_initial == float(e_diag[state.active]) + kinetic_energy(v, model.masses)
+
+    c0 = np.zeros(model.n_states, dtype=complex)
+    c0[0], c0[1] = 0.6, 0.8j
+    mixed = initial_state(model, q, v, 1, c0)
+    assert np.allclose(mixed.c, u.conj().T @ c0, atol=1e-15, rtol=0)
+    assert mixed.active == int(np.argmax(np.abs(mixed.c) ** 2))
+    with pytest.raises(ValueError, match="c0 must have norm 1"):
+        initial_state(model, q, v, 1, 2.0 * c0)
+    with pytest.raises(ValueError, match="active"):
+        initial_state(model, q, v, model.n_states)
+
+
+def test_records_carry_the_mch_view():
+    """Items 4 and 13: c_mch = U' c', populations sum to 1, active_mch = argmax |U'_{., lambda}|."""
+    _, _, _, records = _lvc_run(DynamicsOptions(dt_au=0.5), 300, rng=_forced_stream(300))
+    assert any(r.hop_to is not None for r in records)
+    for r in records:
+        assert r.u is not None and r.c_mch is not None and r.energies_diag is not None
+        assert abs(float(np.sum(np.abs(r.c_mch) ** 2)) - 1.0) <= 1e-12
+        assert np.array_equal(r.c_mch, r.u @ r.c)
+        assert r.active_mch == int(np.argmax(np.abs(r.u[:, r.active])))
+        assert np.all(np.diff(r.energies_diag) >= 0)
+        assert r.e_total == float(r.energies_diag[r.active]) + r.e_kinetic
+
+
+def test_soc_step_follows_the_documented_order():
+    """One spin-orbit step reproduced by hand from the components (item 11, no hop)."""
+    from gqteashmd.dynamics.decoherence import apply_decoherence
+    from gqteashmd.dynamics.hopping import sharc_probabilities
+    from gqteashmd.dynamics.integrators import acceleration, verlet_positions, verlet_velocities
+    from gqteashmd.dynamics.propagators import propagate_diagonal
+    from gqteashmd.dynamics.representation import (
+        diagonal_basis,
+        diagonal_gradient,
+        diagonal_tensor,
+        gradient_tensor,
+    )
+
+    model = _lvc()
+    options = DynamicsOptions(dt_au=0.5)
+    state = _lvc_start(model)
+    snap, m, lam = state.snapshot, model.masses, state.active
+    g0 = diagonal_gradient(diagonal_tensor(gradient_tensor(snap), state.u), lam)
+    a = acceleration(g0, m)
+    q1 = verlet_positions(state.q, state.v, a, 0.5)
+    snap1 = model.evaluate(q1, snap)
+    e1, u1 = diagonal_basis(snap1.hamiltonian, state.u)
+    g1 = diagonal_gradient(diagonal_tensor(gradient_tensor(snap1), u1), lam)
+    v1 = verlet_velocities(state.v, a, acceleration(g1, m), 0.5)
+    c1, r, _ = propagate_diagonal(
+        state.c, state.u, u1, snap.hamiltonian, snap1.hamiltonian, snap.nacs, snap1.nacs,
+        state.v, v1, 0.5, 25, coupling="nacdr", overlaps=snap1.overlaps,
+        interpolation="midpoint",
+    )  # fmt: skip
+    probs = sharc_probabilities(lam, state.c, c1, r)
+    kin = 0.5 * float(np.sum(m * v1 * v1))
+    c2 = apply_decoherence(c1, lam, e1, kin, 0.5, scheme="edc", param=0.1, convention="sharc")
+
+    new, rec = step(model, state, options, ReplaySource([0.999999]))
+    assert rec.hop_to is None and not rec.frustrated
+    assert np.array_equal(new.q, q1)
+    assert np.array_equal(new.v, v1)
+    assert np.array_equal(new.u, u1) and np.array_equal(rec.u, u1) and rec.u is not new.u
+    assert np.array_equal(new.c, c2)
+    assert np.array_equal(rec.probabilities, probs)
+    assert np.array_equal(rec.energies, snap1.energies)
+    assert np.array_equal(rec.energies_diag, e1)
+    assert rec.e_total == float(e1[lam]) + kin

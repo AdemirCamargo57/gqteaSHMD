@@ -23,6 +23,19 @@ def test_trajectory_is_bit_identical_to_p7a1(name):
         assert np.array_equal(value, recorded[key]), f"{name}: {key} changed"
 
 
+@pytest.mark.parametrize("name", ["sac", "dac", "ecr"])
+def test_tully_records_have_no_diagonal_basis(name):
+    """U stays None (the identity) for every Tully step; the MCH view equals the diagonal one."""
+    records: list = []
+    golden.run_case(name, on_step=records.append)
+    assert records
+    for r in records:
+        assert r.u is None
+        assert np.array_equal(r.energies_diag, r.energies)
+        assert np.array_equal(r.c_mch, r.c) and r.c_mch is not r.c
+        assert r.active_mch == r.active
+
+
 def test_golden_trajectories_contain_the_events():
     with np.load(HERE / "data" / "tully_golden.npz") as data:
         assert (data["sac_hop_to"] >= 0).any()

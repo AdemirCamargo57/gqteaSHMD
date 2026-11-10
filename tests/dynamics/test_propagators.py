@@ -570,3 +570,17 @@ def test_overlap_coupling_needs_overlaps():
         propagate_diagonal(*args, coupling="overlap", overlaps=None, interpolation="midpoint")
     with pytest.raises(ValueError, match="coupling"):
         propagate_diagonal(*args, coupling="ddr", overlaps=None, interpolation="midpoint")
+
+
+def test_fast_path_refuses_an_off_diagonal_hamiltonian():
+    """Without U and with "nacdr" only Re diag(H) is used, so an off-diagonal H is an error."""
+    from gqteashmd.dynamics.propagators import propagate_diagonal
+
+    e, nac, v, c = _rand_setup(np.random.default_rng(550))
+    h = np.diag(e).astype(complex)
+    coupled = h.copy()
+    coupled[0, 1] = coupled[1, 0] = 1e-3j
+    kw = _diag_kw("nacdr")
+    for h0, h1 in ((coupled, h), (h, coupled)):
+        with pytest.raises(ValueError, match="off-diagonal"):
+            propagate_diagonal(c, None, None, h0, h1, nac, nac, v, v, 0.5, 3, **kw)

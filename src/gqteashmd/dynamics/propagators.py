@@ -215,6 +215,7 @@ def propagate_diagonal(
 
     - Fast path (u0 = u1 = None, coupling ``"nacdr"``): the P7a-1 `propagate` on Re diag(h),
       returning its outputs unchanged (bit-identical, including the substep start amplitudes).
+      An off-diagonal element of h0 or h1 is a ``ValueError`` there (it would be dropped).
     - ``"nacdr"``: R^MCH = prod_m exp(-i (H(s_m) - i T(s_m)) delta), H(s) = (1 - s) h0 + s h1
       with the full complex Hamiltonian and T the P7a-1 coupling for ``interpolation``.
     - ``"overlap"`` (local diabatization; NACs ignored): with S = ``overlaps``,
@@ -234,6 +235,13 @@ def propagate_diagonal(
     if coupling == "overlap" and overlaps is None:
         raise ValueError("coupling = 'overlap' needs the snapshot overlaps at t + dt")
     if u0 is None and u1 is None and coupling == "nacdr":
+        for name, h in (("h0", h0), ("h1", h1)):
+            h = np.asarray(h)
+            if np.count_nonzero(h) != np.count_nonzero(np.diagonal(h)):
+                raise ValueError(
+                    f"{name} has an off-diagonal element, which the fast path (u0 = u1 = None, "
+                    "'nacdr') would drop; pass the diagonal bases u0 and u1"
+                )
         e0 = np.real(np.diagonal(np.asarray(h0)))
         e1 = np.real(np.diagonal(np.asarray(h1)))
         c_new, p, starts = propagate(

@@ -11,6 +11,7 @@ model without off-diagonal MCH Hamiltonian elements.
 from __future__ import annotations
 
 import sys
+from collections.abc import Callable
 from pathlib import Path
 
 import numpy as np
@@ -23,6 +24,7 @@ from gqteashmd.dynamics.models import (
 )
 from gqteashmd.dynamics.options import DynamicsOptions
 from gqteashmd.dynamics.randomness import GeneratorSource, RandomSource, ReplaySource
+from gqteashmd.dynamics.records import StepRecord
 from gqteashmd.dynamics.restart import save_state
 
 MASS = 2000.0
@@ -84,20 +86,29 @@ CASES = {
 }
 
 
-def run_case(name: str) -> dict[str, np.ndarray]:
+def run_case(
+    name: str, on_step: Callable[[StepRecord], None] | None = None
+) -> dict[str, np.ndarray]:
+    """Run one case; ``on_step`` (optional, added in P7a-2) also receives every record."""
     factory, x0, k, active, opts, steps, seed = CASES[name]
     model = factory()
     options = DynamicsOptions(**opts)
     c0 = INITIAL_AMPLITUDES.get(name)
     state = initial_state(model, np.array([x0]), np.array([k / MASS]), active, c0)
-    records = []
+    records: list[StepRecord] = []
+
+    def collect(record: StepRecord) -> None:
+        records.append(record)
+        if on_step is not None:
+            on_step(record)
+
     run_trajectory(
         model,
         state,
         options,
         make_source(name, steps, seed),
         max_steps=steps,
-        on_step=records.append,
+        on_step=collect,
     )
     return {
         "q": np.array([r.q for r in records]),

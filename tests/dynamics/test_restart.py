@@ -251,6 +251,57 @@ def test_flags_must_match_the_arrays(tmp_path):
         load_state(tmp_path / "b.npz", model)
 
 
+LVC = Path(__file__).resolve().parents[1] / "data" / "lvc"
+
+
+@pytest.mark.parametrize("coupling", ["nacdr", "overlap"])
+def test_restart_with_spin_orbit_coupling_and_hops_is_bit_identical(tmp_path, coupling):
+    """lvc_soc, EDC: 60 + save/load + 60 = 120 steps equal 120 uninterrupted steps, with at
+    least one hop in each half; U and the snapshot overlaps are carried by the restart."""
+    from gqteashmd.dynamics.lvc import LVCModel, lvc_wigner_samples
+
+    model = LVCModel.from_template(LVC / "lvc_soc.template")
+    options = DynamicsOptions(dt_au=0.5, coupling=coupling, decoherence="edc")
+    q, v = lvc_wigner_samples(model, 1, np.random.default_rng(7))
+    start = initial_state(model, q[0], v[0], 1)
+    assert start.u is not None
+    stream = _soc_stream()
+
+    full_records: list = []
+    full, _ = run_trajectory(
+        model, start, options, ReplaySource(stream), max_steps=120, on_step=full_records.append
+    )
+    hops = [r.step for r in full_records if r.hop_to is not None]
+    assert any(h <= 60 for h in hops) and any(h > 60 for h in hops), hops
+
+    rng = ReplaySource(stream)
+    half, _ = run_trajectory(model, start, options, rng, max_steps=60)
+    path = tmp_path / "restart.npz"
+    save_state(path, half, rng)
+    loaded, rng2 = load_state(path, model)
+    _assert_same(loaded, half)
+    assert np.array_equal(loaded.u, half.u)
+    assert np.array_equal(loaded.snapshot.overlaps, half.snapshot.overlaps)
+    second: list = []
+    resumed, _ = run_trajectory(model, loaded, options, rng2, max_steps=60, on_step=second.append)
+
+    _assert_same(resumed, full)
+    assert np.array_equal(resumed.u, full.u)
+    assert resumed.step == 120
+    for a, b in zip(second, full_records[60:], strict=True):
+        assert np.array_equal(a.c, b.c) and np.array_equal(a.u, b.u)
+        assert a.e_total == b.e_total and a.hop_to == b.hop_to
+
+
+def _soc_stream() -> list[float]:
+    """The seed-21 generator's first 120 numbers with every 10th replaced by 0 (a forced hop
+    attempt wherever a probability is positive; the plain probabilities are about 1e-6), so
+    both halves contain hops (measured: steps 1, 21, 24, 61, 101 for both couplings)."""
+    values = np.random.default_rng(21).random(120)
+    values[::10] = 0.0
+    return [float(x) for x in values]
+
+
 def test_restart_2_with_u_continues_bit_identically(tmp_path):
     """A state carrying U (the driver passes U through unchanged until Task 6) round-trips."""
     model = TullySimpleAvoidedCrossing()
