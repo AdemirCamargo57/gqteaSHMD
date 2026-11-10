@@ -17,7 +17,7 @@ It is validated against an exact wavepacket solver, published values and SHARC 4
 **Architecture:**
 - **No dependencies on the workflow.** `gqteashmd.dynamics` imports nothing from `electronic/`, `stages/`, the orchestrator or `config/`. It takes its electronic data through a small protocol (`ElectronicModel.evaluate`), which the analytic models implement now and a PySCF adapter will implement in P7b.
 - **Strategy objects.** Every algorithmic choice is a small strategy selected by name in `DynamicsOptions`, following strategy §2.1.
-- **Ready for spin–orbit coupling.** The data model carries the complex MCH Hamiltonian and the MCH→diagonal matrix U from day 1 (strategy §4.2). In P7a-1, U must be diagonal up to phases, i.e. there is no SOC; non-diagonal U raises `NotImplementedError` pointing to P7a-2.
+- **Ready for spin–orbit coupling.** *(Superseded: U is not carried, see the Method-reference erratum.)* The data model carries the complex MCH Hamiltonian and the MCH→diagonal matrix U from day 1 (strategy §4.2). In P7a-1, U must be diagonal up to phases, i.e. there is no SOC; non-diagonal U raises `NotImplementedError` pointing to P7a-2.
 
 **Tech Stack:** Python 3.12, NumPy, SciPy (tests: `scipy.stats`, `scipy.linalg.expm` as a reference), pydantic (runner input only), pytest, ruff 0.17.4, mypy.
 
@@ -32,7 +32,7 @@ It is validated against an exact wavepacket solver, published values and SHARC 4
 
 **Owner decisions (2026-11-08):**
 1. **Scope split.** P7a becomes **P7a-1** (this plan: the core on analytic models) followed by **P7a-2**: the LVC backend, overlap-based local diabatization, triplet spin expansion, SOC with the diagonal representation and gradient corrections, and the SHARC LVC comparisons.
-2. **O6, first-release options.**
+2. **O6, first-release options.** *(Superseded: the implemented table is in the Method-reference erratum.)*
 
    | Option | Values |
    |---|---|
@@ -82,6 +82,32 @@ It is validated against an exact wavepacket solver, published values and SHARC 4
 
 ## Method reference (binding definitions; every task uses these)
 
+### Erratum (post-implementation, 2026-11-08)
+
+The items below supersede the original text further down, which is kept as the historical record (the superseded lines are marked). The code (`gqteashmd.dynamics`) and the user manual follow this erratum (USER_MANUAL.md §8.11–§8.12).
+
+- **Item 2, substep interpolation.** A second scheme was added by owner decision after Task 9 (`DynamicsOptions.substep_interpolation`):
+  - `"midpoint"` (default): as written in item 2 (s_m = (m − ½)/N_s; E, d and v each interpolated linearly; T(s) = v(s)·d(s)). Second order in the substep length.
+  - `"endpoint"`: s_m = m/N_s for m = 1…N_s, with E and the coupling T = v·d each interpolated **linearly between the end values** T(t) = v(t)·d(t) and T(t+Δt) = v(t+Δt)·d(t+Δt). This is the scheme of the public SHARC 4.1 manual, §8.33.1, eqs. (8.191)-(8.194); with it the hopping-off SHARC comparison agrees to 1.4e-8 in |c|² over 50 steps. First order in the substep length.
+  - Items 3 and 4 use the substep amplitudes and the step propagator P of whichever scheme is selected.
+- **Item 6, reflection for `parallel_vel`.** The mass-weighted reflection v′ = v − 2 (v·u / uᵀM⁻¹u) M⁻¹u uses **u = M v** (the momentum) for `parallel_vel`, which gives v′ = −v for any masses (Ruling D). The original "u = v" gives −v only for equal masses. For `parallel_nac`, u = d_λj as written.
+- **Item 7, EDC conventions.** By owner decision after Task 9 there are two conventions (`DynamicsOptions.edc_convention`), both with τ_jλ = (1/|E_j − E_λ|)(1 + C/K) and c_j ← c_j exp(−f Δt/τ_jλ) for j ≠ λ, followed by the renormalisation of c_λ as written:
+  - `"sharc"` (**default**), f = ½: the public SHARC 4.1 manual, §8.7.1, eq. (8.25) (renormalisation eq. 8.26). This is **half** the Granucci–Persico damping rate. The SHARC 4.1 driver, run as a black box, damps at exactly this rate (measured κ = 0.500).
+  - `"granucci_persico"`, f = 1: item 7 as originally written; Granucci & Persico 2007, as reproduced in Runeson, arXiv:2507.18381, Sec. III.3, eqs. (44a), (44b), (45).
+- **O6 table (owner decision 2):** the options as implemented are
+
+  | Option | Values |
+  |---|---|
+  | `hopping` | `"sharc"` (default), `"fssh"`, and `"none"` (no hops; the one random number per step is still drawn) |
+  | `ekin_correction` | `"parallel_vel"` (default), `"parallel_nac"` |
+  | `frustrated` | `"keep"` (default), `"reflect"` |
+  | `decoherence` | `"edc"` (default, C = 0.1 Eh), `"none"` |
+  | `edc_convention` | `"sharc"` (default), `"granucci_persico"` |
+  | `substep_interpolation` | `"midpoint"` (default), `"endpoint"` |
+  | Integrator | velocity Verlet, fixed step |
+  | Coupling | `"nacdr"` only; `"overlap"` comes in P7a-2 |
+- **Architecture, U (line "Ready for spin–orbit coupling").** P7a-1 does **not** carry U. The snapshot carries the complex MCH Hamiltonian; `diagonal_basis` is called every step as the SOC guard (a non-diagonal MCH Hamiltonian raises `NotImplementedError`), and its U is discarded. U is stored in no snapshot, state or restart; carrying U with phase continuity (and a restart format version 2) is P7a-2 work.
+
 Notation:
 - n is the number of electronic states and f the number of degrees of freedom.
 - c ∈ ℂⁿ are the electronic amplitudes in the **propagation basis**: the diagonal basis, which in P7a-1 equals the adiabatic/MCH basis.
@@ -94,7 +120,7 @@ Notation:
    dc_j/dt = −i E_j c_j − Σ_k T_jk c_k, with T_jk = v·d_jk (real, antisymmetric).
 
    The effective Hamiltonian H_eff = diag(E) − i T is Hermitian.
-2. **Propagator over one nuclear step Δt** with N_s = `nsubsteps`, δ = Δt/N_s.
+2. **Propagator over one nuclear step Δt** with N_s = `nsubsteps`, δ = Δt/N_s. *(Superseded in part: `"endpoint"` scheme added, see the erratum.)*
    - E, d and v are linearly interpolated between t and t+Δt at the substep midpoints, s_m = (m − ½)/N_s for m = 1…N_s.
    - Each substep factor is P_m = exp(−i H_eff(s_m) δ), from the eigendecomposition of the Hermitian H_eff.
    - c(t+Δt) = P c(t), with P = P_{N_s} ⋯ P_1, which is unitary.
@@ -117,9 +143,9 @@ Notation:
      - If D = b² − 4aΔE < 0, the hop is frustrated.
      - Otherwise γ = (−b ± √D)/(2a), taking the root with the smaller |γ|.
      - If a ≤ 1e-30, use `parallel_vel`'s rule.
-   - **Frustrated hop**, `frustrated = "keep"`: v unchanged, no hop. `"reflect"`: no hop, and v′ = v − 2 (v·u / uᵀM⁻¹u) M⁻¹u, which reverses the momentum component along u in the mass-weighted metric (u = v for `parallel_vel`, giving v′ = −v; u = d_λj for `parallel_nac`).
+   - **Frustrated hop**, `frustrated = "keep"`: v unchanged, no hop. `"reflect"`: no hop, and v′ = v − 2 (v·u / uᵀM⁻¹u) M⁻¹u, which reverses the momentum component along u in the mass-weighted metric (u = v for `parallel_vel`, giving v′ = −v; u = d_λj for `parallel_nac`). *(Superseded: u = M v for `parallel_vel`, see the erratum.)*
    - Every frustrated event is recorded.
-7. **EDC** (Granucci & Persico 2007), after the hop step. With K the kinetic energy and C = `decoherence_param_Eh` (0.1):
+7. **EDC** (Granucci & Persico 2007), after the hop step. *(Superseded: two conventions, default `"sharc"` with half this rate, see the erratum.)* With K the kinetic energy and C = `decoherence_param_Eh` (0.1):
    - for j ≠ λ, τ_jλ = (1/|E_j − E_λ|) · (1 + C/K), and c_j ← c_j exp(−Δt/τ_jλ);
    - then c_λ ← c_λ · √((1 − Σ_{j≠λ}|c_j|²)/|c_λ|²).
    - If |E_j − E_λ| = 0 or K = 0, c_j is unchanged for that j.
