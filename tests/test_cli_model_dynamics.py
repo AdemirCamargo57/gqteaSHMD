@@ -108,7 +108,11 @@ def test_dynamics_section_defaults_are_the_library_defaults():
 
     section = DynamicsSection().model_dump()
     library = dataclasses.asdict(DynamicsOptions(dt_au=1.0))
-    assert section == library
+    # P7a-2 Task 1 added options the driver does not use yet; the runner exposes them when the
+    # driver implements them (a later task of P7a-2 removes this exemption).
+    not_yet_exposed = {"coupling", "gradient_transformation", "eselect_Eh"}
+    assert set(library) - set(section) == not_yet_exposed
+    assert section == {k: v for k, v in library.items() if k not in not_yet_exposed}
     assert section["energy_drift_limit_au"] == 0.5 / 27.211386245988
 
 

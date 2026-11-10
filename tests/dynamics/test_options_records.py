@@ -124,3 +124,50 @@ def test_records():
         np.zeros(2), 0.5, None, None, False,
     )  # fmt: skip
     assert rec.hop_to is None
+
+
+def test_new_option_defaults_keep_p7a1_behaviour():
+    o = DynamicsOptions(dt_au=1.0)
+    assert (o.coupling, o.gradient_transformation, o.eselect_Eh) == ("nacdr", "ngt", None)
+    o = DynamicsOptions(dt_au=1.0, coupling="overlap", gradient_transformation="none")
+    assert (o.coupling, o.gradient_transformation) == ("overlap", "none")
+    assert DynamicsOptions(dt_au=1.0, eselect_Eh=0.05).eselect_Eh == 0.05
+    assert DynamicsOptions(dt_au=1.0, eselect_Eh=1).eselect_Eh == 1
+
+
+@pytest.mark.parametrize(
+    ("field", "bad"),
+    [
+        ("coupling", "x"),
+        ("gradient_transformation", "x"),
+        ("eselect_Eh", 0.0),
+        ("eselect_Eh", -1.0),
+        ("eselect_Eh", float("nan")),
+        ("eselect_Eh", float("inf")),
+        ("eselect_Eh", True),
+        ("eselect_Eh", "0.1"),
+    ],
+)
+def test_new_options_are_validated_and_named(field, bad):
+    with pytest.raises(ValueError, match=field):
+        DynamicsOptions(dt_au=1.0, **{field: bad})
+
+
+def test_fssh_needs_nacdr_coupling():
+    with pytest.raises(ValueError, match="hopping = 'fssh' needs coupling = 'nacdr'"):
+        DynamicsOptions(dt_au=1.0, hopping="fssh", coupling="overlap")
+    DynamicsOptions(dt_au=1.0, hopping="sharc", coupling="overlap")
+
+
+def test_new_record_fields_default_to_none():
+    snap = ElectronicSnapshot(
+        np.zeros(2), np.zeros((2, 1)), np.zeros((2, 2, 1)), np.zeros((2, 2), complex)
+    )
+    assert snap.overlaps is None
+    st = TrajectoryState(0.0, 0, np.zeros(1), np.zeros(1), np.ones(2, complex), 0, snap, 0.0)
+    assert st.u is None
+    rec = StepRecord(
+        1, 1.0, np.zeros(1), np.zeros(1), np.ones(2, complex), 0, np.zeros(2), 0.0, 0.0,
+        np.zeros(2), 0.5, None, None, False,
+    )  # fmt: skip
+    assert (rec.energies_diag, rec.c_mch, rec.active_mch, rec.u) == (None, None, None, None)
