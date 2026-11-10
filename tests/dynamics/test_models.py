@@ -110,3 +110,36 @@ def test_coordinates_of_the_wrong_length_are_rejected(model, pts):
     for bad in (np.append(good, 0.1), good[:-1], np.zeros((1, model.n_dof))):
         with pytest.raises(ValueError, match="n_dof"):
             model.evaluate(bad, None)
+
+
+@pytest.mark.parametrize(("model", "pts"), MODELS, ids=IDS)
+def test_state_counts_are_singlets_only(model, pts):
+    assert model.state_counts == (model.n_states,)
+
+
+@pytest.mark.parametrize(("model", "pts"), MODELS, ids=IDS)
+def test_overlaps_are_none_without_previous_vectors(model, pts):
+    from dataclasses import replace
+
+    q = _qs(model, pts)[0]
+    snap = model.evaluate(q, None)
+    assert snap.overlaps is None
+    assert model.evaluate(q, replace(snap, vectors=None)).overlaps is None
+
+
+def test_sac_overlaps_along_a_path_are_continuous():
+    """R10: S = W_prev^T W after the sign alignment, orthogonal with a positive diagonal."""
+    model = TullySimpleAvoidedCrossing()
+    xs = np.linspace(-4.0, 4.0, 401)
+    snap = model.evaluate(np.array([xs[0]]), None)
+    min_diag, worst_orth = np.inf, 0.0
+    for x in xs[1:]:
+        new = model.evaluate(np.array([x]), snap)
+        s = new.overlaps
+        assert s is not None and s.shape == (2, 2)
+        np.testing.assert_array_equal(s, snap.vectors.T @ new.vectors)
+        min_diag = min(min_diag, float(np.min(np.diagonal(s))))
+        worst_orth = max(worst_orth, float(np.max(np.abs(s.T @ s - np.eye(2)))))
+        snap = new
+    assert min_diag > 0.0, min_diag
+    assert worst_orth <= 1e-13, worst_orth
