@@ -3,8 +3,9 @@
 Step order, from (q, v, a = -M^-1 g_lambda(q), c, lambda) at time t:
 
 1. q' = q + v dt + a dt^2 / 2.
-2. snap' = model.evaluate(q', previous=snap); ``diagonal_basis(snap'.hamiltonian, u_previous)``
-   guards against non-diagonal (spin-orbit) Hamiltonians, which need P7a-2.
+2. snap' = model.evaluate(q', previous=snap); a U other than ``None`` from
+   ``diagonal_basis(snap'.hamiltonian, u_previous)`` (a non-diagonal, spin-orbit Hamiltonian)
+   raises ``NotImplementedError(SOC_MESSAGE)`` until the driver propagates in the diagonal basis.
 3. v' = v + (a - M^-1 g'_lambda) dt / 2, with the gradient of the *old* active state at q'.
 4. Propagate c over [t, t + dt] with E, d interpolated between snap and snap' and v between
    v and v' (``options.substep_interpolation``); this gives c' and the step propagator P.
@@ -37,7 +38,7 @@ from gqteashmd.dynamics.options import DynamicsOptions
 from gqteashmd.dynamics.propagators import propagate
 from gqteashmd.dynamics.randomness import RandomSource
 from gqteashmd.dynamics.records import StepRecord, TrajectoryState
-from gqteashmd.dynamics.representation import diagonal_basis
+from gqteashmd.dynamics.representation import SOC_MESSAGE, diagonal_basis
 from gqteashmd.dynamics.velocity import adjust_velocity
 
 NORM_TOLERANCE = 1e-8
@@ -49,6 +50,12 @@ class Outcome(StrEnum):
     FINISHED = "finished"
     STOPPED = "stopped"
     ENERGY_DRIFT = "energy_drift"
+
+
+def _require_mch(u: np.ndarray | None) -> None:
+    """The driver still propagates in the MCH basis: any U other than None is refused."""
+    if u is not None:
+        raise NotImplementedError(SOC_MESSAGE)
 
 
 def kinetic_energy(v: np.ndarray, masses: np.ndarray) -> float:
@@ -92,7 +99,7 @@ def initial_state(
         if not abs(norm - 1.0) <= NORM_TOLERANCE:
             raise ValueError(f"c0 must have norm 1; got {norm!r}")
     snap = model.evaluate(q, None)
-    diagonal_basis(snap.hamiltonian, None)
+    _require_mch(diagonal_basis(snap.hamiltonian, None, first_step=True)[1])
     e_total = float(snap.energies[active]) + kinetic_energy(v, model.masses)
     return TrajectoryState(
         time_au=0.0,
@@ -124,7 +131,7 @@ def step(
     a0 = acceleration(snap0.gradients[lam], masses)
     q1 = verlet_positions(q0, v0, a0, dt)
     snap1 = model.evaluate(q1, snap0)
-    diagonal_basis(snap1.hamiltonian, u_previous)
+    _require_mch(diagonal_basis(snap1.hamiltonian, u_previous)[1])
     v1 = verlet_velocities(v0, a0, acceleration(snap1.gradients[lam], masses), dt)
 
     # 4: electronic propagation over [t, t + dt]
