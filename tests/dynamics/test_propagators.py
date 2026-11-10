@@ -281,3 +281,240 @@ def test_energies_are_added_for_a_non_contiguous_coupling_stack(monkeypatch, int
     result = propagate(*args, interpolation=interpolation)
     for got, ref in zip(result, reference, strict=True):
         assert np.max(np.abs(got - ref)) <= 1e-13
+
+
+# --- P7a-2 Task 5: propagation in the diagonal basis (Method reference 7) ---------------------
+
+
+def _random_unitary(rng, n):
+    q, r = np.linalg.qr(rng.normal(size=(n, n)) + 1j * rng.normal(size=(n, n)))
+    return q * (np.diag(r) / np.abs(np.diag(r)))
+
+
+def _random_orthogonal(rng, n):
+    q, _ = np.linalg.qr(rng.normal(size=(n, n)))
+    return q
+
+
+def _random_hermitian(rng, n, scale=0.1):
+    a = rng.normal(size=(n, n)) + 1j * rng.normal(size=(n, n))
+    return scale * 0.5 * (a + a.conj().T)
+
+
+def _diag_kw(coupling, overlaps=None, interpolation="midpoint"):
+    return {"coupling": coupling, "overlaps": overlaps, "interpolation": interpolation}
+
+
+@pytest.mark.parametrize("interpolation", ["midpoint", "endpoint"])
+def test_diagonal_fast_path_is_the_p7a1_propagate(interpolation):
+    from gqteashmd.dynamics.propagators import propagate_diagonal
+
+    rng = np.random.default_rng(500)
+    for _ in range(20):
+        n = int(rng.integers(2, 5))
+        f = int(rng.integers(1, 4))
+        ns = int(rng.integers(1, 30))
+        dt = float(rng.uniform(0.1, 2.0))
+        e0, nac0, v0, c = _rand_setup(rng, n=n, f=f)
+        e1, nac1, v1, _ = _rand_setup(rng, n=n, f=f)
+        h0, h1 = np.diag(e0).astype(complex), np.diag(e1).astype(complex)
+        kw = _diag_kw("nacdr", interpolation=interpolation)
+        got = propagate_diagonal(c, None, None, h0, h1, nac0, nac1, v0, v1, dt, ns, **kw)
+        ref = propagate(c, e0, e1, nac0, nac1, v0, v1, dt, ns, interpolation=interpolation)
+        assert len(got) == 3
+        for a, b in zip(got, ref, strict=True):
+            assert np.array_equal(a, b)
+
+
+@pytest.mark.parametrize("interpolation", ["midpoint", "endpoint"])
+@pytest.mark.parametrize("coupling", ["nacdr", "overlap"])
+def test_diagonal_propagator_is_unitary(coupling, interpolation):
+    from gqteashmd.dynamics.propagators import propagate_diagonal
+
+    rng = np.random.default_rng(510)
+    for _ in range(10):
+        n, f = 4, 3
+        _, nac0, v0, c = _rand_setup(rng, n=n, f=f)
+        _, nac1, v1, _ = _rand_setup(rng, n=n, f=f)
+        h0, h1 = _random_hermitian(rng, n), _random_hermitian(rng, n)
+        u0, u1 = _random_unitary(rng, n), _random_unitary(rng, n)
+        s = _random_orthogonal(rng, n) if coupling == "overlap" else None
+        kw = _diag_kw(coupling, s, interpolation)
+        c2, r, starts = propagate_diagonal(c, u0, u1, h0, h1, nac0, nac1, v0, v1, 0.8, 7, **kw)
+        assert starts is None
+        assert np.max(np.abs(r.conj().T @ r - np.eye(n))) <= 1e-12
+        assert np.max(np.abs(r @ c - c2)) <= 1e-14
+        assert abs(np.linalg.norm(c2) - 1.0) <= 1e-12
+
+
+@pytest.mark.parametrize("interpolation", ["midpoint", "endpoint"])
+def test_general_path_with_identity_u_matches_the_fast_path(interpolation):
+    """Ruling F: explicit identity matrices for U take the general path."""
+    from gqteashmd.dynamics.propagators import propagate_diagonal
+
+    rng = np.random.default_rng(520)
+    eye = np.eye(3, dtype=complex)
+    kw = _diag_kw("nacdr", interpolation=interpolation)
+    for _ in range(10):
+        e0, nac0, v0, c = _rand_setup(rng, n=3, f=2)
+        e1, nac1, v1, _ = _rand_setup(rng, n=3, f=2)
+        h0, h1 = np.diag(e0).astype(complex), np.diag(e1).astype(complex)
+        fast = propagate_diagonal(c, None, None, h0, h1, nac0, nac1, v0, v1, 0.6, 9, **kw)
+        general = propagate_diagonal(c, eye, eye, h0, h1, nac0, nac1, v0, v1, 0.6, 9, **kw)
+        assert fast[2] is not None and general[2] is None
+        assert np.max(np.abs(general[0] - fast[0])) <= 1e-13
+        assert np.max(np.abs(general[1] - fast[1])) <= 1e-13
+
+
+@pytest.mark.parametrize("interpolation", ["midpoint", "endpoint"])
+@pytest.mark.parametrize("coupling", ["nacdr", "overlap"])
+def test_frozen_nuclei_follow_the_exact_exponential(coupling, interpolation):
+    """v = 0 and a constant H with spin-orbit coupling: c^MCH(t) = exp(-iHt) c^MCH(0)."""
+    from gqteashmd.dynamics.propagators import propagate_diagonal
+
+    rng = np.random.default_rng(530)
+    n, f, dt = 4, 2, 0.5
+    h = _random_hermitian(rng, n)
+    _, u = np.linalg.eigh(h)
+    u = u.astype(complex)
+    nac = rng.normal(size=(n, n, f))
+    nac = nac - nac.transpose(1, 0, 2)
+    v = np.zeros(f)
+    s = np.eye(n) if coupling == "overlap" else None
+    kw = _diag_kw(coupling, s, interpolation)
+    c0_mch = rng.normal(size=n) + 1j * rng.normal(size=n)
+    c0_mch /= np.linalg.norm(c0_mch)
+    c = u.conj().T @ c0_mch
+    worst = 0.0
+    for k in range(1, 101):
+        c, _, _ = propagate_diagonal(c, u, u, h, h, nac, nac, v, v, dt, 5, **kw)
+        ref = expm(-1j * h * dt * k) @ c0_mch
+        worst = max(worst, float(np.max(np.abs(u @ c - ref))))
+    assert worst <= 1e-10, worst
+
+
+@pytest.mark.parametrize("coupling", ["nacdr", "overlap"])
+def test_rabi_oscillation_in_the_diagonal_basis(coupling):
+    from gqteashmd.dynamics.propagators import propagate_diagonal
+
+    big_v, delta, dt = 0.01 * np.exp(0.7j), 0.02, 2.0
+    h = np.array([[0.0, big_v], [np.conj(big_v), delta]], dtype=complex)
+    _, u = np.linalg.eigh(h)
+    u = u.astype(complex)
+    omega = np.sqrt(delta**2 + 4 * abs(big_v) ** 2)
+    nac = np.zeros((2, 2, 1))
+    v = np.zeros(1)
+    s = np.eye(2) if coupling == "overlap" else None
+    kw = _diag_kw(coupling, s)
+    c = u.conj().T @ np.array([1.0, 0.0], dtype=complex)
+    worst = 0.0
+    for k in range(1, 201):
+        c, _, _ = propagate_diagonal(c, u, u, h, h, nac, nac, v, v, dt, 3, **kw)
+        t = k * dt
+        expected = 4 * abs(big_v) ** 2 / omega**2 * np.sin(omega * t / 2) ** 2
+        worst = max(worst, abs(abs((u @ c)[1]) ** 2 - expected))
+    assert worst <= 1e-10, worst
+
+
+def _trivial_crossing_snapshot(alpha, x, previous_vectors, sign):
+    """MCH (energy-ordered) data of the uncoupled diabatic H = diag(+alpha x, -alpha x).
+
+    The adiabatic states swap character at x = 0; ``sign`` flips the phase of the lower state
+    after the crossing, so the overlap there is a signed permutation."""
+    from gqteashmd.dynamics.records import ElectronicSnapshot
+
+    if x < 0:  # lower adiabatic state = diabatic state 0
+        energies = np.array([alpha * x, -alpha * x])
+        w = np.eye(2)
+    else:  # lower adiabatic state = diabatic state 1
+        energies = np.array([-alpha * x, alpha * x])
+        w = np.array([[0.0, 1.0], [sign, 0.0]])
+    overlaps = None if previous_vectors is None else previous_vectors.T @ w
+    return ElectronicSnapshot(
+        energies=energies,
+        gradients=np.zeros((2, 1)),
+        nacs=np.zeros((2, 2, 1)),  # G_01 = 0 everywhere: no coupling off the crossing point
+        hamiltonian=np.diag(energies).astype(complex),
+        vectors=w,
+        overlaps=overlaps,
+    )
+
+
+def _run_trivial_crossing(coupling, sign=1.0):
+    from gqteashmd.dynamics.propagators import propagate_diagonal
+
+    alpha, vel, dt, ns = 0.01, 0.01, 1.0, 5
+    xs = -0.2 + 0.0013 + vel * dt * np.arange(41)  # x = 0 falls between two steps
+    snaps = []
+    prev = None
+    for x in xs:
+        prev = _trivial_crossing_snapshot(alpha, x, None if prev is None else prev.vectors, sign)
+        snaps.append(prev)
+    v = np.array([vel])
+    c = np.array([1.0, 0.0], dtype=complex)  # lower adiabatic state = diabatic state 0
+    diabatic = [abs((snaps[0].vectors @ c)[0]) ** 2]
+    swaps = 0
+    for s0, s1 in zip(snaps[:-1], snaps[1:], strict=True):
+        if not np.array_equal(s1.overlaps, np.eye(2)):
+            swaps += 1
+        kw = _diag_kw(coupling, s1.overlaps if coupling == "overlap" else None)
+        h0, h1 = s0.hamiltonian, s1.hamiltonian
+        c, _, _ = propagate_diagonal(c, None, None, h0, h1, s0.nacs, s1.nacs, v, v, dt, ns, **kw)
+        diabatic.append(abs((s1.vectors @ c)[0]) ** 2)
+    return np.array(diabatic), swaps
+
+
+@pytest.mark.parametrize("sign", [1.0, -1.0])
+def test_local_diabatization_follows_a_trivial_crossing(sign):
+    diabatic, swaps = _run_trivial_crossing("overlap", sign)
+    assert swaps == 1
+    assert np.max(np.abs(diabatic - 1.0)) <= 1e-12
+    # NAC propagation with finite steps never sees the delta-function coupling: the population
+    # stays adiabatic and leaves the diabatic state (number in the Task 5 report).
+    nac_diabatic, _ = _run_trivial_crossing("nacdr", sign)
+    assert abs(nac_diabatic[-1] - 1.0) > 0.5, nac_diabatic[-1]
+
+
+def _sac_populations(coupling, dt, ns=25):
+    """|c|^2 after a fixed classical path x = -4 + v t to x = +4 (k = 20) on Tully SAC."""
+    from gqteashmd.dynamics.models import TullySimpleAvoidedCrossing
+    from gqteashmd.dynamics.propagators import propagate_diagonal
+
+    model = TullySimpleAvoidedCrossing()
+    vel = 20.0 / float(model.masses[0])
+    nsteps = int(round(8.0 / vel / dt))
+    v = np.array([vel])
+    prev = model.evaluate(np.array([-4.0]), None)
+    c = np.array([1.0, 0.0], dtype=complex)
+    for k in range(1, nsteps + 1):
+        snap = model.evaluate(np.array([-4.0 + vel * dt * k]), prev)
+        kw = _diag_kw(coupling, snap.overlaps if coupling == "overlap" else None)
+        h0, h1 = prev.hamiltonian, snap.hamiltonian
+        c, _, _ = propagate_diagonal(
+            c, None, None, h0, h1, prev.nacs, snap.nacs, v, v, dt, ns, **kw
+        )
+        prev = snap
+    return np.abs(c) ** 2
+
+
+def test_nacdr_and_overlap_agree_to_second_order_on_tully_sac():
+    """Pre-registered: the ratio of successive |c|^2 differences lies in [3, 5] (midpoint)."""
+    diffs = []
+    for dt in (1.0, 0.5, 0.25):
+        nac, ovl = _sac_populations("nacdr", dt), _sac_populations("overlap", dt)
+        diffs.append(float(np.max(np.abs(nac - ovl))))
+    ratios = [diffs[0] / diffs[1], diffs[1] / diffs[2]]
+    for r in ratios:
+        assert 3.0 <= r <= 5.0, (diffs, ratios)
+
+
+def test_overlap_coupling_needs_overlaps():
+    from gqteashmd.dynamics.propagators import propagate_diagonal
+
+    e, nac, v, c = _rand_setup(np.random.default_rng(540))
+    h = np.diag(e).astype(complex)
+    args = (c, None, None, h, h, nac, nac, v, v, 0.5, 3)
+    with pytest.raises(ValueError, match="overlaps"):
+        propagate_diagonal(*args, coupling="overlap", overlaps=None, interpolation="midpoint")
+    with pytest.raises(ValueError, match="coupling"):
+        propagate_diagonal(*args, coupling="ddr", overlaps=None, interpolation="midpoint")
