@@ -330,13 +330,23 @@ def test_overlaps_up_to_signs(compared):
 # - sharc.x hands its interface the geometry in angstrom rounded to 7 decimals (up to 9e-8
 #   bohr off its own positions), so SHARC's H is H(rounded q): our E^diag along our own path
 #   differs by up to 2.1e-8 Eh. The E^diag assertion uses our model at that interface
-#   geometry, round(q_SHARC [angstrom], 7) (measured 3.2e-10); the along-path difference is
-#   reported.
+#   geometry, round(q_SHARC [angstrom], 7) (measured 3.2e-10); the core's E^diag along our own
+#   path is reported, not asserted.
 # - sharc.x adds 1e-12 Eh (M_s = 0) and 2e-12 Eh (M_s = +1) to the triplet diagonal of H, and
 #   lvc_soc has diagonal states only 1.7e-8 Eh apart (two T2 components), so U is not
-#   determined to 1e-7 by H: |(D U_ours) Phi - U_SHARC| is 1.4e-5 to 5.2e-5 in those columns.
-#   It is reported per step; the U assertion applies our diagonal basis (ordering, phase rule
-#   and tracking) to SHARC's own printed H and compares that with SHARC's U (measured 1.2e-8).
+#   determined to 1e-7 by H in near-degenerate columns: the brief's metric
+#   |(D U_ours) Phi - U_SHARC| is 1.4e-5 to 5.2e-5 there. It is printed per step, not asserted.
+#   The U assertions (post hoc, rules fixed by the controller after the first numbers were
+#   seen, fix round 1) use OUR model's H at the interface geometry, tracked by our
+#   ``diagonal_basis`` over the run exactly as the core does (first-step rule, then the
+#   previous U), with D applied: (i) the brief's column metric <= 1e-7 in the separated
+#   columns (no neighbour within 1e-4 Eh, from SHARC's step-0 eigenvalues); (ii) for each
+#   near-degenerate cluster, max |P_ours - P_SHARC| <= 1e-7 with P = sum of u u^dagger over the
+#   cluster's columns; (iii) for ``nacdr`` only, the separated columns with Phi fixed at step 0
+#   (not re-fitted) <= 1e-7 over the run (for ``overlap`` this drift is reported only).
+# - A separate check: SHARC's U against the eigenvectors of SHARC's own printed H (our
+#   ``diagonal_basis`` of that H, phase re-fitted per step). It only checks SHARC's ordering
+#   convention (ascending eigenvectors of its H), not our U.
 
 DT_AU = 0.5
 INITIAL_MCH = 1  # S1
@@ -420,6 +430,20 @@ def _best_phases(a: np.ndarray, b: np.ndarray) -> np.ndarray:
     return z / np.abs(z)
 
 
+CLUSTER_GAP_EH = 1e-4  # diagonal states closer than this to a neighbour form one cluster
+
+
+def _clusters(energies: np.ndarray) -> list[list[int]]:
+    """Index lists of consecutive ascending energies chained by gaps < CLUSTER_GAP_EH."""
+    groups = [[0]]
+    for b in range(1, len(energies)):
+        if energies[b] - energies[b - 1] < CLUSTER_GAP_EH:
+            groups[-1].append(b)
+        else:
+            groups.append([b])
+    return groups
+
+
 def _compare_hopping_off(model: LVCModel, sharc, state, records) -> dict:
     n_out = len(records) + 1
     q = np.vstack([state.q] + [r.q for r in records])
@@ -437,9 +461,15 @@ def _compare_hopping_off(model: LVCModel, sharc, state, records) -> dict:
     near[1:] |= gaps < 1e-4
     out: dict[str, list] = {key: [] for key in ("dpop", "dE_path", "dE", "dU", "dU_sep")}
     out.update({"dU_near": [], "dU_from_sharc_H": [], "phase_drift": [], "D": []})
+    out.update({"iU_sep": [], "iU_fixed_phase": [], "clusters_same": []})
+    clusters = _clusters(np.linalg.eigvalsh(sharc.hamiltonian[0]))
+    near_clusters = [cl for cl in clusters if len(cl) > 1]
+    out["projector"] = {str(cl): [] for cl in near_clusters}
     snap = None
+    u_iface = None  # our U at the interface geometry, tracked as the core does
     u_sharc_h = None
     phi0 = None
+    phi0_iface = None
     for k in range(n_out):
         h_s = sharc.hamiltonian[k]
         e_s = np.linalg.eigvalsh(h_s)
@@ -449,6 +479,22 @@ def _compare_hopping_off(model: LVCModel, sharc, state, records) -> dict:
         ]
         d = choices[int(np.argmin(residuals))]
         out["D"].append(tuple(d.tolist()))
+        _, u_iface = diagonal_basis(snap.hamiltonian, u_iface, first_step=(k == 0))
+        di = d[:, None] * u_iface
+        phi_i = _best_phases(di, sharc.u[k])
+        phi0_iface = phi_i if phi0_iface is None else phi0_iface
+        sep = ~near
+        out["iU_sep"].append(
+            float(np.max(np.abs(di[:, sep] * phi_i[None, sep] - sharc.u[k][:, sep])))
+        )
+        out["iU_fixed_phase"].append(
+            float(np.max(np.abs(di[:, sep] * phi0_iface[None, sep] - sharc.u[k][:, sep])))
+        )
+        for cl in near_clusters:
+            p_ours = di[:, cl] @ di[:, cl].conj().T
+            p_sh = sharc.u[k][:, cl] @ sharc.u[k][:, cl].conj().T
+            out["projector"][str(cl)].append(float(np.max(np.abs(p_ours - p_sh))))
+        out["clusters_same"].append(_clusters(e_s) == clusters)
         out["dE"].append(float(np.max(np.abs(np.linalg.eigvalsh(snap.hamiltonian) - e_s))))
         out["dE_path"].append(float(np.max(np.abs(e_diag[k] - e_s))))
         p_ours = (np.abs(u[k] @ c[k]) ** 2) @ spin_sum
@@ -496,13 +542,22 @@ def _report_hopping_off(coupling: str, r: dict, sharc, state) -> None:
         f"near-degenerate {max(r['dU_near']):.2e}"
     )
     print(
-        f"  U of SHARC's H by our diagonal_basis: max {max(r['dU_from_sharc_H']):.2e}; phase "
-        f"drift {max(r['phase_drift']):.2e}"
+        f"  SHARC's U vs eigenvectors of its printed H: max {max(r['dU_from_sharc_H']):.2e}; "
+        f"phase drift {max(r['phase_drift']):.2e}"
     )
-    print("  per step (k: dU brief / separated / from SHARC's H):")
+    print(
+        f"  our U at the interface geometry (tracked): (i) separated columns "
+        f"{max(r['iU_sep']):.2e}; (iii) Phi fixed at step 0 {max(r['iU_fixed_phase']):.2e}; "
+        f"clusters as at step 0 at every step: {all(r['clusters_same'])}"
+    )
+    for cluster, values in r["projector"].items():
+        print(f"  (ii) projector, cluster {cluster}: max {max(values):.2e}")
+    print("  per step (k: dU brief / brief separated / (i) / (ii) per cluster / (iii)):")
     for k in range(0, len(r["dU"]), 10):
+        proj = " ".join(f"{v[k]:.2e}" for v in r["projector"].values())
         print(
-            f"    {k:4d}: {r['dU'][k]:.2e} / {r['dU_sep'][k]:.2e} / {r['dU_from_sharc_H'][k]:.2e}"
+            f"    {k:4d}: {r['dU'][k]:.2e} / {r['dU_sep'][k]:.2e} / {r['iU_sep'][k]:.2e} / "
+            f"{proj} / {r['iU_fixed_phase'][k]:.2e}"
         )
 
 
@@ -520,6 +575,7 @@ def hopping_off(request, tmp_path_factory):
         sharc = _sharc_trajectory(work, model, q0, v0, options, OFF_STEPS, 1)
         state, records = _our_trajectory(model, q0, v0, options, sharc.random_numbers[1:])
         result = _compare_hopping_off(model, sharc, state, records)
+        result["coupling"] = coupling
         _report_hopping_off(coupling, result, sharc, state)
         _TRAJ_CACHE[coupling] = (sharc, state, records, result)
     return _TRAJ_CACHE[coupling]
@@ -550,19 +606,52 @@ def test_hopping_off_mch_populations(hopping_off):
 
 @pytest.mark.slow
 def test_hopping_off_diagonal_energies(hopping_off):
-    """Changed after the numbers were seen: at the geometry SHARC's interface received."""
+    """Changed after the numbers were seen: at the geometry SHARC's interface received. The
+    core's E^diag along our own path is reported, not asserted."""
     _, _, _, r = hopping_off
     for k, (de, tol) in enumerate(zip(r["dE"], r["tol_E"], strict=True)):
         assert de <= tol, (k, de, tol)
 
 
 @pytest.mark.slow
-def test_hopping_off_diagonal_basis(hopping_off):
-    """Changed after the numbers were seen: our diagonal basis of SHARC's printed H against
-    SHARC's U (best diagonal phase per step); the sign matrix D is the same at every step."""
+def test_sharc_u_is_the_eigenbasis_of_its_printed_h(hopping_off):
+    """SHARC's U against the ascending eigenvectors of SHARC's own printed H (phase re-fitted
+    per step): checks SHARC's ordering convention only, not our U. Also: the sign matrix D
+    fitted from H is the same at every step."""
     _, _, _, r = hopping_off
     assert len(set(r["D"])) == 1, set(r["D"])
     assert max(r["dU_from_sharc_H"]) <= TOL_U, max(r["dU_from_sharc_H"])
+
+
+@pytest.mark.slow
+def test_our_u_in_the_separated_columns(hopping_off):
+    """Post hoc (fix round 1, (i)): our U (our H at the interface geometry, tracked by our
+    diagonal_basis as the core does, D applied) against SHARC's U in the columns without a
+    neighbour within 1e-4 Eh, best diagonal phase per step."""
+    _, _, _, r = hopping_off
+    assert max(r["iU_sep"]) <= TOL_U, max(r["iU_sep"])
+
+
+@pytest.mark.slow
+def test_our_cluster_projectors(hopping_off):
+    """Post hoc (fix round 1, (ii)): for each near-degenerate cluster, the projector onto our
+    columns (D applied) against SHARC's, max-abs element, every step; the cluster structure is
+    that of SHARC's step-0 eigenvalues at every step."""
+    _, _, _, r = hopping_off
+    assert all(r["clusters_same"])
+    for cluster, values in r["projector"].items():
+        assert max(values) <= TOL_U, (cluster, max(values))
+
+
+@pytest.mark.slow
+def test_our_u_phase_tracking(hopping_off):
+    """Post hoc (fix round 1, (iii)): with ``nacdr``, our separated columns with Phi fixed at
+    step 0 (not re-fitted) stay within 1e-7 of SHARC's U over the run. With ``overlap`` the
+    drift is reported only."""
+    _, _, _, r = hopping_off
+    if r["coupling"] != "nacdr":
+        pytest.skip("for coupling = overlap the phase drift is reported, not asserted")
+    assert max(r["iU_fixed_phase"]) <= TOL_U, max(r["iU_fixed_phase"])
 
 
 @pytest.mark.slow
