@@ -508,6 +508,58 @@ def test_nacdr_and_overlap_agree_to_second_order_on_tully_sac():
         assert 3.0 <= r <= 5.0, (diffs, ratios)
 
 
+def _random_phases(rng, n):
+    return np.exp(1j * rng.uniform(0.0, 2 * np.pi, size=n))
+
+
+@pytest.mark.parametrize("interpolation", ["midpoint", "endpoint"])
+def test_overlap_propagation_is_exact_in_a_moving_basis(interpolation):
+    """Pins the orientation of S and of U0/U1 (pre-registered at 1e-12).
+
+    A constant H seen through a basis that moves from W0 to W1: h_k = W_k^dagger H W_k and
+    S = W0^dagger W1, so H_tra = S h1 S^dagger = h0 and H~(s) = h0 is constant. Local
+    diabatization is then exact: c' = U1^dagger W1^dagger exp(-i H dt) W0 U0 c."""
+    from gqteashmd.dynamics.propagators import propagate_diagonal
+
+    rng = np.random.default_rng(550)
+    n, f, dt = 3, 2, 0.9
+    for _ in range(5):
+        big_h = _random_hermitian(rng, n, scale=0.3)
+        w0, w1 = _random_unitary(rng, n), _random_unitary(rng, n)
+        h0, h1 = w0.conj().T @ big_h @ w0, w1.conj().T @ big_h @ w1
+        u0 = np.linalg.eigh(h0)[1] * _random_phases(rng, n)
+        u1 = np.linalg.eigh(h1)[1] * _random_phases(rng, n)
+        s = w0.conj().T @ w1  # S[b, a] = <psi_b(t)|psi_a(t+dt)>
+        _, nac0, v0, c = _rand_setup(rng, n=n, f=f)
+        _, nac1, v1, _ = _rand_setup(rng, n=n, f=f)
+        kw = _diag_kw("overlap", s, interpolation)
+        c2, r, _ = propagate_diagonal(c, u0, u1, h0, h1, nac0, nac1, v0, v1, dt, 6, **kw)
+        r_ref = u1.conj().T @ w1.conj().T @ expm(-1j * big_h * dt) @ w0 @ u0
+        assert np.max(np.abs(r - r_ref)) <= 1e-12
+        assert np.max(np.abs(c2 - r_ref @ c)) <= 1e-12
+
+
+@pytest.mark.parametrize("interpolation", ["midpoint", "endpoint"])
+def test_nacdr_frozen_nuclei_pin_the_orientation_of_u(interpolation):
+    """v = 0, constant H, U1 = U0 diag(e^{i phi}) with a non-trivial complex U0 (pre-registered
+    at 1e-12): c' = U1^dagger exp(-i H dt) U0 c."""
+    from gqteashmd.dynamics.propagators import propagate_diagonal
+
+    rng = np.random.default_rng(560)
+    n, f, dt = 3, 2, 0.7
+    for _ in range(5):
+        h = _random_hermitian(rng, n, scale=0.3)
+        u0 = _random_unitary(rng, n)
+        u1 = u0 * _random_phases(rng, n)
+        _, nac, _, c = _rand_setup(rng, n=n, f=f)
+        v = np.zeros(f)
+        kw = _diag_kw("nacdr", interpolation=interpolation)
+        c2, r, _ = propagate_diagonal(c, u0, u1, h, h, nac, nac, v, v, dt, 4, **kw)
+        r_ref = u1.conj().T @ expm(-1j * h * dt) @ u0
+        assert np.max(np.abs(r - r_ref)) <= 1e-12
+        assert np.max(np.abs(c2 - r_ref @ c)) <= 1e-12
+
+
 def test_overlap_coupling_needs_overlaps():
     from gqteashmd.dynamics.propagators import propagate_diagonal
 
