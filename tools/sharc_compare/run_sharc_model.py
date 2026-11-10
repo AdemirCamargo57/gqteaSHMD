@@ -34,10 +34,12 @@ Example (WSL):
 from __future__ import annotations
 
 import argparse
+import contextlib
 import math
 import os
 import re
 import shutil
+import signal
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -48,6 +50,8 @@ BOHR_IN_ANGSTROM = 0.529177210903
 DALTON_IN_ME = 1822.888486209
 AU_TIME_IN_FS = 0.024188843265857
 PROVIDERS = ("analytical", "fast")
+# The environment is set up as the manual recommends (2.2.2): source bin/sharcvars.sh.
+SHARC_X_COMMAND = 'source "$SHARC/sharcvars.sh" > /dev/null && exec "$SHARC/sharc.x" input'
 
 
 @dataclass(frozen=True)
@@ -318,14 +322,54 @@ def write_trajectory(
     script.chmod(0o755)
 
 
-def _environment(sharc_home: Path) -> dict[str, str]:
+def sharc_environment(sharc_home: Path) -> dict[str, str]:
+    """The environment for running SHARC programs: ``$SHARC`` = ``<home>/bin`` and SHARC's own
+    ``PYTHONPATH`` (replaced, not extended: SHARC's conda environment must not see ours)."""
     env = dict(os.environ)
-    env["SHARC"] = str(sharc_home / "bin")
-    # PYTHONPATH is replaced, not extended: SHARC's own conda environment must not see ours.
-    env["PYTHONPATH"] = f"{sharc_home / 'lib'}:{sharc_home / 'pysharc'}"
+    env["SHARC"] = str(Path(sharc_home) / "bin")
+    env["PYTHONPATH"] = f"{Path(sharc_home) / 'lib'}:{Path(sharc_home) / 'pysharc'}"
     env.pop("SHARC_LOG", None)
     env.pop("SHARCLOG", None)
     return env
+
+
+KILL_WAIT_S = 30.0  # how long to wait for a killed process group's pipes to close
+
+
+def run_in_session(
+    argv: list[str], *, cwd: Path, env: dict[str, str], timeout: float, what: str
+) -> subprocess.CompletedProcess:
+    """Run ``argv`` in its own session (process group) and capture its output.
+
+    On a timeout the whole process group gets SIGKILL and ``RuntimeError`` (``"<what> did not
+    finish within <timeout> s in <cwd>"``) is raised; on any other exception (e.g.
+    KeyboardInterrupt) the group is killed before it propagates. A group that is already gone
+    is not an error.
+    """
+    proc = subprocess.Popen(
+        argv,
+        cwd=cwd,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        start_new_session=True,
+    )
+    try:
+        stdout, stderr = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(proc.pid, signal.SIGKILL)
+        with contextlib.suppress(subprocess.TimeoutExpired):
+            proc.communicate(timeout=KILL_WAIT_S)
+        raise RuntimeError(f"{what} did not finish within {timeout} s in {cwd}") from None
+    finally:
+        if proc.poll() is None:
+            with contextlib.suppress(ProcessLookupError):
+                os.killpg(proc.pid, signal.SIGKILL)
+            with contextlib.suppress(subprocess.TimeoutExpired):
+                proc.wait(timeout=KILL_WAIT_S)
+    return subprocess.CompletedProcess(argv, proc.returncode, stdout, stderr)
 
 
 # --- parsers --------------------------------------------------------------------------------
@@ -496,14 +540,12 @@ def run(
         x_exit=x_exit,
     )
     # The environment is set up as the manual recommends (2.2.2): source bin/sharcvars.sh.
-    command = 'source "$SHARC/sharcvars.sh" > /dev/null && exec "$SHARC/sharc.x" input'
-    proc = subprocess.run(
-        ["bash", "-c", command],
+    proc = run_in_session(
+        ["bash", "-c", SHARC_X_COMMAND],
         cwd=work_dir,
-        env=_environment(sharc_home),
-        capture_output=True,
-        text=True,
+        env=sharc_environment(sharc_home),
         timeout=timeout_s,
+        what="sharc.x",
     )
     if proc.returncode != 0:
         raise RuntimeError(
