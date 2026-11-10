@@ -1,7 +1,7 @@
 # Implementation Strategy for a Surface-Hopping MD Program (PySCF first, more backends later)
 
 **Working name:** `gqteashmd` (rename as you like)
-**Reference code:** SHARC 4.1, local copy at `\\wsl.localhost\OracleLinux_9_5\home\ajc\sharc4-4.1`
+**Reference code:** SHARC 4.1, installed at `\\wsl.localhost\OracleLinux_9_5\home\ajc\sharc4-4.1`. **Clean room (R9):** SHARC is only *executed*, as a black box, from `tools/sharc_compare/`. Never open, read or copy any file of the installation (sources, scripts, test inputs, documentation). Input formats and equations come from the public manual and tutorial at <https://sharc-md.org>; SHARC's behaviour is learned by black-box comparison of its output.
 **Date:** 2026-11-06 (revised 2026-11-06: PySCF-first decision)
 
 > **Decision (2026-11-06): PySCF is the only electronic-structure backend for the first release.**
@@ -35,7 +35,7 @@
 
 ## 1. What SHARC 4.1 actually contains (scope baseline)
 
-This comes from inspecting the local installation, not from memory of the manual.
+This scope description was written before the clean-room decision (R9, §10). It only names what SHARC contains: **do not open the files it lists.** Keywords, file formats and equations come from the public SHARC manual and tutorial at <https://sharc-md.org>, and behaviour from executing SHARC (black box, `tools/sharc_compare/`).
 
 | Layer | SHARC 4.1 location | Notes |
 |---|---|---|
@@ -45,9 +45,9 @@ This comes from inspecting the local installation, not from memory of the manual
 | Interfaces | `bin/SHARC_*.py` (~40: GAUSSIAN, PYSCF, ORCA, MOLCAS, LVC, ANALYTICAL, QMMM, SCHNARC/SPAINN ML, …) | |
 | Overlaps | `wfoverlap/` (Fortran, Plasser et al.) | Determinant-based overlaps; used by the Gaussian interface |
 | Pre/post-processing | `bin/wigner.py`, `excite.py`, `setup_traj.py`, `data_extractor.x`, `populations.py`, `diagnostics.py`, `make_fit.py`, … | |
-| Tests | `tests/INPUT/*` (+ `RESULTS/`), `tests/interface/test_*.py` (pytest) | Includes **`PYSCF_ddr`** and **`GAUSSIAN_overlap`**, both directly reusable for you |
+| Tests | `tests/INPUT/*` (+ `RESULTS/`), `tests/interface/test_*.py` (pytest) | Includes **`PYSCF_ddr`** and **`GAUSSIAN_overlap`**; usable only by executing SHARC on them and comparing outputs (never copy their files) |
 
-**Dynamics option space** (keywords parsed in `source/input.F90`):
+**Dynamics option space** (keywords as documented in the public SHARC manual):
 
 - **Methods:** `method tsh | scp` (scp = self-consistent potential: Ehrenfest, CSDM).
 - **Representations:** `surf sharc | diagonal | fish | mch | ehrenfest`.
@@ -92,7 +92,7 @@ This comes from inspecting the local installation, not from memory of the manual
 
 1. **Python core, compiled kernels only on evidence.** Per-step dynamics cost scales as O(N_states³ · N_substeps) plus O(N_atoms · N_states²). That is trivial next to a TDDFT gradient. Use Numba only for the analytic/LVC backends and for overlap kernels if profiling demands it.
 2. **Strategy objects for every algorithmic choice.** Every SHARC keyword family in §1 becomes an interface with registered implementations: `Integrator`, `ElectronicPropagator`, `HoppingScheme`, `VelocityAdjuster`, `DecoherenceScheme`, `PhaseTracker`. Configuration selects implementations by name. This makes "same as SHARC except X" experiments trivial, and those experiments are your main debugging tool.
-3. **Atomic units internally, everywhere.** Convert only at I/O boundaries. Use one `constants.py`. Check its values against CODATA *and* against `sharc4-4.1/lib/constants.py`: small differences in amu→a.u. or Bohr→Å conversions show up as drift in trajectory comparisons.
+3. **Atomic units internally, everywhere.** Convert only at I/O boundaries. Use one `constants.py`. Check its values against CODATA. Small differences from SHARC's amu→a.u. or Bohr→Å conversions show up as drift in trajectory comparisons; find them by black-box comparison of SHARC output, never by reading SHARC files.
 4. **An immutable per-step record plus a mutable trajectory state.** Every step yields a frozen `StepRecord` (geometry, velocities, energies, matrices, coefficients, active state, random number used, hop decision). That serves output, restart *and* testing.
 5. **The backend owns the wavefunction; the driver owns the dynamics.** The driver never touches MO coefficients. It asks for quantities (energies, gradients, NACs, overlaps, dipoles, SOC) and receives arrays.
 6. **Determinism by construction.** Use one seeded `numpy.random.Generator` per trajectory, serialized into the restart file. Log every random number consumed. Also support a "replay" mode that reads random numbers from a file, which is useful for SHARC comparisons (§5.4).
@@ -316,6 +316,8 @@ Estimated effort per additional native backend once the core is mature:
 
 ### 4.1 Main loop (per nuclear step Δt)
 
+Generic outline only. **gqteashmd's step order is the one in USER_MANUAL.md §8.12** (velocity completed before the electronic propagation and the hop), not the order of steps 7–10 below.
+
 ```
 given: R(t), v(t), a(t), c(t), active state λ, previous electronic data E(t), U(t), S, ...
 
@@ -334,7 +336,7 @@ given: R(t), v(t), a(t), c(t), active state λ, previous electronic data E(t), U
 11. checks: total-energy drift, norm of c, overlap sanity; thermostat; output; restart
 ```
 
-The order of steps 6–10 (hop *before* the velocity half-step, and when to recompute gradients) differs between codes. Pin it down by reading `source/main.F90` and `nuclear.F90` and match SHARC exactly in "SHARC-compatibility mode". Otherwise trajectory-level comparisons will diverge for trivial reasons.
+The order of steps 6–10 (hop *before* the velocity half-step, and when to recompute gradients) differs between codes. **Clean-room note (P7a-1):** SHARC's source is not read (never copy or adapt it). The order used is **our documented step order**, written in USER_MANUAL.md §8.12 and the P7a-1 plan's Method reference: positions, evaluate, velocity completed with the old active gradient, electronic propagation, hopping probabilities and one random number, hop with the velocity adjustment at fixed positions, decoherence, new active gradient. **Differences from SHARC are measured by black-box comparison** (executing SHARC and comparing its output; USER_MANUAL.md §8.14.1(c)), e.g. the end-point substep interpolation and the EDC convention found that way. Otherwise trajectory-level comparisons could diverge for trivial reasons.
 
 ### 4.2 Representation handling (MCH versus diagonal): design for it from day 1
 
@@ -365,7 +367,7 @@ Unit tests: norm conservation to machine precision, time-reversibility for the e
 
 ### 4.5 Decoherence
 
-- **EDC** (energy-based decoherence; Granucci & Persico, JCP 2007), with parameter C = 0.1 Eh as in SHARC's `decoherence_param`. Simple, robust, and the most common in SHARC studies.
+- **EDC** (energy-based decoherence; Granucci & Persico, JCP 2007), with parameter C = 0.1 Eh as in SHARC's `decoherence_param`. Simple, robust, and the most common in SHARC studies. **Two conventions exist:** SHARC (public manual §8.7.1, eq. 8.25) damps the amplitudes by exp(−Δt/2τ), half the Granucci–Persico rate exp(−Δt/τ) (as reproduced in Runeson, arXiv:2507.18381, eqs. 44–45). gqteashmd offers both (`edc_convention = "sharc"`, the default, or `"granucci_persico"`); the factor of 2 was found by black-box comparison.
 - **A-FSSH** (Jain, Alguire & Subotnik, JCTC 2016): auxiliary position/momentum moments plus collapse/reset. Higher payoff but more state and more bugs. Implement only after EDC is validated.
 - Decoherence on/off must be a toggle in every validation study. Agreement *with* EDC but not without it (or vice versa) localizes bugs quickly.
 
@@ -388,7 +390,7 @@ You need SOC matrix elements between singlet and triplet *states*, consistent wi
 
 ### 4.8 Initial conditions and excitation
 
-- **Wigner sampling** from harmonic frequencies and normal modes, from a Gaussian `.fchk`/`freq` log or a PySCF Hessian. Pay attention to mass-weighting, linear molecules, and imaginary frequencies, and handle low-frequency modes the way `wigner.py` does (temperature option). This is an area where reading SHARC's `wigner.py` *behaviour* (not copying code) is useful.
+- **Wigner sampling** from harmonic frequencies and normal modes, from a Gaussian `.fchk`/`freq` log or a PySCF Hessian. Pay attention to mass-weighting, linear molecules, and imaginary frequencies, and handle low-frequency modes the way `wigner.py` does (temperature option). Compare with the output of SHARC's `wigner.py`, executed as a black box from `tools/sharc_compare/` (never read its code).
 - **Excitation selection** (`excite.py` equivalent): compute vertical excitation energies and oscillator strengths for each initial geometry. Select the starting state stochastically with acceptance w/w_max over the in-window pairs, where w = f/ΔE² (SHARC 4.1 `excite.py`-compatible; measured in P6 by black-box maximum likelihood: ΔE exponent −1.99 ± 0.05, f exponent 0.99 ± 0.03) or w = f (the oscillator-strength convention of Barbatti et al. 2007); optionally within an energy window, or delta-pulse style, and write the chosen state and coefficients into each trajectory's config.
 - Compare your sampled distributions (bond-length, kinetic-energy, and excitation-energy histograms) against `wigner.py` + `excite.py` output from the *same* frequency file before running any dynamics.
 
@@ -400,22 +402,22 @@ You need SOC matrix elements between singlet and triplet *states*, consistent wi
 
 | Level | What | Tools | Runtime |
 |---|---|---|---|
-| Unit | Pure functions: unit conversions, propagators, rescaling, phase alignment, state index maps, parsers (Gaussian log/fchk/rwf fixtures; SHARC `QM.out` fixtures from `tests/interface/inputs`) | `pytest`, `hypothesis` (property tests: energy and momentum conservation, unitarity, norm) | seconds |
+| Unit | Pure functions: unit conversions, propagators, rescaling, phase alignment, state index maps, parsers (Gaussian log/fchk/rwf fixtures; SHARC `QM.out` files produced by executing SHARC from `tools/sharc_compare/`, never copied from the installation) | `pytest`, `hypothesis` (property tests: energy and momentum conservation, unitarity, norm) | seconds |
 | Component | Backend vs finite differences: gradients vs FD energies; NACs vs FD overlaps; overlap matrix unitarity at small Δt | `pytest -m slowish` | minutes |
 | Cross-code single point | Same `QM.in` → your backend vs `SHARC_PYSCF.py` / `SHARC_GAUSSIAN.py` | `sharc_external` + comparison script | minutes |
 | Short-trajectory | 10–50 fs, same initial conditions, comparison per step | `gqteashmd compare-sharc` | min–hours |
 | Ensemble/statistical | Populations, hop times, branching ratios with confidence intervals | job arrays + `analysis/` | hours–days |
-| Regression | SHARC's own `tests/INPUT/PYSCF_ddr`, `GAUSSIAN_overlap`, `LVC_*`, `ANALYTICAL_overlap` inputs | CI (cheap ones) + nightly (ab initio) | varies |
+| Regression | SHARC executed on its own test cases (`PYSCF_ddr`, `GAUSSIAN_overlap`, `LVC_*`, `ANALYTICAL_overlap`) from `tools/sharc_compare/`; only the outputs are compared | CI (cheap ones) + nightly (ab initio) | varies |
 
 ### 5.2 Model-system benchmarks (no electronic-structure noise)
 
 1. **Tully's three 1D models** (simple avoided crossing, dual avoided crossing, extended coupling with reflection). Reproduce transmission/reflection probabilities versus incoming momentum, against the published FSSH curves and against exact wavepacket results. Use ≥ 2000 trajectories per momentum. These catch most propagator, hopping and rescaling bugs.
-2. **SHARC's `SHARC_ANALYTICAL` interface** (`tests/INPUT/ANALYTICAL_overlap`, `examples/SHARC_ANALYTICAL`). Run the same analytic potential in SHARC and in your code.
-3. **LVC models** (`tests/INPUT/LVC_overlap`, `LVC_pysharc`, `examples/SHARC_LVC`, plus the LVC in the SHARC tutorial). These are cheap, multi-dimensional, and include SOC, so they are the **primary SHARC-equivalence benchmark** for the diagonal representation, gradcorrect, phase tracking, and ISC.
+2. **SHARC's `SHARC_ANALYTICAL` interface.** Run the same analytic potential in SHARC (executed as a black box, with inputs written from the public manual) and in your code.
+3. **LVC models** (as in the public SHARC tutorial; SHARC executed as a black box). These are cheap, multi-dimensional, and include SOC, so they are the **primary SHARC-equivalence benchmark** for the diagonal representation, gradcorrect, phase tracking, and ISC.
 
 ### 5.3 Electronic-structure equivalence (single geometries)
 
-Compare on the geometries in `tests/INPUT/PYSCF_ddr/geom` and `GAUSSIAN_overlap/geom`, plus 2–3 of your group's molecules:
+Compare on our own test geometries (e.g. `tests/data/ethylene.xyz`), plus 2–3 of your group's molecules (SHARC executed on them as a black box; never take geometries from SHARC's test inputs):
 
 | Quantity | Target tolerance (same method/basis/grid) |
 |---|---|
@@ -563,11 +565,11 @@ dependencies:
 1. **Decide two things now:** licence (GPL-3 vs clean-room/permissive, R9) and whether ISC is a must-have (R1). Both shape the architecture and the roadmap.
 2. **Create the environment** in WSL (`micromamba create -f environment.yml`), the repo skeleton (§2.2), and CI.
 3. **Generate the SHARC reference set**, versioned, from the SHARC 4.1 install:
-   - run `tests/INPUT/{ANALYTICAL_overlap, LVC_overlap, LVC_pysharc, PYSCF_ddr}` and archive their outputs (`GAUSSIAN_overlap` and `ORCA_overlap` can wait until phase 7);
+   - execute SHARC on its test cases `ANALYTICAL_overlap`, `LVC_overlap`, `LVC_pysharc`, `PYSCF_ddr` (black box: run them, never open their input files) and archive their outputs (`GAUSSIAN_overlap` and `ORCA_overlap` can wait until phase 7);
    - run a 1000-trajectory LVC ensemble (with and without SOC) and archive the populations;
    - produce `QM.in`/`QM.out` pairs from `SHARC_PYSCF.py` at 3–5 geometries.
-4. **Write the data model and `QM.out` parser first.** Everything else plugs into it, and it is immediately testable against the `tests/interface/inputs` fixtures.
-5. **Read (not copy) these SHARC sources** to pin down the step order and conventions you must match in compatibility mode: `source/main.F90`, `nuclear.F90`, `electronic.f90`, `tsh_tu.f90`, `decoherence_afssh.f90`, `lib/SHARC_INTERFACE.py` (request logic), `bin/SHARC_PYSCF.py` (PySCF calls and conventions). Leave `bin/SHARC_GAUSSIAN.py` / `SHARC_ORCA.py` for phase 7. Also read `doc/SHARC_Manual.pdf` (dynamics theory chapter) and `doc/SHARC_interface_development_guide.pdf`.
+4. **Write the data model and `QM.out` parser first.** Everything else plugs into it, and it is immediately testable against the `QM.out` files produced in step 3 (format from the public manual).
+5. **Clean room: SHARC is executed, never read.** Do not open any file under the SHARC installation (Fortran sources, Python interfaces, test inputs, or the documents shipped with it). Take input formats, keywords and equations from the public SHARC manual and tutorial at <https://sharc-md.org>, and implement the methods from the literature (§11). Pin down SHARC's step order and conventions only by black-box comparison: run SHARC from `tools/sharc_compare/` on the same model or molecule and compare its output with ours. P7a-1 found the end-point substep interpolation and the EDC convention that way (USER_MANUAL.md §8.14.1(c)).
 
 ---
 
@@ -581,6 +583,6 @@ dependencies:
 - S. Mai, P. Marquetand, L. González, *Int. J. Quantum Chem.* **115**, 1215 (2015): SHARC hopping in arbitrary representations.
 - S. Mai, P. Marquetand, L. González, *WIREs Comput. Mol. Sci.* **8**, e1370 (2018): SHARC overview.
 - F. Plasser et al., *J. Chem. Theory Comput.* **12**, 1207 (2016): efficient wavefunction overlaps (wfoverlap).
-- SHARC 4.1 manual and interface development guide: `sharc4-4.1/doc/`.
+- SHARC 4.1 manual and tutorial: the public versions at <https://sharc-md.org> (not the copies inside the installation, which is never opened).
 
-*(Check citation details against the SHARC bibliography in `sharc4-4.1/doc/SHARC_papers.bib` before you cite them in group documents.)*
+*(Check citation details against the publishers' records before you cite them in group documents.)*
