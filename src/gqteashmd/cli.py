@@ -8,6 +8,7 @@ import os
 import signal
 import sys
 import threading
+import time
 from contextlib import ExitStack
 from pathlib import Path
 from typing import Any
@@ -17,9 +18,13 @@ import numpy as np
 from gqteashmd import __version__
 from gqteashmd.chem.xyz import parse_xyz
 from gqteashmd.config.loader import load_config
-from gqteashmd.config.model_dynamics import load_model_dynamics
+from gqteashmd.config.model_dynamics import LvcDynamicsInput, load_model_dynamics
 from gqteashmd.core.units import ANGSTROM_TO_BOHR
-from gqteashmd.dynamics.ensemble import run_model_ensemble
+from gqteashmd.dynamics.ensemble import (
+    lvc_initial_conditions,
+    run_model_ensemble,
+    run_population_ensemble,
+)
 from gqteashmd.electronic.base import MoleculeSpec, Request
 from gqteashmd.electronic.factory import make_backend
 from gqteashmd.errors import ConfigError, ProjectError, ShmdError
@@ -307,6 +312,8 @@ def _cmd_model_dynamics(args: argparse.Namespace) -> int:
     cfg = load_model_dynamics(args.input)
     if args.json is not None:
         _check_json_output(args.json)
+    if isinstance(cfg, LvcDynamicsInput):
+        return _run_lvc_dynamics(args, cfg)
     try:
         model = cfg.build_model()
         options = cfg.build_options()
@@ -362,6 +369,85 @@ def _cmd_model_dynamics(args: argparse.Namespace) -> int:
     return 0
 
 
+def _run_lvc_dynamics(args: argparse.Namespace, cfg: LvcDynamicsInput) -> int:
+    try:
+        model = cfg.build_model()
+        options = cfg.build_options()
+        initial = cfg.initial_index(model)
+    except ValueError as exc:
+        raise ConfigError(f"Invalid model-dynamics input {args.input}: {exc}") from exc
+    ens = cfg.ensemble
+    q0, v0 = lvc_initial_conditions(model, ens.n_trajectories, ens.seed, cfg.initial.sampling)
+    started = time.perf_counter()
+    try:
+        result = run_population_ensemble(
+            model,
+            q0,
+            v0,
+            initial_state=initial,
+            options=options,
+            seed=ens.seed,
+            n_steps=ens.n_steps,
+            record_every=ens.record_every,
+            workers=ens.workers,
+        )
+    except ValueError as exc:
+        raise ShmdError(
+            f"model-dynamics run failed inside a trajectory: {exc} "
+            "(check the model and the [dynamics] settings)"
+        ) from exc
+    elapsed = time.perf_counter() - started
+    print(
+        f"LVC dynamics: {cfg.initial.state}, {ens.n_trajectories} trajectories, "
+        f"{ens.n_steps} steps of {options.dt_au} a.u."
+    )
+    print(f"final spin-free MCH populations at t = {result.times_au[-1]:.1f} a.u.:")
+    print(f"{'state':<8}{'classical':>12}{'quantum':>12}")
+    for i, label in enumerate(result.labels_spin_free):
+        print(
+            f"{label:<8}{result.mch_spin_free_classical[-1, i]:>12.4f}"
+            f"{result.mch_spin_free_quantum[-1, i]:>12.4f}"
+        )
+    print(
+        f"hops: {result.n_hops}, frustrated hops: {result.n_frustrated}, "
+        f"energy_drift (excluded): {result.n_energy_drift}, elapsed: {elapsed:.1f} s"
+    )
+    if args.json is not None:
+        data = {
+            "kind": "lvc_populations",
+            "schema_version": 1,
+            "model": cfg.model.model_dump(),
+            "initial": cfg.initial.model_dump(),
+            "dynamics": cfg.dynamics.model_dump(),
+            "ensemble": ens.model_dump(),
+            "times_au": result.times_au.tolist(),
+            "labels_expanded": list(result.labels_expanded),
+            "labels_spin_free": list(result.labels_spin_free),
+            "populations": {
+                name: getattr(result, name).tolist()
+                for name in (
+                    "diag_classical",
+                    "diag_quantum",
+                    "mch_classical",
+                    "mch_quantum",
+                    "mch_spin_free_classical",
+                    "mch_spin_free_quantum",
+                )
+            },
+            "counts": {
+                "n_trajectories": result.n_trajectories,
+                "n_energy_drift": result.n_energy_drift,
+                "n_included": result.n_trajectories - result.n_energy_drift,
+                "n_hops": result.n_hops,
+                "n_frustrated": result.n_frustrated,
+            },
+            "elapsed_s": elapsed,
+        }
+        write_json_atomic(args.json, data)
+        print(f"Results written to {args.json}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="gqteashmd", description="Surface-hopping MD workflow")
     parser.add_argument("--version", action="version", version=f"gqteashmd {__version__}")
@@ -401,7 +487,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_sp.set_defaults(func=_cmd_single_point)
 
     p_md = sub.add_parser(
-        "model-dynamics", help="run a surface-hopping ensemble on a 1D analytic model"
+        "model-dynamics",
+        help="run a surface-hopping ensemble on an analytic model (Tully 1D or LVC)",
     )
     p_md.add_argument("input", type=Path)
     p_md.add_argument("--json", type=Path, help="write the branching results to this JSON file")

@@ -18,6 +18,7 @@ from pydantic import (
     model_validator,
 )
 
+from gqteashmd.dynamics.lvc import LVCModel
 from gqteashmd.dynamics.models import (
     ElectronicModel,
     TullyDualAvoidedCrossing,
@@ -25,6 +26,7 @@ from gqteashmd.dynamics.models import (
     TullySimpleAvoidedCrossing,
 )
 from gqteashmd.dynamics.options import DynamicsOptions
+from gqteashmd.dynamics.spin import expanded_states
 from gqteashmd.errors import ConfigError
 
 MODELS: dict[str, type] = {
@@ -99,6 +101,9 @@ class DynamicsSection(_Section):
     substep_interpolation: Literal["midpoint", "endpoint"] = _OPTION_DEFAULTS[
         "substep_interpolation"
     ]
+    coupling: Literal["nacdr", "overlap"] = _OPTION_DEFAULTS["coupling"]
+    gradient_transformation: Literal["ngt", "none"] = _OPTION_DEFAULTS["gradient_transformation"]
+    eselect_Eh: float | None = Field(default=_OPTION_DEFAULTS["eselect_Eh"], gt=0)
 
 
 class EnsembleSection(_Section):
@@ -139,7 +144,62 @@ class ModelDynamicsInput(_Section):
         return DynamicsOptions(**self.dynamics.model_dump())
 
 
-def load_model_dynamics(path: Path) -> ModelDynamicsInput:
+class LvcModelSection(_Section):
+    name: Literal["lvc"]
+    template: str
+    spin_orbit: bool = True
+
+
+class LvcInitialSection(_Section):
+    state: str = Field(pattern=r"^[ST][0-9]+$")
+    ms: Literal[-1, 0, 1] | None = None
+    sampling: Literal["wigner", "fixed"] = "wigner"
+
+
+class LvcEnsembleSection(_Section):
+    n_trajectories: int = Field(default=100, ge=1)
+    seed: int = Field(default=12345, ge=0)
+    n_steps: int = Field(default=1000, ge=1)
+    record_every: int = Field(default=10, ge=1)
+    workers: int = Field(default=1, ge=1)
+
+
+class LvcDynamicsInput(_Section):
+    """``[model] name = "lvc"``: population ensembles on an LVC model (P7a-2)."""
+
+    model: LvcModelSection
+    initial: LvcInitialSection
+    dynamics: DynamicsSection = DynamicsSection()
+    ensemble: LvcEnsembleSection = LvcEnsembleSection()
+
+    def build_model(self) -> LVCModel:
+        path = Path(self.model.template)
+        try:
+            return LVCModel.from_template(path, spin_orbit=self.model.spin_orbit)
+        except (OSError, ValueError) as exc:
+            detail = exc.strerror if isinstance(exc, OSError) and exc.strerror else exc
+            raise ConfigError(f"Cannot use the LVC template {path}: {detail}") from exc
+
+    def build_options(self) -> DynamicsOptions:
+        return DynamicsOptions(**self.dynamics.model_dump())
+
+    def initial_index(self, model: LVCModel) -> int:
+        """Expanded (canonical) index of ``initial.state`` with ``initial.ms``."""
+        label = self.initial.state
+        mult = 1 if label[0] == "S" else 3
+        index = int(label[1:]) - (0 if mult == 1 else 1)
+        if mult == 1 and self.initial.ms is not None:
+            raise ValueError(f"initial.ms is only for triplet states; {label} is a singlet")
+        ms = 0 if mult == 1 else (self.initial.ms if self.initial.ms is not None else 0)
+        for i, st in enumerate(expanded_states(model.state_counts)):
+            if (st.multiplicity, st.index, st.ms) == (mult, index, ms):
+                return i
+        raise ValueError(
+            f"initial.state {label} does not exist in the model (counts {model.state_counts})"
+        )
+
+
+def load_model_dynamics(path: Path) -> ModelDynamicsInput | LvcDynamicsInput:
     path = Path(path)
     try:
         raw: dict[str, Any] = tomllib.loads(path.read_text(encoding="utf-8-sig"))
@@ -152,6 +212,15 @@ def load_model_dynamics(path: Path) -> ModelDynamicsInput:
     except tomllib.TOMLDecodeError as exc:
         raise ConfigError(f"Input file {path} is not valid TOML: {exc}") from exc
     try:
+        model_table = raw.get("model")
+        if isinstance(model_table, dict) and model_table.get("name") == "lvc":
+            template = model_table.get("template")
+            if isinstance(template, str):
+                # resolved against the input file's directory (expanduser first)
+                model_table["template"] = str(
+                    (path.resolve().parent / Path(template).expanduser()).resolve()
+                )
+            return LvcDynamicsInput.model_validate(raw)
         return ModelDynamicsInput.model_validate(raw)
     except ValidationError as exc:
         lines = [f"Invalid input file {path}:"]
