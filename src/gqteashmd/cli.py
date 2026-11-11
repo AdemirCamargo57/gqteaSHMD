@@ -396,6 +396,12 @@ def _run_lvc_dynamics(args: argparse.Namespace, cfg: LvcDynamicsInput) -> int:
             f"model-dynamics run failed inside a trajectory: {exc} "
             "(check the model and the [dynamics] settings)"
         ) from exc
+    if result.n_energy_drift == result.n_trajectories:
+        # every average would be NaN (not valid JSON): no populations, no JSON file
+        raise ShmdError(
+            f"all {result.n_trajectories} trajectories ended with energy_drift "
+            "(reduce dynamics.dt_au or raise dynamics.energy_drift_limit_au)"
+        )
     elapsed = time.perf_counter() - started
     print(
         f"LVC dynamics: {cfg.initial.state}, {ens.n_trajectories} trajectories, "

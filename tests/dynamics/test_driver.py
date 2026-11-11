@@ -347,20 +347,37 @@ def test_hamiltonian_becoming_diagonal_keeps_tracking_u():
     assert abs(np.linalg.norm(new.c) - 1.0) <= 1e-12
 
 
-def test_constant_off_diagonal_coupling_runs_in_the_diagonal_basis():
-    """A constant MCH-basis coupling is a constant diabatic SOC only where the NAC vanishes, so
-    the run stays at x < -7 (through the coupling region from x = -3 this model is not
-    conservative: measured drift 8.6e-3 Eh; here 2e-12 Eh)."""
-    model = _SocModel("always")
+class _DiabaticSocModel(TullySimpleAvoidedCrossing):
+    """Tully SAC plus a constant complex Hermitian DIABATIC coupling Sigma = [[0, 0.005 i],
+    [-0.005 i, 0]]: H^MCH = diag(E) + W^T Sigma W with the adiabatic vectors W, so the total
+    H = V + Sigma is a conservative model with a non-diagonal MCH Hamiltonian everywhere."""
+
+    SIGMA = np.array([[0.0, 0.005j], [-0.005j, 0.0]])
+
+    def evaluate(self, q, previous):
+        snap = super().evaluate(q, previous)
+        w = snap.vectors
+        coupled = w.T @ self.SIGMA @ w
+        h = np.diag(snap.energies).astype(complex) + 0.5 * (coupled + coupled.conj().T)
+        return replace(snap, hamiltonian=h)
+
+
+def test_constant_diabatic_coupling_through_the_crossing_conserves_energy():
+    """From x = -6 to x = +6 with k = 20 (1200 steps of dt = 1, hopping off) through the
+    coupling region of the SAC with a constant diabatic coupling: U is not None at every step
+    and max |E_tot - E_tot(0)| < 1e-5 Eh (bound fixed before the first run)."""
+    model = _DiabaticSocModel()
     options = DynamicsOptions(dt_au=1.0, hopping="none")
-    state = _start(model, x0=-10.0)
+    state = _start(model, x0=-6.0, active=1)
     assert state.u is not None
-    _, outcome, records = _run(
-        model, state, options, GeneratorSource(np.random.default_rng(0)), max_steps=300
+    final, outcome, records = _run(
+        model, state, options, GeneratorSource(np.random.default_rng(0)), max_steps=1200
     )
     assert outcome is Outcome.FINISHED
+    assert final.q[0] > 5.0  # the run crossed the coupling region around x = 0
     assert all(r.u is not None for r in records)
-    assert max(abs(r.e_total - state.e_total_initial) for r in records) < 1e-5
+    drift = max(abs(r.e_total - state.e_total_initial) for r in records)
+    assert drift < 1e-5, drift
 
 
 # ---- P7a-2: the diagonal representation on the LVC fixtures (Method reference 4-12) ----
@@ -618,3 +635,66 @@ def test_soc_step_follows_the_documented_order():
     assert np.array_equal(rec.energies, snap1.energies)
     assert np.array_equal(rec.energies_diag, e1)
     assert rec.e_total == float(e1[lam]) + kin
+
+
+# ---- independent end-to-end check of the diagonal-basis propagation (final review probe 1) ----
+
+REFERENCE_SUBSTEPS_PER_AU = 20
+DIABATIC_CHECK_TIME_AU = 100.0
+# fourth-order commutator-free Magnus integrator with two exponentials (Gauss nodes c1 < c2):
+# c(t + h) = exp(-i h (A1 H1 + A2 H2)) exp(-i h (A2 H1 + A1 H2)) c(t), H_k = H(t + c_k h)
+_GAUSS_NODES = (0.5 - np.sqrt(3.0) / 6.0, 0.5 + np.sqrt(3.0) / 6.0)
+_CF4_A1, _CF4_A2 = (3.0 - 2.0 * np.sqrt(3.0)) / 12.0, (3.0 + 2.0 * np.sqrt(3.0)) / 12.0
+
+
+def _expm_hermitian(h: np.ndarray, t: float) -> np.ndarray:
+    w, v = np.linalg.eigh(h)
+    return (v * np.exp(-1j * w * t)) @ v.conj().T
+
+
+@cache
+def _diabatic_error(coupling: str, dt: float) -> float:
+    """Max over steps of |T U c_diag - c_ref| up to a global phase, where c_ref integrates the
+    diabatic TDSE (``model.diabatic_hamiltonian``) along the straight lines between the driver's
+    geometries (fourth-order Magnus, substeps of 1/REFERENCE_SUBSTEPS_PER_AU a.u.). lvc_soc,
+    Wigner sample seed 7, start in S1, hopping and decoherence off."""
+    model = _lvc()
+    options = DynamicsOptions(dt_au=dt, hopping="none", decoherence="none", coupling=coupling)
+    state = _lvc_start(model)
+    assert state.u is not None
+    rng = GeneratorSource(np.random.default_rng(0))
+    c_ref = state.snapshot.vectors @ (state.u @ state.c)
+    n_sub = round(REFERENCE_SUBSTEPS_PER_AU * dt)
+    h_sub = dt / n_sub
+    worst = 0.0
+    for _ in range(round(DIABATIC_CHECK_TIME_AU / dt)):
+        new, _ = step(model, state, options, rng)
+        for m in range(n_sub):
+            h1, h2 = (
+                model.diabatic_hamiltonian(
+                    model.normal_coordinates(state.q + (m + node) / n_sub * (new.q - state.q))
+                )
+                for node in _GAUSS_NODES
+            )
+            c_ref = _expm_hermitian(_CF4_A2 * h1 + _CF4_A1 * h2, h_sub) @ c_ref
+            c_ref = _expm_hermitian(_CF4_A1 * h1 + _CF4_A2 * h2, h_sub) @ c_ref
+        c = new.snapshot.vectors @ (new.u @ new.c)
+        overlap = np.vdot(c_ref, c)
+        worst = max(worst, float(np.max(np.abs(c * np.conj(overlap) / abs(overlap) - c_ref))))
+        state = new
+    return worst
+
+
+@pytest.mark.parametrize("coupling", ["nacdr", "overlap"])
+def test_diagonal_propagation_matches_the_diabatic_schroedinger_equation(coupling):
+    """T U c_diag follows the exact diabatic amplitudes with dt^2 convergence: the error at
+    dt = 0.5 is < 1e-6 and the ratio error(1.0) / error(0.5) lies in [3, 5] (both bounds fixed
+    before the first run; the final review measured over 400 a.u. 6.19e-8 -> 1.55e-8 for nacdr,
+    3.75e-9 -> 9.37e-10 for overlap). Over 100 a.u.: 2.75e-8 -> 6.87e-9 (ratio 4.00) and
+    3.80e-9 -> 9.52e-10 (ratio 4.00). The first version used a second-order (midpoint)
+    reference with 100 substeps per a.u.; its own error (about 2e-10) moved the overlap ratio
+    to 4.996, so the reference was made fourth order after that number was seen (the bounds
+    are unchanged; 10, 20 and 40 substeps per a.u. agree to 4 digits)."""
+    coarse, fine = _diabatic_error(coupling, 1.0), _diabatic_error(coupling, 0.5)
+    assert fine < 1e-6, fine
+    assert 3.0 <= coarse / fine <= 5.0, (coarse, fine)

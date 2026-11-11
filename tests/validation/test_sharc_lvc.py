@@ -456,9 +456,9 @@ def _compare_hopping_off(model: LVCModel, sharc, state, records) -> dict:
     spin_sum = np.zeros((model.n_states, int(index.max()) + 1))
     spin_sum[np.arange(model.n_states), index] = 1.0
     gaps = np.diff(np.linalg.eigvalsh(sharc.hamiltonian[0]))
-    near = np.zeros(model.n_states, dtype=bool)  # columns with a neighbour closer than 1e-4 Eh
-    near[:-1] |= gaps < 1e-4
-    near[1:] |= gaps < 1e-4
+    near = np.zeros(model.n_states, dtype=bool)  # columns with a neighbour < CLUSTER_GAP_EH
+    near[:-1] |= gaps < CLUSTER_GAP_EH
+    near[1:] |= gaps < CLUSTER_GAP_EH
     out: dict[str, list] = {key: [] for key in ("dpop", "dE_path", "dE", "dU", "dU_sep")}
     out.update({"dU_near": [], "dU_from_sharc_H": [], "phase_drift": [], "D": []})
     out.update({"iU_sep": [], "iU_fixed_phase": [], "clusters_same": []})

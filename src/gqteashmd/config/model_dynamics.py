@@ -1,4 +1,5 @@
-"""Input file of ``gqteashmd model-dynamics``: 1D analytic model ensembles (no project)."""
+"""Input file of ``gqteashmd model-dynamics``: 1D analytic (Tully) model ensembles and LVC
+population ensembles (P7a-2); no project."""
 
 from __future__ import annotations
 

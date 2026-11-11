@@ -109,6 +109,37 @@ def test_soc_shape_is_checked():
         LVCModel(replace(params, soc=np.zeros((5, 5), dtype=complex)))
 
 
+def _with_frequency(params: LVCParameters, mode: int, omega: float) -> LVCParameters:
+    freqs = np.array(params.v0.frequencies_Eh, dtype=float)
+    freqs[mode] = omega
+    return replace(params, v0=replace(params.v0, frequencies_Eh=freqs))
+
+
+@pytest.mark.parametrize("omega", [1e-8, 5e-7, -1e-9])
+def test_near_zero_frequency_is_refused(omega):
+    """A frequency 0 < |omega| < ZERO_MODE_THRESHOLD_EH is an unzeroed external mode: refused,
+    naming the 1-based mode, its value and the constant (a negative one is refused anyway)."""
+    from gqteashmd.dynamics.lvc import ZERO_MODE_THRESHOLD_EH
+
+    params = _with_frequency(fx.soc_params(), 2, omega)  # mode 3 of V0.txt
+    expected = "mode 3" if omega > 0 else ">= 0"
+    with pytest.raises(ValueError, match=expected) as info:
+        LVCModel(params)
+    if omega > 0:
+        text = str(info.value)
+        assert f"{omega:.3e}" in text and f"{ZERO_MODE_THRESHOLD_EH:.0e}" in text
+        assert "exactly 0" in text and "V0.txt" in text
+
+
+def test_exact_zero_and_threshold_frequencies_are_accepted():
+    from gqteashmd.dynamics.lvc import ZERO_MODE_THRESHOLD_EH
+
+    params = fx.soc_params()
+    assert int(np.sum(np.asarray(params.v0.frequencies_Eh) == 0.0)) == 6  # unchanged fixture
+    LVCModel(params)
+    LVCModel(_with_frequency(params, 2, ZERO_MODE_THRESHOLD_EH))  # the bound itself is a mode
+
+
 def test_q_shape_is_checked():
     model = _model("lvc_singlets.template")
     with pytest.raises(ValueError, match="n_dof"):

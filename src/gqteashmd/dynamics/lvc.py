@@ -6,8 +6,9 @@ Domcke & Cederbaum, Adv. Chem. Phys. 57, 59 (1984)). Atomic units throughout; th
 
 Normal coordinates: Q_i = sqrt(omega_i) sum_j K_{j,i} sqrt(M_j) (r_j - r_ref,j), with K the
 orthogonal (3N, 3N) matrix of mass-weighted normal modes (columns = modes) and M_j the mass of
-the atom of Cartesian coordinate j. A mode with omega_i = 0 has Q_i = 0 exactly. The reference
-potential is V0 = sum_i omega_i Q_i^2 / 2.
+the atom of Cartesian coordinate j. A mode with omega_i = 0 has Q_i = 0 exactly; a frequency
+0 < omega_i < ZERO_MODE_THRESHOLD_EH is refused at construction (an unzeroed external mode).
+The reference potential is V0 = sum_i omega_i Q_i^2 / 2.
 
 Diabatic block of multiplicity m (real symmetric, n_m x n_m, shared by its M_s components):
 V_aa = V0 + epsilon_a + sum_i kappa_a,i Q_i, V_ab = sum_i lambda_ab,i Q_i. The diabatic SOC
@@ -32,6 +33,11 @@ from gqteashmd.dynamics.records import ElectronicSnapshot
 from gqteashmd.dynamics.spin import ExpandedState, check_counts, expanded_states
 
 SOC_HERMITICITY_TOLERANCE = 1e-8  # Eh: max |Sigma - Sigma^dagger| accepted (then symmetrised)
+# Eh (about 0.22 cm^-1): a frequency 0 < omega < this is refused. It is an external (translation
+# or rotation) mode that was not set to exactly 0: no real vibration is that soft, and the Wigner
+# widths 1/sqrt(2 omega M) and the Cartesian columns 1/sqrt(omega M) would be meaningless (about
+# 48 bohr for a carbon atom at 1e-8 Eh).
+ZERO_MODE_THRESHOLD_EH = 1e-6
 
 
 class _Block:
@@ -77,6 +83,14 @@ class LVCModel:
             raise ValueError(
                 f"LVC reference data: the frequencies must be finite and >= 0 Eh, got "
                 f"{omega.tolist()}"
+            )
+        soft = np.flatnonzero((omega > 0) & (omega < ZERO_MODE_THRESHOLD_EH))
+        if soft.size:
+            listed = ", ".join(f"mode {i + 1} ({omega[i]:.3e} Eh)" for i in soft)
+            raise ValueError(
+                f"LVC reference data: near-zero frequency for {listed}; 0 < omega < "
+                f"{ZERO_MODE_THRESHOLD_EH:.0e} Eh is refused: set the external (translation "
+                f"and rotation) modes to exactly 0 in V0.txt"
             )
         if not np.all(masses_amu > 0):
             raise ValueError(f"LVC reference data: the masses must be > 0, got {masses_amu}")

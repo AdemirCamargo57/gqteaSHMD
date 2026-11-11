@@ -1,5 +1,7 @@
 import json
 
+import pytest
+
 from gqteashmd.cli import main
 
 INPUT = """\
@@ -255,6 +257,46 @@ def test_lvc_missing_template_and_keys_across_models(tmp_path, capsys):
     )
     assert main(["model-dynamics", str(tully)]) == 2
     assert "model.spin_orbit" in capsys.readouterr().err
+
+
+def test_lvc_near_zero_frequency_is_an_input_error(tmp_path, capsys):
+    """An external mode written as 1e-8 Eh instead of exactly 0 in V0.txt: exit 2, no JSON."""
+    path = _lvc(tmp_path, sub="z")
+    v0 = tmp_path / "lvc" / "V0.txt"
+    lines = v0.read_text().splitlines()
+    i = lines.index("Frequencies") + 1
+    values = lines[i].split()
+    values[0] = "1.0e-08"
+    lines[i] = " ".join(values)
+    v0.write_text("\n".join(lines) + "\n")
+    out = tmp_path / "out.json"
+    assert main(["model-dynamics", str(path), "--json", str(out)]) == 2
+    err = capsys.readouterr().err
+    assert "Cannot use the LVC template" in err and "mode 1" in err and "exactly 0" in err
+    assert not out.exists()
+
+
+def test_lvc_all_trajectories_drifting_is_exit_1_without_json(tmp_path, capsys):
+    """energy_drift_limit_au = 1e-14 makes every trajectory end with energy_drift."""
+    path = _lvc(tmp_path, sub="d")
+    text = path.read_text().replace("dt_au = 20.0", "dt_au = 20.0\nenergy_drift_limit_au = 1e-14")
+    path.write_text(text)
+    out = tmp_path / "out.json"
+    assert main(["model-dynamics", str(path), "--json", str(out)]) == 1
+    err = capsys.readouterr().err
+    assert "gqteashmd: error: all 8 trajectories ended with energy_drift" in err
+    assert not out.exists()
+
+
+def test_tully_all_trajectories_drifting_still_writes_valid_json(tmp_path, capsys):
+    """The Tully path counts drift as a branch; with every trajectory drifting the JSON stays
+    strict (probabilities 0.0 over zero finished trajectories, no NaN)."""
+    out = tmp_path / "out.json"
+    text = INPUT + "[dynamics]\nenergy_drift_limit_au = 1e-14\n"
+    assert main(["model-dynamics", str(_write(tmp_path, text)), "--json", str(out)]) == 0
+    capsys.readouterr()
+    data = json.loads(out.read_text(), parse_constant=lambda name: pytest.fail(name))
+    assert data["counts"]["energy_drift"] == 5 and data["n_finished"] == 0
 
 
 def test_overlap_coupling_runs_on_a_tully_input(tmp_path, capsys):

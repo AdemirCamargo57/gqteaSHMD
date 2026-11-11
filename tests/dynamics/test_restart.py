@@ -187,6 +187,8 @@ def test_restart_2_without_u_and_overlaps_loads_none(tmp_path):
 
 def test_version_1_file_written_by_p7a1_loads_with_u_none():
     model = TullySimpleAvoidedCrossing()
+    with np.load(DATA / "restart_v1.npz", allow_pickle=False) as data:
+        assert json.loads(str(data["meta"]))["version"] == 1  # really a P7a-1 (format 1) file
     loaded, rng = load_state(DATA / "restart_v1.npz", model)
     assert loaded.u is None and loaded.snapshot.overlaps is None
     assert loaded.step == 40
@@ -234,7 +236,7 @@ def test_u_and_overlaps_shapes_are_checked_against_the_model(tmp_path):
     for key, bad in (("u", np.eye(3, dtype=complex)), ("overlaps", np.zeros((2, 3)))):
         forged = dict(arrays, **{key: bad})
         np.savez(tmp_path / f"{key}.npz", **forged)
-        with pytest.raises(ValueError, match=key):
+        with pytest.raises(ValueError, match=rf"\({key} differ\)"):
             load_state(tmp_path / f"{key}.npz", model)
 
 
@@ -244,10 +246,10 @@ def test_flags_must_match_the_arrays(tmp_path):
     rng = GeneratorSource(np.random.default_rng(1))
     save_state(tmp_path / "r.npz", state, rng)
     _forge(tmp_path / "r.npz", tmp_path / "a.npz", drop=("u",))
-    with pytest.raises(ValueError, match="u"):
+    with pytest.raises(ValueError, match="has_u flag inconsistent"):
         load_state(tmp_path / "a.npz", model)
     _forge(tmp_path / "r.npz", tmp_path / "b.npz", drop=("overlaps",))
-    with pytest.raises(ValueError, match="overlaps"):
+    with pytest.raises(ValueError, match="has_overlaps flag inconsistent"):
         load_state(tmp_path / "b.npz", model)
 
 
@@ -303,7 +305,7 @@ def _soc_stream() -> list[float]:
 
 
 def test_restart_2_with_u_continues_bit_identically(tmp_path):
-    """A state carrying U (the driver passes U through unchanged until Task 6) round-trips."""
+    """A state carrying U round-trips: save, load, save, load gives the same U."""
     model = TullySimpleAvoidedCrossing()
     state, u, _ = _snapshot_with_extras(model, _sac_state(model))
     rng = GeneratorSource(np.random.default_rng(4))

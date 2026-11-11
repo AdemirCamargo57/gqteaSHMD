@@ -1,4 +1,5 @@
-"""Ensembles of 1D model trajectories: wavepacket initial conditions and branching statistics."""
+"""Ensembles of model trajectories: 1D wavepacket initial conditions and branching statistics
+(Tully models), LVC initial conditions and population ensembles (P7a-2)."""
 
 from __future__ import annotations
 
@@ -278,7 +279,9 @@ def run_population_ensemble(
     recorded at step 0 and every ``record_every`` steps (item 13). Trajectory i uses child i of
     the ``model-dynamics`` seed sequence, so the result does not depend on ``workers``.
     A trajectory ending with ``energy_drift`` is excluded from every average and counted (R9);
-    if all drift, the averages are NaN. Workers return only the populations at the output times.
+    if all drift, the averages are NaN (this function returns them; ``gqteashmd model-dynamics``
+    refuses that case with exit 1 and writes no JSON). Workers return only the populations at
+    the output times.
     """
     for name, value in (("workers", workers), ("n_steps", n_steps), ("record_every", record_every)):
         if isinstance(value, bool) or not isinstance(value, int) or value < 1:

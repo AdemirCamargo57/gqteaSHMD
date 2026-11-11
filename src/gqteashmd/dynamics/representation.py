@@ -22,9 +22,6 @@ import numpy as np
 from gqteashmd.dynamics.options import GRADIENT_TRANSFORMATIONS
 from gqteashmd.dynamics.records import ElectronicSnapshot
 
-SOC_MESSAGE = (
-    "spin-orbit coupling / non-diagonal MCH Hamiltonians need P7a-2 (diagonal representation)"
-)
 DEGENERACY_BLOCK_TOLERANCE = 1e-10  # Eh: consecutive eigenvalues this close form one block
 NAC_DEGENERACY_TOLERANCE = 1e-12  # Eh: |E_b - E_a| below this gives a zero diagonal NAC
 SINGULAR_OVERLAP_TOLERANCE = 1e-14  # a 1 x 1 block with |M| below this is left unchanged
