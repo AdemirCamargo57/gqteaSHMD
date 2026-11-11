@@ -11,6 +11,8 @@ from gqteashmd.project.layout import ProjectLayout
 from gqteashmd.stages.base import StageContext
 from gqteashmd.stages.dynamics import DynamicsStage, run_settings
 from gqteashmd.testing import canned_lvc
+from gqteashmd.trajectory import runner as runner_module
+from gqteashmd.trajectory.runner import RestartError
 
 LVC = Path(__file__).resolve().parents[1] / "data" / "lvc" / "lvc_singlets.template"
 ELECTRONIC = '[electronic]\nmethod = "tda"\nbasis = "sto-3g"\nfunctional = "hf"\nsinglets = 3\n'
@@ -123,6 +125,41 @@ def test_bad_upstream_data_is_a_non_retryable_task_error(tmp_path, write_input):
     bad = type(task)(task.task_id, {**task.payload, "rng": {"stage": "dynamics", "task_index": 5}})
     with pytest.raises(TaskError, match="--rerun-from selection"):
         stage.run_task(ctx, bad, ctx.stage_dir / "y")
+
+
+@pytest.mark.parametrize("damage", ["log", "current"])
+def test_an_unusable_restart_advises_rerun_from_dynamics(tmp_path, write_input, damage):
+    ctx = _context(tmp_path, write_input)
+    stage = _stage()
+    task = stage.plan(ctx)[0]
+    task_dir = ctx.stage_dir / "tasks" / task.task_id
+    task_dir.mkdir(parents=True)
+    stage.run_task(ctx, task, task_dir)
+    if damage == "log":
+        log_file = task_dir / "steps.log"
+        log_file.write_bytes(log_file.read_bytes()[:100])  # below the restart's record count
+    else:
+        (task_dir / "restart" / "current").write_text("garbage\n")
+    with pytest.raises(TaskError, match="--rerun-from dynamics") as info:
+        stage.run_task(ctx, task, task_dir)
+    assert info.value.retryable is False
+    assert isinstance(info.value.__cause__, RestartError)
+
+
+def test_another_value_error_is_reported_without_rerun_advice(tmp_path, write_input, monkeypatch):
+    def failing_step(*args, **kwargs):
+        raise ValueError("injected failure inside a step")
+
+    monkeypatch.setattr(runner_module, "step", failing_step)
+    ctx = _context(tmp_path, write_input)
+    stage = _stage()
+    task = stage.plan(ctx)[0]
+    task_dir = ctx.stage_dir / "tasks" / task.task_id
+    task_dir.mkdir(parents=True)
+    with pytest.raises(TaskError, match="trajectory traj_00000: injected failure") as info:
+        stage.run_task(ctx, task, task_dir)
+    assert info.value.retryable is False
+    assert "--rerun-from" not in str(info.value)
 
 
 def test_no_results_fails_the_stage(tmp_path, write_input):

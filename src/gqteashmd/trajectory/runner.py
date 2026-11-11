@@ -39,6 +39,10 @@ GRID_TOLERANCE = 1e-9
 MAX_HALVINGS = 6
 
 
+class RestartError(ValueError):
+    """The trajectory's restart or step log cannot be used to resume (raised by ``run``)."""
+
+
 @dataclass(frozen=True)
 class RunSettings:
     options: DynamicsOptions
@@ -185,13 +189,20 @@ class TrajectoryRunner:
         return state, source, progress
 
     def _resume(self) -> tuple[TrajectoryState, RandomSource, Progress] | None:
-        generation = self.restarts.current()
-        if generation is None:
-            return None
-        state, source = load_state(generation / STATE_FILE, self.model)
-        self.model.backend.load_state(generation / ELECTRONIC_FILE)
-        progress = Progress.from_json(read_json(generation / META_FILE))
-        self.log.truncate(progress.log_records)
+        """The last restart generation, or None; any failure to use it is a RestartError."""
+        try:
+            generation = self.restarts.current()
+            if generation is None:
+                return None
+            state, source = load_state(generation / STATE_FILE, self.model)
+            self.model.backend.load_state(generation / ELECTRONIC_FILE)
+            progress = Progress.from_json(read_json(generation / META_FILE))
+            self.log.truncate(progress.log_records)
+        except (OSError, ValueError, TypeError, KeyError) as exc:
+            raise RestartError(
+                f"cannot resume from the restart in {self.restarts.directory}: "
+                f"{type(exc).__name__}: {exc}"
+            ) from exc
         return state, source, progress
 
     # ---------------------------------------------------------------- one (sub)step
@@ -251,7 +262,11 @@ class TrajectoryRunner:
 
     def _rollback(self, saved: dict[str, Any]) -> RandomSource:
         generation = self.restarts.current()
-        assert generation is not None  # a step is only attempted after a restart was written
+        if generation is None:  # a step is only attempted after a restart was written
+            raise RuntimeError(
+                f"no restart generation in {self.restarts.directory} to roll a rejected step "
+                "back to (a program error)"
+            )
         self.model.backend.load_state(generation / ELECTRONIC_FILE)
         return source_from_state(saved)
 

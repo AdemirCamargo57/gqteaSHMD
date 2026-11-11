@@ -25,6 +25,7 @@ from gqteashmd.trajectory.outcomes import TrajectoryOutcome
 from gqteashmd.trajectory.runner import (
     OUTPUT_FILE,
     InitialConditions,
+    RestartError,
     RunSettings,
     TrajectoryRunner,
 )
@@ -220,12 +221,14 @@ class DynamicsStage(Stage):
             result = runner.run(
                 initial, GeneratorSource(task_rng(ctx.config.project.seed, "dynamics", index))
             )
-        except ValueError as exc:
+        except RestartError as exc:
             raise TaskError(
                 f"trajectory {task.task_id}: {exc}; the restart or step log is unusable, "
                 "rerun with --rerun-from dynamics",
                 retryable=False,
             ) from exc
+        except ValueError as exc:
+            raise TaskError(f"trajectory {task.task_id}: {exc}", retryable=False) from exc
         return {**result, "sample": sample, "initial_state": state}
 
     # -------------------------------------------------------------------------- finalize

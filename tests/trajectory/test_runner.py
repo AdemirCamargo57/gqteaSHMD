@@ -16,7 +16,12 @@ from gqteashmd.errors import ElectronicStructureError
 from gqteashmd.testing.fake_backend import ModelBackend, SimulatedCrash
 from gqteashmd.trajectory import runner as runner_module
 from gqteashmd.trajectory.model import BackendModel
-from gqteashmd.trajectory.runner import InitialConditions, RunSettings, TrajectoryRunner
+from gqteashmd.trajectory.runner import (
+    InitialConditions,
+    RestartError,
+    RunSettings,
+    TrajectoryRunner,
+)
 from gqteashmd.trajectory.store import RestartStore, StepLog
 
 LVC = Path(__file__).resolve().parents[1] / "data" / "lvc" / "lvc_singlets.template"
@@ -223,6 +228,21 @@ def test_hops_leave_a_finite_active_gradient_in_the_restart(tmp_path):
     model = BackendModel(ModelBackend(_model()), _model().masses, coupling="overlap")
     state, _ = load_state(RestartStore(d / "restart").current() / "state.npz", model)
     assert np.all(np.isfinite(state.snapshot.gradients[state.active]))
+
+
+@pytest.mark.parametrize("damage", ["current", "log", "meta"])
+def test_an_unusable_restart_is_a_restart_error(tmp_path, damage):
+    _, d = _run(tmp_path, settings=_settings(n=5))
+    if damage == "current":
+        (d / "restart" / "current").write_text("garbage\n")
+    elif damage == "log":
+        (d / "steps.log").write_bytes(b"")  # fewer records than the restart's count
+    else:
+        generation = RestartStore(d / "restart").current()
+        meta = json.loads((generation / "meta.json").read_text())
+        (generation / "meta.json").write_text(json.dumps({**meta, "unknown_key": 1}))
+    with pytest.raises(RestartError, match="cannot resume"):
+        _run(tmp_path, settings=_settings(n=5))
 
 
 def test_settings_validation():
