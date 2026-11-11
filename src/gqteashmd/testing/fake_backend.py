@@ -9,9 +9,10 @@ built for a resumed run can continue the numbering of a crashed one).
 Fault kinds: ``error`` / ``retryable`` (compute raises), ``low_overlap`` (min singular value 0.1),
 ``rung`` (CASSCF leaves its first rung), ``no_overlaps``, ``crash`` (SimulatedCrash), ``kill``
 (os._exit, needs ``marker_dir``), ``nan_energy`` (every returned energy is NaN), ``nan_gradient``
-(every returned gradient is NaN) and ``more_error`` (the next ``compute_more`` after this compute
-call raises a non-retryable ElectronicStructureError). Only the returned result is faulty; the
-backend's own state stays clean.
+(every returned gradient is NaN), ``nan_nac`` (every returned NAC is NaN) and ``more_error``
+(the next ``compute_more`` after this compute call raises a non-retryable
+ElectronicStructureError). Only the returned result is faulty; the backend's own state stays
+clean.
 """
 
 from __future__ import annotations
@@ -42,6 +43,7 @@ FAULTS = (
     "kill",
     "nan_energy",
     "nan_gradient",
+    "nan_nac",
     "more_error",
 )
 _ARRAYS = ("energies", "gradients", "nacs", "hamiltonian", "vectors", "overlaps")
@@ -130,6 +132,10 @@ class ModelBackend(ElectronicBackend):
             result = dataclasses.replace(
                 result,
                 gradients={label: np.full_like(g, np.nan) for label, g in result.gradients.items()},
+            )
+        if fault == "nan_nac":
+            result = dataclasses.replace(
+                result, nacs={pair: np.full_like(d, np.nan) for pair, d in result.nacs.items()}
             )
         return result
 

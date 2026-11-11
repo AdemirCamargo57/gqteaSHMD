@@ -163,6 +163,23 @@ def test_non_finite_data_is_an_electronic_failure(kind):
     assert info.value.retryable is False
 
 
+def test_non_finite_nacs_are_an_electronic_failure_with_nacdr():
+    model = _model()
+    adapter = BackendModel(
+        ModelBackend(model, faults={1: "nan_nac"}), model.masses, coupling="nacdr"
+    )
+    adapter.active = 1
+    with pytest.raises(ElectronicStructureError, match="non-finite NAC") as info:
+        adapter.evaluate(model.reference_q, None)
+    assert info.value.retryable is False
+    # coupling = "overlap" requests no NACs, so the fault leaves nothing to check
+    adapter = BackendModel(
+        ModelBackend(model, faults={1: "nan_nac"}), model.masses, coupling="overlap"
+    )
+    adapter.active = 1
+    adapter.evaluate(model.reference_q, None)
+
+
 def test_a_failed_gradient_refresh_is_an_electronic_failure():
     model = _model()
     adapter = BackendModel(

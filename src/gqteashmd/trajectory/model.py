@@ -103,6 +103,17 @@ class BackendModel:
                 f"the backend returned non-finite energies {energies.tolist()}", retryable=False
             )
         self._check_gradient(result, label)
+        if self.coupling == "nacdr":
+            bad = sorted(
+                f"{a}-{b}"
+                for (a, b), d in result.nacs.items()
+                if not np.all(np.isfinite(np.asarray(d, dtype=float)))
+            )
+            if bad:
+                raise ElectronicStructureError(
+                    f"the backend returned a non-finite NAC for {', '.join(bad)}",
+                    retryable=False,
+                )
         if result.overlaps is not None and not np.all(np.isfinite(result.overlaps)):
             raise ElectronicStructureError(
                 "the backend returned non-finite overlaps with the previous geometry",
