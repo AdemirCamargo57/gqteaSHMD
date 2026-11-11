@@ -15,8 +15,11 @@ from gqteashmd.electronic.pyscf_errors import wrap_failure
 from gqteashmd.errors import ElectronicStructureError
 from gqteashmd.overlaps.determinants import DeterminantExpansion
 
-# (name, extra roots in the Davidson solver, max_cycle factor)
-_LADDER: tuple[tuple[str, int, int], ...] = (("default", 0, 1), ("extra roots", 3, 3))
+# (name, extra roots in the Davidson solver, max_cycle factor). Extra roots are asked on every
+# rung: with exactly n roots the initial guess at a symmetric geometry can lack a vector of one
+# irrep, and the solver then returns a higher root as S_n without any error. Only the lowest n
+# roots are kept and used (energies, gradients, dipoles, determinant expansion).
+_LADDER: tuple[tuple[str, int, int], ...] = (("default", 3, 1), ("extra roots", 6, 3))
 
 
 @dataclass(eq=False)

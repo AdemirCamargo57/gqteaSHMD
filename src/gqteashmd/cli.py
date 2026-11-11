@@ -121,7 +121,15 @@ weighting = "f_over_dE2"      # "f_over_dE2" (SHARC excite.py-compatible) or "f"
 # states = ["S1", "S2"]       # candidate excited states (default: all excited singlets)
 # energy_window_eV = [4.5, 6.0]   # accepted excitation energy range (default: none)
 n_trajectories = 100          # number of trajectories to start
-allow_fewer = false           # accept fewer trajectories if too few pass the selection"""
+allow_fewer = false           # accept fewer trajectories if too few pass the selection
+
+# [dynamics]                         # remove the leading '# ' to run trajectories
+# tmax_fs = 100.0                    # must be a multiple of dt_fs
+# dt_fs = 0.5
+# coupling = "overlap"               # "nacdr" needs method = "casscf"
+# hopping = "sharc"
+# decoherence = "edc"
+# energy_drift_limit_eV = 0.5"""
 
 
 def _cmd_init(args: argparse.Namespace) -> int:

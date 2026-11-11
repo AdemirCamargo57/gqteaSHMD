@@ -271,6 +271,48 @@ class SelectionSection(_Section):
         return value
 
 
+class DynamicsStageSection(_Section):
+    """[dynamics] of the workflow (P7b). Option meanings: USER_MANUAL.md section 4."""
+
+    tmax_fs: float = Field(gt=0, allow_inf_nan=False)
+    dt_fs: float = Field(default=0.5, gt=0, allow_inf_nan=False)
+    nsubsteps: int = Field(default=25, ge=1)
+    coupling: Literal["overlap", "nacdr"] = "overlap"
+    hopping: Literal["sharc", "fssh", "none"] = "sharc"
+    ekin_correction: Literal["parallel_vel", "parallel_nac"] = "parallel_vel"
+    frustrated: Literal["keep", "reflect"] = "keep"
+    decoherence: Literal["edc", "none"] = "edc"
+    decoherence_param_Eh: float = Field(default=0.1, gt=0, allow_inf_nan=False)
+    edc_convention: Literal["sharc", "granucci_persico"] = "sharc"
+    substep_interpolation: Literal["midpoint", "endpoint"] = "midpoint"
+    energy_drift_limit_eV: float = Field(default=0.5, gt=0, allow_inf_nan=False)
+    stop_after_s0_fs: float | None = Field(default=None, gt=0, allow_inf_nan=False)
+    overlap_threshold: float = Field(default=0.5, gt=0, lt=1, allow_inf_nan=False)
+    max_step_halvings: int = Field(default=3, ge=0, le=6)
+    output_every: int = Field(default=1, ge=1)
+    max_failed_fraction: float = Field(default=0.1, ge=0, lt=1, allow_inf_nan=False)
+
+    @model_validator(mode="after")
+    def _consistent_options(self) -> DynamicsStageSection:
+        problems: list[str] = []
+        if not self.dt_fs < self.tmax_fs:
+            problems.append(f"dynamics.dt_fs = {self.dt_fs} must be smaller than tmax_fs")
+        else:
+            ratio = self.tmax_fs / self.dt_fs
+            if abs(ratio - round(ratio)) > 1e-9 * ratio:
+                problems.append(
+                    f"dynamics.tmax_fs = {self.tmax_fs} must be an integer multiple of "
+                    f"dt_fs = {self.dt_fs}"
+                )
+        if self.hopping == "fssh" and self.coupling != "nacdr":
+            problems.append("dynamics.hopping = 'fssh' needs coupling = 'nacdr'")
+        if self.ekin_correction == "parallel_nac" and self.coupling != "nacdr":
+            problems.append("dynamics.ekin_correction = 'parallel_nac' needs coupling = 'nacdr'")
+        if problems:
+            raise ValueError("; ".join(problems))
+        return self
+
+
 class ShmdConfig(_Section):
     schema_version: Literal[1] = 1
     project: ProjectSection
@@ -284,10 +326,21 @@ class ShmdConfig(_Section):
     sampling: SamplingSection = Field(default_factory=SamplingSection)
     excitations: ExcitationsSection = Field(default_factory=ExcitationsSection)
     selection: SelectionSection = Field(default_factory=SelectionSection)
+    dynamics: DynamicsStageSection | None = None
 
     @model_validator(mode="after")
     def _consistent(self) -> ShmdConfig:
         problems: list[str] = []
+        if (
+            self.dynamics is not None
+            and self.dynamics.coupling == "nacdr"
+            and self.electronic is not None
+            and self.electronic.method != "casscf"
+        ):
+            problems.append(
+                "dynamics.coupling = 'nacdr' needs analytic NACs, which exist for "
+                "[electronic] method = 'casscf' only; use coupling = 'overlap'"
+            )
         if self.electronic is not None and self.molecule.multiplicity != 1:
             problems.append(
                 "the PySCF backend supports closed-shell singlet molecules only "

@@ -191,11 +191,36 @@ class Orchestrator:
                 )
                 state.reset_stage(stage.name)
                 record = None
+            has_hook = type(stage).reopen_tasks is not Stage.reopen_tasks
+            if (
+                record is not None
+                and record.status not in (StageStatus.SKIPPED, StageStatus.DONE)
+                and has_hook
+            ):
+                # RUNNING (a controller killed part-way, maybe through a reopening), PENDING
+                # (stopped by the user) or FAILED: done tasks may need reopening too (e.g. a
+                # raised tmax_fs), so that this run ends with every task up to date.
+                reopened = self._reopen(state, stage, ctx, fp)
+                if reopened:
+                    log.info(
+                        "Stage %s: reopening %d task(s): %s",
+                        stage.name,
+                        len(reopened),
+                        ", ".join(reopened),
+                    )
             if record is not None and record.status == StageStatus.DONE:
-                summary.up_to_date.append(stage.name)
-                upstream_dirs[stage.name] = stage_dir
-                log.info("Stage %s: up to date", stage.name)
-                continue
+                reopened = self._reopen(state, stage, ctx, fp) if has_hook else []
+                if not reopened:
+                    summary.up_to_date.append(stage.name)
+                    upstream_dirs[stage.name] = stage_dir
+                    log.info("Stage %s: up to date", stage.name)
+                    continue
+                log.info(
+                    "Stage %s: reopening %d task(s): %s",
+                    stage.name,
+                    len(reopened),
+                    ", ".join(reopened),
+                )
             try:
                 finished = self._run_stage(state, stage, ctx, fp, should_stop)
             except Exception as exc:
@@ -210,7 +235,9 @@ class Orchestrator:
                 break
             upstream_dirs[stage.name] = stage_dir
             summary.completed.append(stage.name)
-            if stage.name in self.config.workflow.pause_after and index < len(self.stages) - 1:
+            if stage.name in self.config.workflow.pause_after and any(
+                later.enabled(self.config) for later in self.stages[index + 1 :]
+            ):
                 summary.paused_after = stage.name
                 log.info(
                     "Paused after stage %s (workflow.pause_after); run again to continue",
@@ -453,6 +480,31 @@ class Orchestrator:
                     message="previous controller stopped while this task was running",
                     attempts_delta=-1,
                 )
+
+    def _reopen(self, state: StateStore, stage: Stage, ctx: StageContext, fp: str) -> list[str]:
+        records = state.get_tasks(stage.name)
+        results = self._collect_results(stage, ctx, records)
+        ids = list(stage.reopen_tasks(ctx, results))
+        unknown = sorted(set(ids) - set(results))
+        if unknown:
+            raise ProjectError(
+                f"Stage {stage.name!r} asked to reopen tasks that are not done: "
+                f"{', '.join(unknown)}"
+            )
+        if not ids:
+            return ids
+        # RUNNING first: a kill part-way leaves a stage the normal path resumes.
+        state.set_stage(stage.name, StageStatus.RUNNING, fingerprint=fp)
+        attempts = {r.task_id: r.attempts for r in records}
+        for task_id in ids:
+            state.set_task(
+                stage.name,
+                task_id,
+                TaskStatus.PENDING,
+                message="reopened",
+                attempts_delta=-attempts[task_id],
+            )
+        return ids
 
     def _collect_results(
         self, stage: Stage, ctx: StageContext, records: list[TaskRecord]

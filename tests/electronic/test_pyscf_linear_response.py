@@ -163,7 +163,7 @@ def test_response_ladder_retries_with_extra_roots(
     result = PySCFBackend(
         MoleculeSpec(tuple(ethylene_symbols)), _tda_settings(make_settings)
     ).compute(Request(ethylene_bohr))
-    assert calls == [2, 5] and result.meta["td"] == "extra roots"
+    assert calls == [5, 8] and result.meta["td"] == "extra roots"
     _, td = _direct(ethylene_symbols, ethylene_bohr, "b3lyp")
     for label, omega in zip((S1, S2), td.e, strict=True):
         assert abs(result.excitation_energy(label) - omega) < 1e-6
@@ -233,3 +233,39 @@ def test_too_many_excited_states_for_the_single_excitation_space(make_settings):
     settings = _tda_settings(make_settings, functional="hf", singlets=3)
     with pytest.raises(ElectronicStructureError, match="only 1 single excitation"):
         pyscf_response.run_response(mf, settings, (S0, S1, S2))
+
+
+_WATER_ATOMS = "O 0 0 0.1173; H 0 0.7572 -0.4692; H 0 -0.7572 -0.4692"
+
+
+def test_symmetric_geometry_does_not_skip_a_root(make_settings):
+    """Water CIS at the C2v test geometry: asking for 2 roots used to return the third
+    (16.7707 eV) as S2 because the Davidson guess lacked one irrep (measured, Task 9)."""
+    from gqteashmd.core.units import ANGSTROM_TO_BOHR, HARTREE_IN_EV
+
+    coords = (
+        np.array([[0.0, 0.0, 0.1173], [0.0, 0.7572, -0.4692], [0.0, -0.7572, -0.4692]])
+        * ANGSTROM_TO_BOHR
+    )
+    settings = _tda_settings(make_settings, functional="hf", singlets=3)
+    result = PySCFBackend(MoleculeSpec(("O", "H", "H")), settings).compute(Request(coords))
+    assert abs(result.excitation_energy(S1) * HARTREE_IN_EV - 13.1877) < 1e-3
+    assert abs(result.excitation_energy(S2) * HARTREE_IN_EV - 15.1445) < 1e-3
+
+
+def test_first_rung_requests_three_extra_roots_and_keeps_the_lowest(make_settings, monkeypatch):
+    calls = []
+    original = pyscf_response._converged_roots
+
+    def spy(td, n):
+        calls.append((td.nstates, n, len(td.e)))
+        return original(td, n)
+
+    monkeypatch.setattr(pyscf_response, "_converged_roots", spy)
+    mol = gto.M(atom=_WATER_ATOMS, basis="sto-3g", verbose=0)
+    mf = scf.RHF(mol).run()
+    settings = _tda_settings(make_settings, functional="hf")
+    out = pyscf_response.run_response(mf, settings, (S0, S1, S2))
+    assert calls == [(5, 2, 5)] and out.rung == "default"
+    assert set(out.energies) == {S0, S1, S2}
+    assert abs(out.energies[S2] - (mf.e_tot + out.td.e[1])) < 1e-12

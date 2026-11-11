@@ -440,3 +440,92 @@ def test_o20_stop_then_allow_fewer_reruns_selection_finalize_only(tmp_path, writ
     summary = Orchestrator(load_config(path), pipeline_ref=CANNED, rerun_from="selection").run()
     assert summary.completed == ["selection"]
     assert read_json(stage_dir / "trajectories.json")["n_trajectories"] == 10
+
+
+def test_reopened_task_runs_again_and_finalize_repeats(project, behaviour):
+    _run(project)
+    stage_dir = _run_dir(project) / "04_dynamics"
+    summary = stage_dir / "summary.json"
+    before = summary.stat().st_mtime_ns
+    behaviour(reopen=["dynamics:t001"])
+    result = _run(project)
+    assert result.completed == ["dynamics"]
+    runs = {
+        t: read_json(stage_dir / "tasks" / t / "result.json")["result"]["runs"]
+        for t in ("t000", "t001", "t002", "t003")
+    }
+    assert runs == {"t000": 1, "t001": 2, "t002": 1, "t003": 1}
+    assert summary.stat().st_mtime_ns > before
+    third = _run(project)  # runs == 2 now: nothing to reopen
+    assert "dynamics" in third.up_to_date
+
+
+def test_reopening_an_unknown_task_is_a_project_error(project, behaviour):
+    _run(project)
+    behaviour(reopen_bad=["dynamics"])
+    with pytest.raises(ProjectError, match="t999"):
+        _run(project)
+
+
+def test_reopen_interrupted_midway_is_resumed(project, behaviour, monkeypatch):
+    _run(project)
+    behaviour(reopen=["dynamics:t001"])
+    original = StateStore.set_task
+
+    def dying(self, stage, task_id, status, **kwargs):
+        if kwargs.get("message") == "reopened":
+            raise RuntimeError("controller died")
+        return original(self, stage, task_id, status, **kwargs)
+
+    monkeypatch.setattr(StateStore, "set_task", dying)
+    with pytest.raises(RuntimeError, match="controller died"):
+        _run(project)
+    monkeypatch.setattr(StateStore, "set_task", original)
+    _run(project)
+    stage_dir = _run_dir(project) / "04_dynamics"
+    assert read_json(stage_dir / "tasks" / "t001" / "result.json")["result"]["runs"] == 2
+    with _state(project) as state:
+        assert state.get_stage("dynamics").status == StageStatus.DONE
+
+
+def _runs(project):
+    stage_dir = _run_dir(project) / "04_dynamics"
+    return {
+        t: read_json(stage_dir / "tasks" / t / "result.json")["result"]["runs"]
+        for t in ("t000", "t001", "t002", "t003")
+    }
+
+
+def test_reopen_hook_applies_to_a_stopped_stage(project, behaviour):
+    _run(project)
+    # The state after a user stop: the stage PENDING, one task PENDING, the others DONE.
+    with _state(project) as state:
+        state.set_stage("dynamics", StageStatus.PENDING, message="stopped by user")
+        state.set_task("dynamics", "t003", TaskStatus.PENDING)
+    behaviour(reopen=["dynamics:t001"])
+    result = _run(project)
+    assert result.completed == ["dynamics"]
+    assert _runs(project) == {"t000": 1, "t001": 2, "t002": 1, "t003": 2}
+    with _state(project) as state:
+        assert state.get_stage("dynamics").status == StageStatus.DONE
+
+
+def test_reopen_hook_applies_to_a_failed_stage(project, behaviour):
+    behaviour(fail=["dynamics:t002", "dynamics:t003"])
+    with pytest.raises(StageFailedError):
+        _run(project)
+    with _state(project) as state:
+        assert state.get_stage("dynamics").status == StageStatus.FAILED
+    behaviour(reopen=["dynamics:t001"])
+    result = _run(project)
+    assert result.completed == ["dynamics"]
+    assert _runs(project) == {"t000": 1, "t001": 2, "t002": 1, "t003": 1}
+    with _state(project) as state:
+        assert state.get_stage("dynamics").status == StageStatus.DONE
+
+
+def test_stage_without_the_hook_ignores_damaged_results(project, behaviour):
+    _run(project)
+    for result in (_run_dir(project) / "00_prepare" / "tasks").glob("*/result.json"):
+        result.unlink()
+    assert "prepare" in _run(project).up_to_date

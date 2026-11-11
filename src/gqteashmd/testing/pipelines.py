@@ -54,3 +54,64 @@ class CannedExcitationsStage(Stage):
 def canned_selection(config: ShmdConfig) -> list[Stage]:
     """`excitations` (canned data) followed by the real `selection` stage."""
     return [CannedExcitationsStage(), SelectionStage()]
+
+
+class _CannedStage(Stage):
+    """One task; `finalize` writes the canned artifact of the stage."""
+
+    version = 1
+    N_SAMPLES = 3
+
+    def plan(self, ctx: StageContext) -> list[TaskSpec]:
+        return [TaskSpec("write")]
+
+    def run_task(self, ctx: StageContext, task: TaskSpec, task_dir: Path) -> dict[str, Any]:
+        return {}
+
+
+class CannedPrepare(_CannedStage):
+    name = "prepare"
+
+    def finalize(self, ctx: StageContext, results: Mapping[str, Mapping[str, Any]]) -> None:
+        from gqteashmd.testing import canned_lvc
+
+        canned_lvc.write_canned_molecule(ctx.stage_dir, canned_lvc.canned_model())
+
+
+class CannedSampling(_CannedStage):
+    name = "sampling"
+    required_modules = ("h5py>=3.9",)
+
+    def finalize(self, ctx: StageContext, results: Mapping[str, Mapping[str, Any]]) -> None:
+        from gqteashmd.testing import canned_lvc
+
+        canned_lvc.write_canned_samples(ctx.stage_dir, canned_lvc.canned_model(), self.N_SAMPLES)
+
+
+class CannedSelection(_CannedStage):
+    name = "selection"
+
+    def finalize(self, ctx: StageContext, results: Mapping[str, Mapping[str, Any]]) -> None:
+        from gqteashmd.testing import canned_lvc
+
+        canned_lvc.write_canned_trajectories(
+            ctx.stage_dir, [(1, "S1"), (2, "S2"), (3, "S1")], ctx.config.project.seed
+        )
+
+
+def canned_dynamics(config: ShmdConfig) -> list[Stage]:
+    """Canned LVC upstream stages followed by the real `dynamics` stage (fake backend)."""
+    from gqteashmd.stages.dynamics import DynamicsStage
+    from gqteashmd.stages.registry import dynamics_max_failed_fraction
+    from gqteashmd.testing import canned_lvc
+
+    return [
+        CannedPrepare(),
+        CannedSampling(),
+        CannedSelection(),
+        DynamicsStage(
+            backend_factory=canned_lvc.lvc_backend_factory,
+            required_modules=("h5py>=3.9",),
+            max_failed_fraction=dynamics_max_failed_fraction(config),
+        ),
+    ]
