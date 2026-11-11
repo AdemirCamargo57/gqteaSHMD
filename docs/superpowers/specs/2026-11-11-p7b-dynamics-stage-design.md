@@ -1,5 +1,13 @@
 # P7b design: the `dynamics` stage with PySCF (singlets only)
 
+> **Erratum (from the implementation plan, 2026-11-11):** (1) Section 7: the stage is enabled
+> iff the input has a `[dynamics]` table; without it the workflow ends at `selection` as before
+> (plan ruling R1), instead of failing `check_stage_inputs`. (2) Section 7: `finalize` does not
+> build missing `output.h5` files; `run_task` always writes it and `finalize` lists missing ones
+> (plan ruling R5). (3) Sections 3.2 and 6: `steps.log` holds every accepted (sub)step and
+> `output.h5` is thinned by `output_every`, keeping every hop, flag and rejection (plan ruling
+> R2). The plan's Rulings R1-R10 are binding where they differ from this text.
+
 Status: approved by the owner on 2026-11-11 (design in chat; this file records it). The
 implementation plan follows in `docs/superpowers/plans/`.
 
