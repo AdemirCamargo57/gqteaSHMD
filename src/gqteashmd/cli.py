@@ -129,7 +129,14 @@ allow_fewer = false           # accept fewer trajectories if too few pass the se
 # coupling = "overlap"               # "nacdr" needs method = "casscf"
 # hopping = "sharc"
 # decoherence = "edc"
-# energy_drift_limit_eV = 0.5"""
+# energy_drift_limit_eV = 0.5
+
+# [analysis]                         # optional; runs after dynamics by default
+# fit_states = ["S1", "S2"]          # fitted population (default: every excited state)
+# fit_population = "classical"       # or "quantum"
+# n_bootstrap = 1000
+# energy_jump_eV = 0.1               # flag trajectories with a larger E_tot jump
+# exclude_energy_jumps = false"""
 
 
 def _cmd_init(args: argparse.Namespace) -> int:
