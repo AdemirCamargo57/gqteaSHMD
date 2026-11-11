@@ -87,8 +87,20 @@ class System:
         self.masses = np.repeat(masses, 3)
         self.directory = directory
 
-    def run(self, name: str, *, dt_fs: float, n_steps: int, **options) -> tuple[dict, np.ndarray]:
-        """Run (or resume) trajectory `name` to n_steps steps of dt_fs; a new backend each call."""
+    def run(
+        self,
+        name: str,
+        *,
+        dt_fs: float,
+        n_steps: int,
+        initial: InitialConditions | None = None,
+        seed: int = 0,
+        **options,
+    ) -> tuple[dict, np.ndarray]:
+        """Run (or resume) trajectory `name` to n_steps steps of dt_fs; a new backend each call.
+
+        `initial` defaults to (q, v, S1); `seed` seeds the hopping stream. The result also holds
+        `compute_calls`, the number of backend.compute calls of this call."""
         directory = self.directory / name
         backend = make_backend(
             self.config,
@@ -99,16 +111,25 @@ class System:
             threads=2,
             memory_mb=1000,
         )
+        calls = 0
+        compute = backend.compute
+
+        def counted(request):
+            nonlocal calls
+            calls += 1
+            return compute(request)
+
+        backend.compute = counted  # type: ignore[method-assign]
         coupling = options.setdefault("coupling", "overlap")
         dt_au = dt_fs / AU_TIME_IN_FS
         settings = RunSettings(DynamicsOptions(dt_au=dt_au, **options), tmax_au=n_steps * dt_au)
         model = BackendModel(backend, self.masses, coupling=coupling)
         runner = TrajectoryRunner(model, settings, directory)
-        result = runner.run(
-            InitialConditions(self.q, self.v, 1), GeneratorSource(np.random.default_rng(0))
-        )
+        if initial is None:
+            initial = InitialConditions(self.q, self.v, 1)
+        result = runner.run(initial, GeneratorSource(np.random.default_rng(seed)))
         rows = StepLog(directory / "steps.log", model.n_states, model.n_dof).read()
-        return result, rows
+        return {**result, "compute_calls": calls}, rows
 
 
 def _ethylene(directory: Path) -> System:
@@ -223,13 +244,21 @@ def test_ethylene_resume_from_a_restart_matches_one_run(tmp_path):
         "(c) first part 5 steps", lambda: system.run("cut", dt_fs=0.5, n_steps=5, **CONSERVING)
     )
     assert first["outcome"] == "finished" and first["n_grid_steps"] == 5, _brief(first)
+    # Initial conditions and a seed the restart must override: a silent fresh start would
+    # diverge from `ref` (other velocities, S0, another stream) instead of matching it.
+    decoy = InitialConditions(system.q, 1.5 * system.v, 0)
     second, resumed = _timed(
         "(c) resumed to 10 steps",
-        lambda: system.run("cut", dt_fs=0.5, n_steps=10, **CONSERVING),
+        lambda: system.run("cut", dt_fs=0.5, n_steps=10, initial=decoy, seed=1, **CONSERVING),
     )
     assert ref_result["outcome"] == "finished", _brief(ref_result)
     assert second["outcome"] == "finished", _brief(second)
     assert second["n_grid_steps"] == 10 and second["n_steps"] == 10, _brief(second)
+    print(
+        f"(c) backend.compute calls: first part {first['compute_calls']}, resumed part "
+        f"{second['compute_calls']}"
+    )
+    assert second["compute_calls"] == 5, second["compute_calls"]  # steps 6-10 only
     assert resumed.shape == ref.shape == (11,)
 
     def populations(rows):

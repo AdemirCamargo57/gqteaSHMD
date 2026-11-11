@@ -75,6 +75,8 @@ def test_workflow_runs_dynamics_resumes_and_extends(tmp_path, write_input):
     print(f"extension run: {time.perf_counter() - start:.1f} s")
     rows = _check_rows(layout)
     finished = [r for r in rows if r["outcome"] == TrajectoryOutcome.FINISHED]
+    assert finished, rows  # the extension check below must not be vacuous
+    assert "traj_00000" in {r["task"] for r in finished}, rows  # measured: finished at 1.5 fs
     assert all(r["t_final_fs"] == pytest.approx(1.5) for r in finished), rows
 
 
