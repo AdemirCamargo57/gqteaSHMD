@@ -529,3 +529,86 @@ def test_stage_without_the_hook_ignores_damaged_results(project, behaviour):
     for result in (_run_dir(project) / "00_prepare" / "tasks").glob("*/result.json"):
         result.unlink()
     assert "prepare" in _run(project).up_to_date
+
+
+def _analysis_runs(project):
+    path = _run_dir(project) / "05_analysis" / "tasks" / "t000" / "result.json"
+    return read_json(path)["result"]["runs"]
+
+
+def test_a_reopen_recomputes_the_dependants(project, behaviour, caplog):
+    behaviour(analysis=True)
+    _run(project)
+    assert _analysis_runs(project) == 1
+    behaviour(analysis=True, reopen=["dynamics:t001"])
+    result = _run(project)
+    assert result.completed == ["dynamics", "analysis"]
+    assert _analysis_runs(project) == 1  # a fresh directory: the old one was superseded
+    superseded = _run_dir(project) / ".gqteashmd" / "superseded"
+    assert any(p.name.endswith("_05_analysis") for p in superseded.iterdir())
+    assert "analysis is recomputed because dynamics was extended" in caplog.text
+    with _state(project) as state:
+        assert state.get_stage("analysis").status == StageStatus.DONE
+
+
+def test_without_a_reopen_the_dependants_stay_up_to_date(project, behaviour):
+    behaviour(analysis=True)
+    _run(project)
+    assert "analysis" in _run(project).up_to_date
+
+
+def test_a_disabled_dependant_with_kept_results_is_reset(project, behaviour):
+    behaviour(analysis=True)
+    _run(project)
+    behaviour(analysis=True, analysis_disabled=True, reopen=["dynamics:t001"])
+    result = _run(project)
+    assert result.completed == ["dynamics"] and "analysis" in result.skipped
+    with _state(project) as state:
+        assert state.get_stage("analysis").status == StageStatus.SKIPPED
+    behaviour(analysis=True)
+    assert "analysis" in _run(project).completed  # re-enabled: recomputed, not up to date
+
+
+def test_a_kill_between_the_reset_and_the_running_mark_is_safe(project, behaviour, monkeypatch):
+    behaviour(analysis=True)
+    _run(project)
+    behaviour(analysis=True, reopen=["dynamics:t001"])
+    original = StateStore.set_stage
+
+    def dying(self, name, status, **kwargs):
+        if name == "dynamics" and status == StageStatus.RUNNING:
+            raise RuntimeError("controller died")
+        return original(self, name, status, **kwargs)
+
+    monkeypatch.setattr(StateStore, "set_stage", dying)
+    with pytest.raises(RuntimeError, match="controller died"):
+        _run(project)
+    with _state(project) as state:
+        assert state.get_stage("dynamics").status == StageStatus.DONE
+        analysis = state.get_stage("analysis")
+        assert analysis is None or analysis.status != StageStatus.DONE
+    monkeypatch.setattr(StateStore, "set_stage", original)
+    result = _run(project)
+    assert result.completed == ["dynamics", "analysis"]
+    assert _runs(project)["t001"] == 2
+
+
+def test_a_kill_after_the_running_mark_is_safe(project, behaviour, monkeypatch):
+    behaviour(analysis=True)
+    _run(project)
+    behaviour(analysis=True, reopen=["dynamics:t001"])
+    original = StateStore.set_task
+
+    def dying(self, stage, task_id, status, **kwargs):
+        if kwargs.get("message") == "reopened":
+            raise RuntimeError("controller died")
+        return original(self, stage, task_id, status, **kwargs)
+
+    monkeypatch.setattr(StateStore, "set_task", dying)
+    with pytest.raises(RuntimeError, match="controller died"):
+        _run(project)
+    monkeypatch.setattr(StateStore, "set_task", original)
+    result = _run(project)
+    assert "analysis" in result.completed
+    with _state(project) as state:
+        assert state.get_stage("analysis").status == StageStatus.DONE
