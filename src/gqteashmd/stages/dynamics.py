@@ -18,6 +18,7 @@ from gqteashmd.dynamics.options import DynamicsOptions
 from gqteashmd.dynamics.randomness import GeneratorSource
 from gqteashmd.electronic.base import ElectronicBackend, MoleculeSpec
 from gqteashmd.errors import ProjectError, StageFailedError, TaskError
+from gqteashmd.excite.artifacts import read_trajectories_json
 from gqteashmd.stages.base import Stage, StageContext, TaskSpec
 from gqteashmd.stages.geometry import prepared_molecule, stage_backend
 from gqteashmd.trajectory.model import BackendModel
@@ -29,7 +30,7 @@ from gqteashmd.trajectory.runner import (
     RunSettings,
     TrajectoryRunner,
 )
-from gqteashmd.util.fileio import read_json, write_json_atomic, write_text_atomic
+from gqteashmd.util.fileio import write_json_atomic, write_text_atomic
 from gqteashmd.util.seeds import task_rng
 from gqteashmd.vib.artifacts import read_samples_h5
 
@@ -144,23 +145,19 @@ class DynamicsStage(Stage):
         path = ctx.upstream_dir("selection") / "trajectories.json"
         advice = f"; rerun the selection stage with --rerun-from selection ({path})"
         try:
-            data = read_json(path)
-            return [
-                TaskSpec(
-                    f"traj_{int(e['index']):05d}",
-                    {
-                        "index": int(e["index"]),
-                        "sample": int(e["sample"]),
-                        "state": str(e["state"]),
-                        "rng": e["rng"],
-                    },
-                )
-                for e in data["trajectories"]
-            ]
-        except (OSError, ValueError, KeyError, TypeError) as exc:
+            selected = read_trajectories_json(path)
+        except ValueError as exc:
+            cause = exc.__cause__ if exc.__cause__ is not None else exc
             raise ProjectError(
-                f"trajectories.json is missing or malformed ({exc!r}){advice}"
+                f"trajectories.json is missing or malformed ({cause!r}){advice}"
             ) from exc
+        return [
+            TaskSpec(
+                t.task_id,
+                {"index": t.index, "sample": t.sample, "state": t.state, "rng": dict(t.rng)},
+            )
+            for t in selected
+        ]
 
     # ------------------------------------------------------------------------------ tasks
     def run_task(self, ctx: StageContext, task: TaskSpec, task_dir: Path) -> dict[str, Any]:

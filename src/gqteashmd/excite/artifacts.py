@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import json
 import os
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -179,3 +181,30 @@ def format_spectrum_csv(
         row.extend(spectrum.cross_section_by_state_A2[i])
         lines.append(",".join(f"{float(x):.6e}" for x in row))
     return "\n".join(lines) + "\n"
+
+
+@dataclass(frozen=True)
+class SelectedTrajectory:
+    """One entry of trajectories.json (USER_MANUAL section 6)."""
+
+    index: int
+    sample: int
+    state: str
+    rng: Mapping[str, Any]
+
+    @property
+    def task_id(self) -> str:
+        return f"traj_{self.index:05d}"
+
+
+def read_trajectories_json(path: Path) -> list[SelectedTrajectory]:
+    """The selected trajectories; ValueError naming the file if it is missing or malformed."""
+    path = Path(path)
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return [
+            SelectedTrajectory(int(e["index"]), int(e["sample"]), str(e["state"]), e["rng"])
+            for e in data["trajectories"]
+        ]
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        raise ValueError(f"{path} is missing or malformed ({exc!r})") from exc

@@ -15,6 +15,7 @@ import os
 import re
 import shutil
 from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -206,3 +207,105 @@ def write_output_h5(
         os.replace(tmp, path)
     finally:
         tmp.unlink(missing_ok=True)
+
+
+OUTPUT_DATASETS = (
+    "time_fs",
+    "step",
+    "grid_step",
+    "ticks",
+    "depth",
+    "active",
+    "hop_from",
+    "hop_to",
+    "frustrated",
+    "rung_changed",
+    "rejections",
+    "random_number",
+    "min_singular_value",
+    "energies",
+    "e_total",
+    "e_kinetic",
+    "populations",
+    "coefficients_real",
+    "coefficients_imag",
+    "probabilities",
+    "positions",
+    "velocities",
+)
+_REQUIRED_ATTRS = ("state_labels", "output_every", "dt_fs", "outcome", "task", "initial_state")
+
+
+def _plain(value: Any) -> Any:
+    if isinstance(value, bytes):
+        return value.decode("utf-8")
+    if isinstance(value, np.ndarray):
+        return [_plain(v) for v in value.tolist()]
+    if isinstance(value, np.generic):
+        return value.item()
+    return value
+
+
+@dataclass(frozen=True)
+class TrajectoryData:
+    """The contents of one output.h5 (USER_MANUAL section 6)."""
+
+    path: Path
+    attrs: Mapping[str, Any]
+    data: Mapping[str, np.ndarray]
+
+    def __getitem__(self, name: str) -> np.ndarray:
+        return self.data[name]
+
+    @property
+    def labels(self) -> tuple[str, ...]:
+        return tuple(str(x) for x in self.attrs["state_labels"])
+
+    @property
+    def output_every(self) -> int:
+        return int(self.attrs["output_every"])
+
+    @property
+    def dt_fs(self) -> float:
+        return float(self.attrs["dt_fs"])
+
+    @property
+    def outcome(self) -> str:
+        return str(self.attrs["outcome"])
+
+    @property
+    def task(self) -> str:
+        return str(self.attrs["task"])
+
+    @property
+    def initial_state(self) -> str:
+        return str(self.attrs["initial_state"])
+
+    @property
+    def n_records(self) -> int:
+        return int(self.data["time_fs"].shape[0])
+
+
+def read_output_h5(path: Path) -> TrajectoryData:
+    """Read one trajectory's output.h5; ValueError naming the file for any problem."""
+    import h5py
+
+    path = Path(path)
+    if not path.is_file():
+        raise ValueError(f"{path} does not exist")
+    try:
+        with h5py.File(path, "r") as f:
+            missing = [n for n in OUTPUT_DATASETS if n not in f]
+            missing += [a for a in _REQUIRED_ATTRS if a not in f.attrs]
+            if missing:
+                raise ValueError(f"{path} lacks {', '.join(missing)}")
+            data = {n: np.asarray(f[n][()]) for n in OUTPUT_DATASETS}
+            attrs = {k: _plain(v) for k, v in f.attrs.items()}
+    except OSError as exc:
+        raise ValueError(f"{path} is not a readable HDF5 file: {exc}") from exc
+    lengths = {n: a.shape[0] if a.ndim else -1 for n, a in data.items()}
+    m = lengths["time_fs"]
+    wrong = sorted(n for n, k in lengths.items() if k != m)
+    if wrong:
+        raise ValueError(f"{path}: datasets {', '.join(wrong)} do not have {m} records")
+    return TrajectoryData(path, attrs, data)
