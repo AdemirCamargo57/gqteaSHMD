@@ -153,7 +153,9 @@ Task directory `06_dynamics/tasks/traj_<k:05d>/`:
 - `restart/gen_<g>/`: `state.npz` (core restart format 2, `dynamics.restart.save_state`, which
   stores q, v, c, the snapshot, U, time, step, active, E_tot(0) and the RNG state),
   `electronic.npz` (`backend.save_state`), `meta.json` (step, time, accepted-step counters, S0
-  timer, rejection counters, log length in records). A generation is written into a temporary
+  timer, rejection counters, log length in records, and the position inside a halved interval:
+  its end time and the current halving depth, so a resume in the middle of a halved interval
+  finishes it with the same substep size before returning to the full dt). A generation is written into a temporary
   directory and renamed; `restart/current` (a small file written atomically) names the newest
   complete generation; the older generation is deleted only after `current` points to the new
   one. A kill at any instant leaves one complete generation.
