@@ -222,7 +222,9 @@ class Orchestrator:
                 break
             upstream_dirs[stage.name] = stage_dir
             summary.completed.append(stage.name)
-            if stage.name in self.config.workflow.pause_after and index < len(self.stages) - 1:
+            if stage.name in self.config.workflow.pause_after and any(
+                later.enabled(self.config) for later in self.stages[index + 1 :]
+            ):
                 summary.paused_after = stage.name
                 log.info(
                     "Paused after stage %s (workflow.pause_after); run again to continue",
