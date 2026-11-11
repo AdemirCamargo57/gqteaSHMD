@@ -1,4 +1,5 @@
-"""The production pipeline: prepare, optimize, frequencies, sampling, excitations, selection."""
+"""The production pipeline: prepare, optimize, frequencies, sampling, excitations, selection,
+dynamics (optional: enabled by a [dynamics] table)."""
 
 from __future__ import annotations
 

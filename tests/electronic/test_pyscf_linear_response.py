@@ -241,7 +241,7 @@ _WATER_ATOMS = "O 0 0 0.1173; H 0 0.7572 -0.4692; H 0 -0.7572 -0.4692"
 def test_symmetric_geometry_does_not_skip_a_root(make_settings):
     """Water CIS at the C2v test geometry: asking for 2 roots used to return the third
     (16.7707 eV) as S2 because the Davidson guess lacked one irrep (measured, Task 9)."""
-    from gqteashmd.core.units import ANGSTROM_TO_BOHR
+    from gqteashmd.core.units import ANGSTROM_TO_BOHR, HARTREE_IN_EV
 
     coords = (
         np.array([[0.0, 0.0, 0.1173], [0.0, 0.7572, -0.4692], [0.0, -0.7572, -0.4692]])
@@ -249,9 +249,8 @@ def test_symmetric_geometry_does_not_skip_a_root(make_settings):
     )
     settings = _tda_settings(make_settings, functional="hf", singlets=3)
     result = PySCFBackend(MoleculeSpec(("O", "H", "H")), settings).compute(Request(coords))
-    ev = 27.211386245988
-    assert abs(result.excitation_energy(S1) * ev - 13.1877) < 1e-3
-    assert abs(result.excitation_energy(S2) * ev - 15.1445) < 1e-3
+    assert abs(result.excitation_energy(S1) * HARTREE_IN_EV - 13.1877) < 1e-3
+    assert abs(result.excitation_energy(S2) * HARTREE_IN_EV - 15.1445) < 1e-3
 
 
 def test_first_rung_requests_three_extra_roots_and_keeps_the_lowest(make_settings, monkeypatch):
