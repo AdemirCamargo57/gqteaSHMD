@@ -191,8 +191,12 @@ class Orchestrator:
                 )
                 state.reset_stage(stage.name)
                 record = None
+            has_hook = type(stage).reopen_tasks is not Stage.reopen_tasks
+            if record is not None and record.status == StageStatus.RUNNING and has_hook:
+                # A controller killed part-way through a reopening: finish reopening.
+                self._reopen(state, stage, ctx, fp)
             if record is not None and record.status == StageStatus.DONE:
-                reopened = self._reopen(state, stage, ctx)
+                reopened = self._reopen(state, stage, ctx, fp) if has_hook else []
                 if not reopened:
                     summary.up_to_date.append(stage.name)
                     upstream_dirs[stage.name] = stage_dir
@@ -462,7 +466,7 @@ class Orchestrator:
                     attempts_delta=-1,
                 )
 
-    def _reopen(self, state: StateStore, stage: Stage, ctx: StageContext) -> list[str]:
+    def _reopen(self, state: StateStore, stage: Stage, ctx: StageContext, fp: str) -> list[str]:
         records = state.get_tasks(stage.name)
         results = self._collect_results(stage, ctx, records)
         ids = list(stage.reopen_tasks(ctx, results))
@@ -472,6 +476,10 @@ class Orchestrator:
                 f"Stage {stage.name!r} asked to reopen tasks that are not done: "
                 f"{', '.join(unknown)}"
             )
+        if not ids:
+            return ids
+        # RUNNING first: a kill part-way leaves a stage the normal path resumes.
+        state.set_stage(stage.name, StageStatus.RUNNING, fingerprint=fp)
         attempts = {r.task_id: r.attempts for r in records}
         for task_id in ids:
             state.set_task(

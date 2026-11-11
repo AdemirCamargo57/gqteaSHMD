@@ -465,3 +465,31 @@ def test_reopening_an_unknown_task_is_a_project_error(project, behaviour):
     behaviour(reopen_bad=["dynamics"])
     with pytest.raises(ProjectError, match="t999"):
         _run(project)
+
+
+def test_reopen_interrupted_midway_is_resumed(project, behaviour, monkeypatch):
+    _run(project)
+    behaviour(reopen=["dynamics:t001"])
+    original = StateStore.set_task
+
+    def dying(self, stage, task_id, status, **kwargs):
+        if kwargs.get("message") == "reopened":
+            raise RuntimeError("controller died")
+        return original(self, stage, task_id, status, **kwargs)
+
+    monkeypatch.setattr(StateStore, "set_task", dying)
+    with pytest.raises(RuntimeError, match="controller died"):
+        _run(project)
+    monkeypatch.setattr(StateStore, "set_task", original)
+    _run(project)
+    stage_dir = _run_dir(project) / "04_dynamics"
+    assert read_json(stage_dir / "tasks" / "t001" / "result.json")["result"]["runs"] == 2
+    with _state(project) as state:
+        assert state.get_stage("dynamics").status == StageStatus.DONE
+
+
+def test_stage_without_the_hook_ignores_damaged_results(project, behaviour):
+    _run(project)
+    for result in (_run_dir(project) / "00_prepare" / "tasks").glob("*/result.json"):
+        result.unlink()
+    assert "prepare" in _run(project).up_to_date
