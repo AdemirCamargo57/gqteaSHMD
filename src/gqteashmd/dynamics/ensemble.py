@@ -1,4 +1,5 @@
-"""Ensembles of 1D model trajectories: wavepacket initial conditions and branching statistics."""
+"""Ensembles of model trajectories: 1D wavepacket initial conditions and branching statistics
+(Tully models), LVC initial conditions and population ensembles (P7a-2)."""
 
 from __future__ import annotations
 
@@ -14,10 +15,13 @@ import numpy as np
 
 from gqteashmd.dynamics.driver import Outcome, run_trajectory
 from gqteashmd.dynamics.driver import initial_state as make_initial_state
+from gqteashmd.dynamics.lvc import LVCModel, lvc_wigner_samples
 from gqteashmd.dynamics.models import ElectronicModel
 from gqteashmd.dynamics.options import DynamicsOptions
 from gqteashmd.dynamics.randomness import GeneratorSource
-from gqteashmd.dynamics.records import TrajectoryState
+from gqteashmd.dynamics.records import StepRecord, TrajectoryState
+from gqteashmd.dynamics.representation import mch_coefficients
+from gqteashmd.dynamics.spin import expanded_states, spin_free_label
 
 SAMPLING_MODES = ("wigner", "fixed")
 BRANCHES = ("transmitted_lower", "transmitted_upper", "reflected_lower", "reflected_upper")
@@ -109,7 +113,7 @@ def _run_chunk(
     labels: list[str] = []
     for qi, vi, seq in zip(q0, v0, seeds, strict=True):
         rng = GeneratorSource(np.random.default_rng(seq))
-        state = make_initial_state(model, qi, vi, initial_state)
+        state = make_initial_state(model, qi, vi, initial_state, options=options)
         final, outcome = run_trajectory(model, state, options, rng, max_steps=max_steps, stop=stop)
         if outcome is Outcome.ENERGY_DRIFT:
             labels.append("energy_drift")
@@ -179,3 +183,170 @@ def run_model_ensemble(
     for name in labels:
         setattr(result, name, getattr(result, name) + 1)
     return result
+
+
+@dataclass
+class PopulationResult:
+    """Ensemble-averaged populations at ``times_au`` (energy-drift trajectories excluded, R9)."""
+
+    times_au: np.ndarray  # (n_out,)
+    labels_expanded: tuple[str, ...]
+    labels_spin_free: tuple[str, ...]
+    diag_classical: np.ndarray  # (n_out, n_exp)
+    diag_quantum: np.ndarray
+    mch_classical: np.ndarray
+    mch_quantum: np.ndarray
+    mch_spin_free_classical: np.ndarray  # (n_out, n_sf)
+    mch_spin_free_quantum: np.ndarray
+    n_trajectories: int  # requested
+    n_energy_drift: int
+    n_hops: int  # over the included trajectories
+    n_frustrated: int
+
+
+def _spin_free_matrix(counts: Sequence[int]) -> tuple[tuple[str, ...], tuple[str, ...], np.ndarray]:
+    """Labels of the expanded and spin-free states and the (n_exp, n_sf) summing matrix."""
+    states = expanded_states(counts)
+    free: list[str] = []
+    for s in states:
+        label = spin_free_label(s)
+        if label not in free:
+            free.append(label)
+    matrix = np.zeros((len(states), len(free)))
+    for i, s in enumerate(states):
+        matrix[i, free.index(spin_free_label(s))] = 1.0
+    return tuple(s.label() for s in states), tuple(free), matrix
+
+
+def _population_row(active: int, c: np.ndarray, u: np.ndarray | None) -> np.ndarray:
+    """(4, n_exp): diagonal classical/quantum, MCH classical/quantum (item 13)."""
+    n = c.size
+    diag_c = np.zeros(n)
+    diag_c[active] = 1.0
+    mch_c = np.abs(u[:, active]) ** 2 if u is not None else diag_c
+    return np.vstack([diag_c, np.abs(c) ** 2, mch_c, np.abs(mch_coefficients(u, c)) ** 2])
+
+
+def _run_population_chunk(
+    model: ElectronicModel,
+    q0: np.ndarray,
+    v0: np.ndarray,
+    seeds: Sequence[np.random.SeedSequence],
+    initial_state: int,
+    options: DynamicsOptions,
+    n_steps: int,
+    record_every: int,
+) -> list[tuple[np.ndarray, bool, int, int]]:
+    """Per trajectory: populations (n_out, 4, n_exp), drift flag, hops, frustrated hops."""
+    n_out = n_steps // record_every + 1
+    results: list[tuple[np.ndarray, bool, int, int]] = []
+    for qi, vi, seq in zip(q0, v0, seeds, strict=True):
+        rng = GeneratorSource(np.random.default_rng(seq))
+        state = make_initial_state(model, qi, vi, initial_state, options=options)
+        n = state.c.size
+        pops = np.zeros((n_out, 4, n))
+        pops[0] = _population_row(state.active, state.c, state.u)
+        hops = [0, 0]
+
+        def on_step(rec: StepRecord, pops: np.ndarray = pops, hops: list[int] = hops) -> None:
+            if rec.hop_to is not None:
+                hops[0] += 1
+            if rec.frustrated:
+                hops[1] += 1
+            if rec.step % record_every == 0:
+                pops[rec.step // record_every] = _population_row(rec.active, rec.c, rec.u)
+
+        _, outcome = run_trajectory(model, state, options, rng, max_steps=n_steps, on_step=on_step)
+        results.append((pops, outcome is Outcome.ENERGY_DRIFT, hops[0], hops[1]))
+    return results
+
+
+def run_population_ensemble(
+    model: ElectronicModel,
+    q0: np.ndarray,
+    v0: np.ndarray,
+    *,
+    initial_state: int,
+    options: DynamicsOptions,
+    seed: int,
+    n_steps: int,
+    record_every: int = 1,
+    workers: int = 1,
+) -> PopulationResult:
+    """Run ``len(q0)`` trajectories of exactly ``n_steps`` steps and average the populations.
+
+    ``q0`` and ``v0`` are (n, f); ``initial_state`` is an MCH (expanded) index. Populations are
+    recorded at step 0 and every ``record_every`` steps (item 13). Trajectory i uses child i of
+    the ``model-dynamics`` seed sequence, so the result does not depend on ``workers``.
+    A trajectory ending with ``energy_drift`` is excluded from every average and counted (R9);
+    if all drift, the averages are NaN (this function returns them; ``gqteashmd model-dynamics``
+    refuses that case with exit 1 and writes no JSON). Workers return only the populations at
+    the output times.
+    """
+    for name, value in (("workers", workers), ("n_steps", n_steps), ("record_every", record_every)):
+        if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+            raise ValueError(f"{name} must be an integer >= 1; got {value!r}")
+    q0 = np.atleast_2d(np.asarray(q0, dtype=float))
+    v0 = np.atleast_2d(np.asarray(v0, dtype=float))
+    n_traj = q0.shape[0]
+    if v0.shape != q0.shape or n_traj < 1:
+        raise ValueError("q0 and v0 must have the same shape (n, f) with n >= 1")
+    labels_exp, labels_free, matrix = _spin_free_matrix(model.state_counts)
+    children = np.random.SeedSequence([seed, _TRAJECTORY_TAG]).spawn(n_traj)
+    common = (initial_state, options, n_steps, record_every)
+
+    if workers == 1 or n_traj <= 1:
+        results = _run_population_chunk(model, q0, v0, children, *common)
+    else:
+        size = max(1, math.ceil(n_traj / (4 * workers)))
+        bounds = [(i, min(i + size, n_traj)) for i in range(0, n_traj, size)]
+        results = []
+        context = multiprocessing.get_context("spawn")
+        with ProcessPoolExecutor(max_workers=min(workers, len(bounds)), mp_context=context) as pool:
+            futures = [
+                pool.submit(_run_population_chunk, model, q0[a:b], v0[a:b], children[a:b], *common)
+                for a, b in bounds
+            ]
+            try:
+                for future in futures:
+                    results.extend(future.result())
+            except BaseException:
+                for future in futures:
+                    future.cancel()
+                raise
+
+    kept = [r for r in results if not r[1]]
+    n_out = n_steps // record_every + 1
+    if kept:
+        mean = np.mean([r[0] for r in kept], axis=0)  # (n_out, 4, n_exp)
+    else:
+        mean = np.full((n_out, 4, matrix.shape[0]), np.nan)
+    return PopulationResult(
+        times_au=np.arange(n_out) * record_every * options.dt_au,
+        labels_expanded=labels_exp,
+        labels_spin_free=labels_free,
+        diag_classical=mean[:, 0],
+        diag_quantum=mean[:, 1],
+        mch_classical=mean[:, 2],
+        mch_quantum=mean[:, 3],
+        mch_spin_free_classical=mean[:, 2] @ matrix,
+        mch_spin_free_quantum=mean[:, 3] @ matrix,
+        n_trajectories=n_traj,
+        n_energy_drift=len(results) - len(kept),
+        n_hops=sum(r[2] for r in kept),
+        n_frustrated=sum(r[3] for r in kept),
+    )
+
+
+def lvc_initial_conditions(
+    model: LVCModel, n: int, seed: int, sampling: str
+) -> tuple[np.ndarray, np.ndarray]:
+    """(q, v), each (n, f): T = 0 Wigner samples (the ``model-initial`` stream) or ``"fixed"``
+    (the reference geometry at rest for every trajectory)."""
+    if sampling not in SAMPLING_MODES:
+        raise ValueError(f"sampling must be one of {', '.join(SAMPLING_MODES)}; got {sampling!r}")
+    if sampling == "fixed":
+        q = np.tile(model.reference_q, (n, 1))
+        return q, np.zeros_like(q)
+    rng = np.random.default_rng(np.random.SeedSequence([seed, _INITIAL_TAG]))
+    return lvc_wigner_samples(model, n, rng)

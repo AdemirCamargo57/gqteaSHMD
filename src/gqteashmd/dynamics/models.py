@@ -17,6 +17,11 @@ class ElectronicModel(Protocol):
     n_dof: int
     masses: np.ndarray  # (f,) electron masses
 
+    @property
+    def state_counts(self) -> tuple[int, ...]:
+        """(n_singlets,) or (n_singlets, 0, n_triplets) before the spin expansion (P7a-2)."""
+        ...
+
     def evaluate(
         self, q: np.ndarray, previous: ElectronicSnapshot | None
     ) -> ElectronicSnapshot: ...
@@ -28,6 +33,11 @@ class DiabaticModel(ABC):
     n_states: int
     n_dof: int
     masses: np.ndarray
+
+    @property
+    def state_counts(self) -> tuple[int, ...]:
+        """Singlets only: (n_states,)."""
+        return (self.n_states,)
 
     @abstractmethod
     def diabatic(self, q: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -42,10 +52,13 @@ class DiabaticModel(ABC):
         v, dv = self.diabatic(q)
         energies, w = np.linalg.eigh(v)
         n = len(energies)
+        overlaps = None
         if previous is not None and previous.vectors is not None:
             signs = np.sign(np.einsum("ik,ik->k", w, previous.vectors))
             signs[signs == 0] = 1.0
             w = w * signs
+            # R10: S[b, a] = <psi_b(previous)|psi_a(this)>, after the sign alignment
+            overlaps = previous.vectors.T @ w
         else:
             # Deterministic frame: the largest-|component| of every eigenvector is positive.
             idx = np.argmax(np.abs(w), axis=0)
@@ -66,6 +79,7 @@ class DiabaticModel(ABC):
             nacs=nacs,
             hamiltonian=np.diag(energies).astype(complex),
             vectors=w,
+            overlaps=overlaps,
         )
 
 

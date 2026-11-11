@@ -18,6 +18,8 @@ class ElectronicSnapshot:
     # Model-internal eigenvectors for phase continuity, opaque to the driver; shape (m, n)
     # with one column per state (DiabaticModel: the diabatic->adiabatic matrix, m = n). Not U.
     vectors: np.ndarray | None = None
+    # (n, n) real, S[b, a] = <psi_b(previous)|psi_a(this)>; None when there is no previous snapshot
+    overlaps: np.ndarray | None = None
 
 
 @dataclass(eq=False)
@@ -30,6 +32,7 @@ class TrajectoryState:
     active: int
     snapshot: ElectronicSnapshot
     e_total_initial: float
+    u: np.ndarray | None = None  # complex (n, n); None = identity in MCH order (c is c^diag)
 
 
 @dataclass(frozen=True, eq=False)
@@ -48,3 +51,7 @@ class StepRecord:
     hop_from: int | None
     hop_to: int | None
     frustrated: bool
+    energies_diag: np.ndarray | None = None
+    c_mch: np.ndarray | None = None
+    active_mch: int | None = None
+    u: np.ndarray | None = None  # copy of U' (None = identity)

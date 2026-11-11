@@ -14,6 +14,8 @@ FRUSTRATED_MODES = ("keep", "reflect")
 DECOHERENCE_MODES = ("edc", "none")
 EDC_CONVENTIONS = decoherence.EDC_CONVENTIONS
 SUBSTEP_INTERPOLATIONS = propagators.INTERPOLATIONS
+COUPLINGS = ("nacdr", "overlap")
+GRADIENT_TRANSFORMATIONS = ("ngt", "none")
 
 
 def _choice(name: str, value: object, allowed: tuple[str, ...]) -> None:
@@ -37,6 +39,9 @@ class DynamicsOptions:
     energy_drift_limit_au: float = 0.5 / HARTREE_IN_EV
     edc_convention: str = "sharc"
     substep_interpolation: str = "midpoint"
+    coupling: str = "nacdr"
+    gradient_transformation: str = "ngt"
+    eselect_Eh: float | None = None
 
     def __post_init__(self) -> None:
         if not _finite(self.dt_au) or not self.dt_au > 0:
@@ -63,3 +68,13 @@ class DynamicsOptions:
                 f"energy_drift_limit_au must be a finite number > 0; "
                 f"got {self.energy_drift_limit_au!r}"
             )
+        _choice("coupling", self.coupling, COUPLINGS)
+        _choice("gradient_transformation", self.gradient_transformation, GRADIENT_TRANSFORMATIONS)
+        if self.eselect_Eh is not None and (
+            not _finite(self.eselect_Eh) or not self.eselect_Eh > 0
+        ):
+            raise ValueError(
+                f"eselect_Eh must be a finite number > 0 or None; got {self.eselect_Eh!r}"
+            )
+        if self.hopping == "fssh" and self.coupling == "overlap":
+            raise ValueError("hopping = 'fssh' needs coupling = 'nacdr'")

@@ -346,6 +346,7 @@ The order of steps 6–10 (hop *before* the velocity half-step, and when to reco
   - Transforming gradients to the diagonal basis. That transform needs NAC-type terms (`gradcorrect`), or approximations (`kmatrix`, `tdm`, `ngt`, `enac` in SHARC 4.1) when NACs aren't available, as with overlap-only Gaussian runs.
   - Hopping and rescaling expressed in the diagonal basis, including *spin-mixed* states where an "energy-difference-gradient" direction must be built in the diagonal basis.
 - Even if SOC comes late, keep `U` in the data model and in the loop from the start. Retrofitting it is a common cause of rewrites.
+- **Status (P7a-2, 2026-11-10, on `feat/p7a2-lvc-soc`):** `U` is carried. It is a field of the trajectory state and of the restart file (format version 2), built each step by `representation.diagonal_basis` with continuity against the previous `U` (the polar factor over degenerate blocks; the largest component real and positive at the first step), and `None` (the identity) when the MCH Hamiltonian has no off-diagonal element, which keeps the P7a-1 results bit-identical. Gradients are transformed to the diagonal basis (`ngt`, with the spin-free energies), and propagation, hopping and rescaling are done in the diagonal basis with `coupling = "nacdr"` or local diabatization from overlaps. Only `hopping = "sharc"` and `parallel_vel` work with SOC; the spin-mixed "energy-difference-gradient" direction is not built. Validated on LVC models (USER_MANUAL §8.15); SOC from PySCF (§4.6 option B) is still open.
 
 ### 4.3 Electronic propagation
 

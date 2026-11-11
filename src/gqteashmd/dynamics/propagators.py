@@ -14,6 +14,11 @@ All substeps of one nuclear step are built at once: E and H_eff are stacked as (
 arrays, diagonalised by one batched ``eigh`` and exponentiated together. Only the ordered
 product P = P_{N_s} ... P_1 and the start-of-substep amplitudes are formed in a short
 sequential loop.
+
+`propagate_diagonal` (P7a-2, Method reference 7) propagates in the diagonal basis with the
+full complex MCH Hamiltonian and either NAC couplings (``"nacdr"``) or local diabatization from
+the snapshot overlaps (``"overlap"``, Granucci, Persico & Toniolo, J. Chem. Phys. 114, 10608
+(2001)). Without a diagonal basis and with ``"nacdr"`` it calls `propagate` unchanged.
 """
 
 from __future__ import annotations
@@ -106,6 +111,26 @@ def substep_couplings(
     return t
 
 
+def substep_exponentials(h: np.ndarray, delta: float) -> np.ndarray:
+    """exp(-i H_m delta) for a stack of substep matrices H_m, shape (N_s, n, n).
+
+    Each H_m is Hermitised explicitly first (``eigh`` reads only one triangle), then all of
+    them are diagonalised by one batched ``eigh``. ``h`` is not modified.
+    """
+    h = 0.5 * (h + np.conj(h).swapaxes(-1, -2))
+    w, u = np.linalg.eigh(h)
+    factors: np.ndarray = (u * np.exp(-1j * w * delta)[:, None, :]) @ np.conj(u).swapaxes(-1, -2)
+    return factors
+
+
+def ordered_product(factors: np.ndarray) -> np.ndarray:
+    """P_{N_s} ... P_1 (later substeps on the left) of a stack of factors (N_s, n, n)."""
+    p: np.ndarray = factors[0].copy()
+    for m in range(1, factors.shape[0]):
+        p = factors[m] @ p
+    return p
+
+
 def propagate(
     c: np.ndarray,
     e0: np.ndarray,
@@ -141,9 +166,7 @@ def propagate(
     h = -1j * substep_couplings(nac0, nac1, v0, v1, nsubsteps, interpolation)  # (N_s, n, n)
     diag = np.arange(n)
     h[:, diag, diag] += energies  # the diagonals (fancy indexing: no reliance on a view)
-    h = 0.5 * (h + np.conj(h).swapaxes(-1, -2))
-    w, u = np.linalg.eigh(h)
-    factors = (u * np.exp(-1j * w * delta)[:, None, :]) @ np.conj(u).swapaxes(-1, -2)
+    factors = substep_exponentials(h, delta)
     # Ordered products P_m ... P_1; the amplitude before substep m + 1 is (P_m ... P_1) c.
     cumulative = np.empty_like(factors)
     p = factors[0]
@@ -155,3 +178,99 @@ def propagate(
     starts[0] = c
     starts[1:] = cumulative[:-1] @ c
     return p @ c, p.copy(), starts
+
+
+COUPLINGS = ("nacdr", "overlap")
+
+
+def _check_square(name: str, x: np.ndarray, n: int) -> np.ndarray:
+    x = np.asarray(x)
+    if x.shape != (n, n):
+        raise ValueError(f"{name} must have shape ({n}, {n}); got {x.shape}")
+    return x
+
+
+def propagate_diagonal(
+    c_diag: np.ndarray,
+    u0: np.ndarray | None,
+    u1: np.ndarray | None,
+    h0: np.ndarray,
+    h1: np.ndarray,
+    nac0: np.ndarray,
+    nac1: np.ndarray,
+    v0: np.ndarray,
+    v1: np.ndarray,
+    dt: float,
+    nsubsteps: int,
+    *,
+    coupling: str,
+    overlaps: np.ndarray | None,
+    interpolation: str,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray | None]:
+    """(c^diag(t+dt), R^diag, substep start amplitudes or None), Method reference 7.
+
+    ``h0``/``h1`` are the complex MCH Hamiltonians at t and t + dt, ``u0``/``u1`` the diagonal
+    bases (H^MCH = U diag(E^diag) U^dagger; ``None`` is the identity in MCH order) and
+    ``nac0``/``nac1`` the (masked) MCH NACs.
+
+    - Fast path (u0 = u1 = None, coupling ``"nacdr"``): the P7a-1 `propagate` on Re diag(h),
+      returning its outputs unchanged (bit-identical, including the substep start amplitudes).
+      An off-diagonal element of h0 or h1 is a ``ValueError`` there (it would be dropped).
+    - ``"nacdr"``: R^MCH = prod_m exp(-i (H(s_m) - i T(s_m)) delta), H(s) = (1 - s) h0 + s h1
+      with the full complex Hamiltonian and T the P7a-1 coupling for ``interpolation``.
+    - ``"overlap"`` (local diabatization; NACs ignored): with S = ``overlaps``,
+      S[b, a] = <psi_b(t)|psi_a(t+dt)>, H_tra = S h1 S^dagger is h1 written in the MCH basis
+      at t, H~(s) = (1 - s) h0 + s H_tra, and R^MCH = S^dagger prod_m exp(-i H~(s_m) delta).
+      Why S^dagger: a state |Psi> = sum_b c_b |psi_b(t)> has the t + dt components
+      <psi_a(t+dt)|Psi> = sum_b conj(S[b, a]) c_b = (S^dagger c)_a; likewise
+      <psi_b(t)|H|psi_b'(t)> = sum_aa' S[b, a] h1[a, a'] conj(S[b', a']) = (S h1 S^dagger).
+      ``coupling = "overlap"`` without overlaps raises ``ValueError``.
+
+    R^diag = U1^dagger R^MCH U0 and c' = R^diag c^diag. Products have later substeps on the
+    left; the substep matrices are Hermitised and diagonalised by one batched ``eigh``. The
+    substep start amplitudes are returned only on the fast path (only ``"fssh"`` needs them).
+    """
+    if coupling not in COUPLINGS:
+        raise ValueError(f"coupling must be one of {COUPLINGS}, got {coupling!r}")
+    if coupling == "overlap" and overlaps is None:
+        raise ValueError("coupling = 'overlap' needs the snapshot overlaps at t + dt")
+    if u0 is None and u1 is None and coupling == "nacdr":
+        for name, h in (("h0", h0), ("h1", h1)):
+            h = np.asarray(h)
+            if np.count_nonzero(h) != np.count_nonzero(np.diagonal(h)):
+                raise ValueError(
+                    f"{name} has an off-diagonal element, which the fast path (u0 = u1 = None, "
+                    "'nacdr') would drop; pass the diagonal bases u0 and u1"
+                )
+        e0 = np.real(np.diagonal(np.asarray(h0)))
+        e1 = np.real(np.diagonal(np.asarray(h1)))
+        c_new, p, starts = propagate(
+            c_diag, e0, e1, nac0, nac1, v0, v1, dt, nsubsteps, interpolation=interpolation
+        )
+        return c_new, p, starts
+    if nsubsteps < 1:
+        raise ValueError("nsubsteps must be >= 1")
+    _check_interpolation(interpolation)
+    c = np.asarray(c_diag, dtype=complex)
+    n = c.shape[0]
+    h0 = _check_square("h0", np.asarray(h0, dtype=complex), n)
+    h1 = _check_square("h1", np.asarray(h1, dtype=complex), n)
+    delta = dt / nsubsteps
+    s = substep_fractions(nsubsteps, interpolation)
+    r = 1.0 - s
+    s_ovl: np.ndarray | None = None
+    h_end = h1
+    if coupling == "overlap":
+        s_ovl = _check_square("overlaps", np.asarray(overlaps, dtype=complex), n)
+        h_end = s_ovl @ h1 @ np.conj(s_ovl).T  # H_tra: h1 in the MCH basis at t
+    h = r[:, None, None] * h0 + s[:, None, None] * h_end  # (N_s, n, n)
+    if s_ovl is None:  # "nacdr": the P7a-1 coupling T(s_m) of this interpolation
+        h = h - 1j * substep_couplings(nac0, nac1, v0, v1, nsubsteps, interpolation)
+    r_mch = ordered_product(substep_exponentials(h, delta))
+    if s_ovl is not None:  # back from the t basis to the t + dt basis
+        r_mch = np.conj(s_ovl).T @ r_mch
+    if u0 is not None:
+        r_mch = r_mch @ _check_square("u0", np.asarray(u0, dtype=complex), n)
+    if u1 is not None:
+        r_mch = np.conj(_check_square("u1", np.asarray(u1, dtype=complex), n)).T @ r_mch
+    return r_mch @ c, r_mch, None

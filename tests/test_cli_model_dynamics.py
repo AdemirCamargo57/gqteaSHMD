@@ -1,5 +1,7 @@
 import json
 
+import pytest
+
 from gqteashmd.cli import main
 
 INPUT = """\
@@ -163,3 +165,143 @@ def test_an_error_inside_a_trajectory_is_not_reported_as_invalid_input(tmp_path,
     err = capsys.readouterr().err
     assert "run failed inside a trajectory" in err and "degenerate" in err
     assert "Invalid model-dynamics input" not in err and "internal error" not in err
+
+
+LVC_INPUT = """[model]
+name = "lvc"
+template = "{template}"
+
+[initial]
+state = "S1"
+
+[dynamics]
+dt_au = 20.0
+
+[ensemble]
+n_trajectories = 8
+n_steps = 50
+record_every = 10
+seed = 3
+"""
+
+
+def _lvc(tmp_path, extra="", template="lvc/lvc_soc.template", sub="in"):
+    import shutil
+    from pathlib import Path
+
+    src = Path(__file__).parent / "data" / "lvc"
+    shutil.copytree(src, tmp_path / "lvc", dirs_exist_ok=True)
+    folder = tmp_path / sub
+    folder.mkdir(exist_ok=True)
+    text = LVC_INPUT.format(template="../" + template) + extra
+    path = folder / "lvc.toml"
+    path.write_text(text)
+    return path
+
+
+def test_lvc_example_runs_and_writes_the_documented_json(tmp_path, capsys):
+    out = tmp_path / "out.json"
+    path = _lvc(tmp_path)  # the template is relative to the input file, not to the cwd
+    assert main(["model-dynamics", str(path), "--json", str(out)]) == 0
+    text = capsys.readouterr().out
+    assert "spin-free MCH populations" in text and "elapsed" in text and "T2" in text
+    data = json.loads(out.read_text())
+    assert data["kind"] == "lvc_populations" and data["schema_version"] == 1
+    assert data["times_au"] == [0.0, 200.0, 400.0, 600.0, 800.0, 1000.0]
+    assert data["labels_spin_free"] == ["S0", "S1", "T1", "T2"]
+    assert len(data["labels_expanded"]) == 8
+    pops = data["populations"]
+    assert set(pops) == {
+        "diag_classical",
+        "diag_quantum",
+        "mch_classical",
+        "mch_quantum",
+        "mch_spin_free_classical",
+        "mch_spin_free_quantum",
+    }
+    assert len(pops["mch_quantum"]) == 6 and len(pops["mch_quantum"][0]) == 8
+    assert data["counts"]["n_trajectories"] == 8
+    assert data["model"]["template"] == str((tmp_path / "lvc" / "lvc_soc.template").resolve())
+    assert data["ensemble"]["n_steps"] == 50
+
+
+def test_lvc_triplet_ms_and_errors(tmp_path, capsys):
+    path = _lvc(tmp_path, sub="a")
+    text = path.read_text().replace('state = "S1"', 'state = "T2"\nms = 1')
+    path.write_text(text)
+    assert main(["model-dynamics", str(path)]) == 0
+    capsys.readouterr()
+    for old, new, key in (
+        ('state = "S1"', 'state = "S1"\nms = 0', "initial.ms"),
+        ('state = "S1"', 'state = "S9"', "S9"),
+        ('state = "S1"', 'state = "x"', "initial.state"),
+        ("n_steps = 50", "n_steps = 0", "ensemble.n_steps"),
+        ("n_steps = 50", "n_steps = 5\nmax_steps = 5", "ensemble.max_steps"),
+        ("[initial]", "[initial]\nk = 5.0", "initial.k"),
+    ):
+        bad = _lvc(tmp_path, sub="b")
+        bad.write_text(bad.read_text().replace(old, new))
+        assert main(["model-dynamics", str(bad)]) == 2, key
+        assert key in capsys.readouterr().err
+
+
+def test_lvc_missing_template_and_keys_across_models(tmp_path, capsys):
+    path = _lvc(tmp_path, template="lvc/missing.template", sub="c")
+    assert main(["model-dynamics", str(path)]) == 2
+    assert "missing.template" in capsys.readouterr().err
+    tully = _write(tmp_path, INPUT + "n_steps = 5\n")
+    assert main(["model-dynamics", str(tully)]) == 2
+    assert "ensemble.n_steps" in capsys.readouterr().err
+    tully = _write(
+        tmp_path, INPUT.replace('name = "tully_sac"', 'name = "tully_sac"\nspin_orbit = true')
+    )
+    assert main(["model-dynamics", str(tully)]) == 2
+    assert "model.spin_orbit" in capsys.readouterr().err
+
+
+def test_lvc_near_zero_frequency_is_an_input_error(tmp_path, capsys):
+    """An external mode written as 1e-8 Eh instead of exactly 0 in V0.txt: exit 2, no JSON."""
+    path = _lvc(tmp_path, sub="z")
+    v0 = tmp_path / "lvc" / "V0.txt"
+    lines = v0.read_text().splitlines()
+    i = lines.index("Frequencies") + 1
+    values = lines[i].split()
+    values[0] = "1.0e-08"
+    lines[i] = " ".join(values)
+    v0.write_text("\n".join(lines) + "\n")
+    out = tmp_path / "out.json"
+    assert main(["model-dynamics", str(path), "--json", str(out)]) == 2
+    err = capsys.readouterr().err
+    assert "Cannot use the LVC template" in err and "mode 1" in err and "exactly 0" in err
+    assert not out.exists()
+
+
+def test_lvc_all_trajectories_drifting_is_exit_1_without_json(tmp_path, capsys):
+    """energy_drift_limit_au = 1e-14 makes every trajectory end with energy_drift."""
+    path = _lvc(tmp_path, sub="d")
+    text = path.read_text().replace("dt_au = 20.0", "dt_au = 20.0\nenergy_drift_limit_au = 1e-14")
+    path.write_text(text)
+    out = tmp_path / "out.json"
+    assert main(["model-dynamics", str(path), "--json", str(out)]) == 1
+    err = capsys.readouterr().err
+    assert "gqteashmd: error: all 8 trajectories ended with energy_drift" in err
+    assert not out.exists()
+
+
+def test_tully_all_trajectories_drifting_still_writes_valid_json(tmp_path, capsys):
+    """The Tully path counts drift as a branch; with every trajectory drifting the JSON stays
+    strict (probabilities 0.0 over zero finished trajectories, no NaN)."""
+    out = tmp_path / "out.json"
+    text = INPUT + "[dynamics]\nenergy_drift_limit_au = 1e-14\n"
+    assert main(["model-dynamics", str(_write(tmp_path, text)), "--json", str(out)]) == 0
+    capsys.readouterr()
+    data = json.loads(out.read_text(), parse_constant=lambda name: pytest.fail(name))
+    assert data["counts"]["energy_drift"] == 5 and data["n_finished"] == 0
+
+
+def test_overlap_coupling_runs_on_a_tully_input(tmp_path, capsys):
+    out = tmp_path / "out.json"
+    text = INPUT + '[dynamics]\ncoupling = "overlap"\n'
+    assert main(["model-dynamics", str(_write(tmp_path, text)), "--json", str(out)]) == 0
+    capsys.readouterr()
+    assert json.loads(out.read_text())["dynamics"]["coupling"] == "overlap"

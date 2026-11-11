@@ -156,6 +156,7 @@ def fssh(
     workers: int = WORKERS,
     edc_convention: str = "granucci_persico",
     hopping: str = "sharc",
+    coupling: str = "nacdr",
 ):
     """The FSSH ensemble; returns (Branching, wall seconds).
 
@@ -163,6 +164,8 @@ def fssh(
     ``edc_convention = "sharc"`` gives the SHARC 4.1 manual's eq. (8.25). ``hopping`` is the
     probability scheme: ``"sharc"`` (Mai, Marquetand & Gonzalez 2015) or ``"fssh"`` (Tully's
     flux formula); with ``decoherence = "none"`` both are fewest-switches surface hopping.
+    ``coupling`` is ``"nacdr"`` (NACs, the P7a-1 runs) or ``"overlap"`` (local diabatization,
+    Granucci, Persico & Toniolo 2001; P7a-2).
     """
     options = DynamicsOptions(
         dt_au=0.5,
@@ -172,6 +175,7 @@ def fssh(
         frustrated="keep",
         decoherence=decoherence,
         edc_convention=edc_convention,
+        coupling=coupling,
     )
     start = time.perf_counter()
     result = run_model_ensemble(
