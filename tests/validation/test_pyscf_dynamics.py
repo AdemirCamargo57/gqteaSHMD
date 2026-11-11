@@ -31,7 +31,7 @@ from gqteashmd.core.units import (
     DALTON_IN_ME,
 )
 from gqteashmd.dynamics.options import DynamicsOptions
-from gqteashmd.dynamics.randomness import GeneratorSource
+from gqteashmd.dynamics.randomness import GeneratorSource, RandomSource, ReplaySource
 from gqteashmd.electronic.base import MoleculeSpec
 from gqteashmd.electronic.factory import make_backend
 from gqteashmd.trajectory.model import BackendModel
@@ -95,12 +95,14 @@ class System:
         n_steps: int,
         initial: InitialConditions | None = None,
         seed: int = 0,
+        source: RandomSource | None = None,
         **options,
     ) -> tuple[dict, np.ndarray]:
         """Run (or resume) trajectory `name` to n_steps steps of dt_fs; a new backend each call.
 
-        `initial` defaults to (q, v, S1); `seed` seeds the hopping stream. The result also holds
-        `compute_calls`, the number of backend.compute calls of this call."""
+        `initial` defaults to (q, v, S1); `seed` seeds the hopping stream unless `source` is
+        given. The result also holds `compute_calls`, the number of backend.compute calls of
+        this call."""
         directory = self.directory / name
         backend = make_backend(
             self.config,
@@ -127,7 +129,9 @@ class System:
         runner = TrajectoryRunner(model, settings, directory)
         if initial is None:
             initial = InitialConditions(self.q, self.v, 1)
-        result = runner.run(initial, GeneratorSource(np.random.default_rng(seed)))
+        if source is None:
+            source = GeneratorSource(np.random.default_rng(seed))
+        result = runner.run(initial, source)
         rows = StepLog(directory / "steps.log", model.n_states, model.n_dof).read()
         return {**result, "compute_calls": calls}, rows
 
@@ -190,6 +194,7 @@ def test_ethylene_casscf_runs_without_rejection_with_local_diabatization(ethylen
 
 @pytest.mark.xfail(
     strict=True,
+    raises=AssertionError,
     reason=(
         "changed after the measured numbers were seen (P7b Task 9, controller ruling): the plan's "
         "1e-4 Eh bound at dt 0.5 fs was fixed before any number and is too tight; measured "
@@ -313,6 +318,7 @@ def test_water_cis_drift_scales_as_dt_squared(tmp_path):
 
 @pytest.mark.xfail(
     strict=True,
+    raises=AssertionError,
     reason=(
         "changed after the measured numbers were seen (P7b Task 9, controller ruling): the plan's "
         "1e-4 Eh bound over 20 steps of 0.25 fs is not reachable on the dissociative CIS S1; "
@@ -338,3 +344,33 @@ def test_water_cis_conserves_energy_over_twenty_steps(tmp_path):
     assert result["outcome"] == "finished" and result["n_grid_steps"] == 20, numbers
     assert drift <= 1e-4, numbers
     assert result["n_rejections"] == 0 and int(rows["rejections"].sum()) == 0, numbers
+
+
+def test_water_cis_hops_with_pyscf(tmp_path):
+    """Hops through the runner with PySCF (final review M1): xi = 0 hops whenever a probability
+    is > 0, so refresh_active_gradient -> PySCFBackend.compute_more runs. The drift bound 5e-4 Eh
+    was fixed before the run (the reviewer's probe saw 1.2e-4 Eh)."""
+    result, rows = _timed(
+        "(M1) water CIS 8 steps of 0.125 fs with hops",
+        lambda: _water(tmp_path).run(
+            "hops",
+            dt_fs=0.125,
+            n_steps=8,
+            hopping="sharc",
+            coupling="overlap",
+            source=ReplaySource([0.0] * 400),
+        ),
+    )
+    drift = _drift(rows)
+    numbers = (
+        f"n_hops {result['n_hops']}, n_frustrated {result['n_frustrated']}, max |E_tot - E_tot(0)| "
+        f"= {drift:.3e} Eh; {_brief(result)}"
+    )
+    print("(M1)", numbers)
+    assert result["outcome"] == "finished", numbers
+    assert result["n_hops"] >= 1, numbers
+    for name in rows.dtype.names:
+        # record 0 has no random number and no overlap by design (NaN)
+        values = rows[name][1:] if name in ("random_number", "min_singular_value") else rows[name]
+        assert np.all(np.isfinite(values)), f"{name}: {numbers}"
+    assert drift <= 5e-4, numbers
