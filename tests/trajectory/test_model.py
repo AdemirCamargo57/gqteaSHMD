@@ -10,6 +10,7 @@ from gqteashmd.dynamics.driver import initial_state, step
 from gqteashmd.dynamics.lvc import LVCModel, lvc_wigner_samples
 from gqteashmd.dynamics.options import DynamicsOptions
 from gqteashmd.dynamics.randomness import ReplaySource
+from gqteashmd.errors import ElectronicStructureError
 from gqteashmd.overlaps.tracking import lowdin_orthonormalize
 from gqteashmd.testing.fake_backend import ModelBackend
 from gqteashmd.trajectory.model import BackendModel
@@ -150,3 +151,28 @@ def test_construction_errors():
         BackendModel(ModelBackend(model), model.masses, coupling="ddr")
     with pytest.raises(ValueError, match="masses"):
         BackendModel(ModelBackend(model), model.masses[:-1], coupling="overlap")
+
+
+@pytest.mark.parametrize("kind", ["nan_energy", "nan_gradient"])
+def test_non_finite_data_is_an_electronic_failure(kind):
+    model = _model()
+    adapter = BackendModel(ModelBackend(model, faults={1: kind}), model.masses, coupling="overlap")
+    adapter.active = 1
+    with pytest.raises(ElectronicStructureError) as info:
+        adapter.evaluate(model.reference_q, None)
+    assert info.value.retryable is False
+
+
+def test_a_failed_gradient_refresh_is_an_electronic_failure():
+    model = _model()
+    adapter = BackendModel(
+        ModelBackend(model, faults={1: "more_error"}), model.masses, coupling="overlap"
+    )
+    adapter.active = 1
+    q0, v0 = _start(model)
+    state = initial_state(
+        adapter, q0, v0, 1, options=DynamicsOptions(dt_au=10.0, coupling="overlap")
+    )
+    with pytest.raises(ElectronicStructureError) as info:
+        adapter.refresh_active_gradient(state)
+    assert info.value.retryable is False

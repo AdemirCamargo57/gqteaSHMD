@@ -20,6 +20,7 @@ import numpy as np
 from gqteashmd.core.states import StateLabel
 from gqteashmd.dynamics.records import ElectronicSnapshot, TrajectoryState
 from gqteashmd.electronic.base import ElectronicBackend, ElectronicResult, Request
+from gqteashmd.errors import ElectronicStructureError
 from gqteashmd.overlaps.tracking import lowdin_orthonormalize
 
 FIRST_CASSCF_RUNG = "previous orbitals"
@@ -91,7 +92,35 @@ class BackendModel:
         self.last_meta = dict(result.meta)
         if previous is not None and result.overlaps is None:
             raise ValueError("the backend returned no overlaps with the previous geometry")
+        self._check_finite(result, self.labels[self.active])
         return self._snapshot(result)
+
+    def _check_finite(self, result: ElectronicResult, label: StateLabel) -> None:
+        """Non-finite or missing electronic data is a (non-retryable) electronic failure."""
+        energies = np.array([float(result.energies[s]) for s in self.labels])
+        if not np.all(np.isfinite(energies)):
+            raise ElectronicStructureError(
+                f"the backend returned non-finite energies {energies.tolist()}", retryable=False
+            )
+        self._check_gradient(result, label)
+        if result.overlaps is not None and not np.all(np.isfinite(result.overlaps)):
+            raise ElectronicStructureError(
+                "the backend returned non-finite overlaps with the previous geometry",
+                retryable=False,
+            )
+
+    @staticmethod
+    def _check_gradient(result: ElectronicResult, label: StateLabel) -> None:
+        gradient = result.gradients.get(label)
+        if gradient is None:
+            raise ElectronicStructureError(
+                f"the backend returned no gradient for the active state {label}", retryable=False
+            )
+        if not np.all(np.isfinite(gradient)):
+            raise ElectronicStructureError(
+                f"the backend returned a non-finite gradient for the active state {label}",
+                retryable=False,
+            )
 
     def _snapshot(self, result: ElectronicResult) -> ElectronicSnapshot:
         n, f = self.n_states, self.n_dof
@@ -118,6 +147,7 @@ class BackendModel:
         """The state with the gradient of its (new) active state computed at its geometry."""
         label = self.labels[state.active]
         result = self.backend.compute_more(gradients=frozenset({label}))
+        self._check_gradient(result, label)
         gradients = np.array(state.snapshot.gradients, copy=True)
         gradients[state.active] = np.asarray(result.gradients[label], dtype=float).reshape(-1)
         snapshot = dataclasses.replace(state.snapshot, gradients=gradients)

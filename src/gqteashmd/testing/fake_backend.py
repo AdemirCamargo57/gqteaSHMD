@@ -5,10 +5,18 @@ previous ElectronicSnapshot plays the role of PySCF's reference wavefunction: th
 ``evaluate(q, previous)`` gives the phase-aligned states and the overlaps. Faults are keyed by
 the 1-based number of the ``compute`` call (``calls`` sets the count already made, so a backend
 built for a resumed run can continue the numbering of a crashed one).
+
+Fault kinds: ``error`` / ``retryable`` (compute raises), ``low_overlap`` (min singular value 0.1),
+``rung`` (CASSCF leaves its first rung), ``no_overlaps``, ``crash`` (SimulatedCrash), ``kill``
+(os._exit, needs ``marker_dir``), ``nan_energy`` (every returned energy is NaN), ``nan_gradient``
+(every returned gradient is NaN) and ``more_error`` (the next ``compute_more`` after this compute
+call raises a non-retryable ElectronicStructureError). Only the returned result is faulty; the
+backend's own state stays clean.
 """
 
 from __future__ import annotations
 
+import dataclasses
 import io
 import os
 from collections.abc import Mapping
@@ -24,7 +32,18 @@ from gqteashmd.electronic.base import Capabilities, ElectronicBackend, Electroni
 from gqteashmd.errors import ElectronicStructureError
 from gqteashmd.util.fileio import write_bytes_atomic
 
-FAULTS = ("error", "retryable", "low_overlap", "rung", "no_overlaps", "crash", "kill")
+FAULTS = (
+    "error",
+    "retryable",
+    "low_overlap",
+    "rung",
+    "no_overlaps",
+    "crash",
+    "kill",
+    "nan_energy",
+    "nan_gradient",
+    "more_error",
+)
 _ARRAYS = ("energies", "gradients", "nacs", "hamiltonian", "vectors", "overlaps")
 
 
@@ -53,6 +72,7 @@ class ModelBackend(ElectronicBackend):
         self._marker_dir = None if marker_dir is None else Path(marker_dir)
         self._previous: ElectronicSnapshot | None = None
         self._live: ElectronicSnapshot | None = None
+        self._more_error = False
 
     @property
     def states(self) -> tuple[StateLabel, ...]:
@@ -67,6 +87,7 @@ class ModelBackend(ElectronicBackend):
     def compute(self, request: Request) -> ElectronicResult:
         self.calls += 1
         self._live = None
+        self._more_error = False
         fault = self._faults.get(self.calls)
         if fault == "crash":
             raise SimulatedCrash(f"simulated crash at compute call {self.calls}")
@@ -99,7 +120,18 @@ class ModelBackend(ElectronicBackend):
             meta["casscf"] = "SCF orbitals"
         self._previous = snap
         self._live = snap
-        return self._result(snap, request.gradients, request.nacs, overlaps, meta)
+        self._more_error = fault == "more_error"
+        result = self._result(snap, request.gradients, request.nacs, overlaps, meta)
+        if fault == "nan_energy":
+            result = dataclasses.replace(
+                result, energies={label: float("nan") for label in result.energies}
+            )
+        if fault == "nan_gradient":
+            result = dataclasses.replace(
+                result,
+                gradients={label: np.full_like(g, np.nan) for label, g in result.gradients.items()},
+            )
+        return result
 
     def compute_more(
         self,
@@ -108,6 +140,11 @@ class ModelBackend(ElectronicBackend):
     ) -> ElectronicResult:
         if self._live is None:
             raise ValueError("compute_more() needs a successful preceding compute()")
+        if self._more_error:
+            self._more_error = False
+            raise ElectronicStructureError(
+                f"scripted compute_more failure after compute call {self.calls}", retryable=False
+            )
         return self._result(self._live, gradients, nacs, None, {"backend": "model"})
 
     def _result(

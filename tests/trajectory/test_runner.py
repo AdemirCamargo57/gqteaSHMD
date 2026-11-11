@@ -233,3 +233,29 @@ def test_settings_validation():
         RunSettings(options, tmax_au=10 * DT, max_step_halvings=7)
     assert RunSettings(options, tmax_au=10 * DT).ticks_per_step == 8
     assert runner_module.LOG_FILE == "steps.log"
+
+
+def test_non_finite_energies_halve_the_interval(tmp_path):
+    result, d = _run(tmp_path, faults={6: "nan_energy"})
+    assert result["outcome"] == "finished" and result["n_rejections"] == 1
+    rows = _log(d)
+    assert len(rows) == N + 2
+    assert np.all(np.isfinite(rows["e_total"])) and np.all(np.isfinite(rows["q"]))
+    assert (rows[5]["grid_step"], rows[5]["ticks"], rows[5]["depth"]) == (4, 4, 1)
+
+
+def test_persistent_non_finite_energies_end_the_trajectory(tmp_path):
+    result, _ = _run(tmp_path, faults={c: "nan_energy" for c in (6, 7, 8, 9)})
+    assert result["outcome"] == "electronic_failure" and result["n_rejections"] == 4
+    assert "fs" in result["message"] and "non-finite" in result["message"]
+
+
+def test_a_failed_gradient_refresh_after_a_hop_rejects_the_step(tmp_path):
+    _, reference = _run(tmp_path, name="ref", source=ReplaySource([0.0] * 200))
+    rows = _log(reference)
+    k = int(rows["grid_step"][np.flatnonzero(rows["hop_to"] >= 0)[0]])
+    result, d = _run(tmp_path, faults={k + 1: "more_error"}, source=ReplaySource([0.0] * 200))
+    assert result["n_rejections"] >= 1
+    assert result["outcome"] in {"finished", "electronic_failure", "energy_drift"}
+    rows = _log(d)
+    assert np.all(np.isfinite(rows["e_total"])) and np.all(np.isfinite(rows["q"]))

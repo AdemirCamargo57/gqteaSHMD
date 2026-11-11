@@ -104,3 +104,20 @@ def test_reset_forgets_the_previous_geometry():
     backend.compute(Request(_coords(model)))
     backend.reset()
     assert backend.compute(Request(_coords(model), overlaps=True)).overlaps is None
+
+
+def test_nan_and_more_error_faults():
+    model = _model()
+    backend = ModelBackend(model, faults={1: "nan_energy", 2: "nan_gradient", 3: "more_error"})
+    r1 = backend.compute(Request(_coords(model), gradients=frozenset({S1})))
+    assert all(np.isnan(e) for e in r1.energies.values())
+    assert np.all(np.isfinite(r1.gradients[S1]))
+    r2 = backend.compute(Request(_coords(model, 0.01), gradients=frozenset({S1})))
+    assert all(np.isfinite(e) for e in r2.energies.values())
+    assert np.all(np.isnan(r2.gradients[S1]))
+    backend.compute(Request(_coords(model, 0.02)))
+    with pytest.raises(ElectronicStructureError) as info:
+        backend.compute_more(gradients=frozenset({S1}))
+    assert info.value.retryable is False
+    backend.compute(Request(_coords(model, 0.03)))  # no fault: compute_more works again
+    backend.compute_more(gradients=frozenset({S1}))
