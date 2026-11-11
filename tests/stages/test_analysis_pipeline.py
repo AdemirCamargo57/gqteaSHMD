@@ -1,6 +1,12 @@
 """The analysis stage under the orchestrator: canned LVC upstream, real dynamics and analysis."""
 
+import contextlib
 import json
+import os
+import signal
+import subprocess
+import sys
+import time
 from pathlib import Path
 
 import h5py
@@ -124,3 +130,39 @@ def test_lowering_tmax_reopens_the_analysis_and_cuts_every_trajectory(tmp_path, 
     before = (_ana(tmp_path) / "analysis.json").stat().st_mtime_ns
     assert _main(lowered) == 0  # a second run at 2.0 is a no-op for the analysis
     assert (_ana(tmp_path) / "analysis.json").stat().st_mtime_ns == before
+
+
+@pytest.mark.slow
+def test_a_killed_controller_resumes_through_the_analysis(tmp_path, write_input):
+    ref, run = tmp_path / "ref", tmp_path / "kill"
+    ref.mkdir()
+    run.mkdir()
+    start = time.perf_counter()
+    assert _main(_input(ref, write_input, tmax="25.0")) == 0
+    print(f"reference canned run: {time.perf_counter() - start:.1f} s")
+    path = _input(run, write_input, tmax="25.0")
+    marker = run / "run" / "03_dynamics" / "tasks" / "traj_00000" / "restart" / "current"
+    env = dict(os.environ)
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "gqteashmd", "run", str(path), "--pipeline", CANNED],
+        env=env,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+    try:
+        deadline = time.monotonic() + 120
+        while not marker.exists():
+            if proc.poll() is not None:
+                pytest.fail(f"the run ended (exit {proc.returncode}) before {marker} existed")
+            if time.monotonic() > deadline:
+                pytest.fail(f"{marker} did not appear within 120 s")
+            time.sleep(0.01)
+        assert proc.poll() is None, "the controller finished before it could be killed"
+    finally:
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(proc.pid, signal.SIGKILL)
+        proc.wait()
+    assert _main(path) == 0
+    a, b = (r / "run" / "04_analysis" / "populations.csv" for r in (ref, run))
+    assert a.read_bytes() == b.read_bytes()
