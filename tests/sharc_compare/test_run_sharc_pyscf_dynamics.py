@@ -117,6 +117,34 @@ def test_runqm_turns_step_zero_into_init(tmp_path):
     assert (work / "QM" / "interface.seen").read_text().strip() == "/opt/sharc/bin/SHARC_PYSCF.py"
 
 
+def test_pyscf_template_and_our_settings_share_the_convergence():
+    p3a = _load("run_sharc_pyscf").TEMPLATE.format(ncas=2, nelecas=2, roots=2, basis="6-31g*")
+    assert p3a == dyn.PYSCF_TEMPLATE  # the default is the P3a/P6 template, byte for byte
+    tight = dyn.pyscf_template(dyn.TIGHT_CONVERGENCE).splitlines()
+    assert "conv-tol 1e-12" in tight and "conv-tol-grad 1e-8" in tight
+    casscf = dyn.electronic_settings(dyn.TIGHT_CONVERGENCE).casscf
+    assert (casscf.conv_tol, casscf.conv_tol_grad) == (1e-12, 1e-8)
+    default = dyn.electronic_settings().casscf
+    assert (default.conv_tol, default.conv_tol_grad) == (1e-10, 1e-6)
+
+
+def test_runqm_writes_the_given_template(tmp_path):
+    initial = dyn.ethylene_initial_conditions()
+    template = dyn.pyscf_template(dyn.TIGHT_CONVERGENCE)
+    dyn.write_trajectory_files(
+        tmp_path / "t",
+        symbols=initial.symbols,
+        masses_amu=initial.masses_amu,
+        q0=initial.q_bohr,
+        v0=initial.v_au,
+        input_text="x\n",
+        provider="sharc_pyscf",
+        sharc_python="python",
+        template=template,
+    )
+    assert (tmp_path / "t" / "QM" / "PYSCF.template").read_text() == template
+
+
 def test_write_trajectory_files_checks_the_provider(tmp_path):
     initial = dyn.ethylene_initial_conditions()
     files = dict(

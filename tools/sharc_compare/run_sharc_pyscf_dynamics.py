@@ -74,7 +74,6 @@ from run_sharc_lvc import (  # noqa: E402
     write_server_runqm,
 )
 from run_sharc_model import SHARC_X_COMMAND, run_in_session, sharc_environment  # noqa: E402
-from run_sharc_pyscf import TEMPLATE  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
 ETHYLENE_XYZ = ROOT / "tests" / "data" / "ethylene.xyz"
@@ -85,7 +84,41 @@ VELOCITY_SEED = 2026
 DT_FS = 0.5
 NSUBSTEPS = 25
 INITIAL_STATE = 1  # S1, 0-based MCH index
-PYSCF_TEMPLATE = TEMPLATE.format(ncas=2, nelecas=2, roots=N_STATES, basis=BASIS)
+
+
+@dataclass(frozen=True)
+class Convergence:
+    """CASSCF convergence on both sides: our ``[electronic.casscf] conv_tol`` /
+    ``conv_tol_grad`` and the PYSCF.template ``conv-tol`` / ``conv-tol-grad`` (manual table
+    6.36, "Convergence criterion for the CASSCF solver")."""
+
+    conv_tol: float
+    conv_tol_grad: float
+
+
+DEFAULT_CONVERGENCE = Convergence(1e-10, 1e-6)  # the P3a template and our defaults
+# P7b Task 10 fix round 1 (controller ruling); measured: SHARC_PYSCF.py stops at step 0
+# ("Calculator failed to converge!") and our SA-CASSCF fails on every rung at step 0
+TIGHT_CONVERGENCE = Convergence(1e-12, 1e-8)
+
+
+def pyscf_template(convergence: Convergence = DEFAULT_CONVERGENCE) -> str:
+    """PYSCF.template (manual 6.24, table 6.36): the keywords of ``run_sharc_pyscf.TEMPLATE``
+    (P3a/P6) with the given CASSCF convergence."""
+    return (
+        f"ncas 2\nnelecas 2\nroots {N_STATES}\nbasis {BASIS}\nmethod casscf\n"
+        f"fix-spin-shift 0.2\nconv-tol {_power(convergence.conv_tol)}\n"
+        f"conv-tol-grad {_power(convergence.conv_tol_grad)}\nverbose 3\n"
+    )
+
+
+def _power(x: float) -> str:
+    """1e-06 -> "1e-6", as run_sharc_pyscf.TEMPLATE writes it."""
+    mantissa, exponent = f"{x:.0e}".split("e")
+    return f"{mantissa}e{int(exponent)}"
+
+
+PYSCF_TEMPLATE = pyscf_template()
 PYSCF_RESOURCES = "scratchdir ./SCRATCH\nmemory 2000\nncpu 1\n"
 PROVIDERS = ("sharc_pyscf", "ours")
 COUPLINGS = ("overlap", "nacdr")
@@ -128,19 +161,26 @@ def ethylene_initial_conditions() -> InitialConditions:
     return InitialConditions(symbols, masses_amu, interface_geometry(q), v)
 
 
-def electronic_settings() -> ElectronicSection:
+def electronic_settings(convergence: Convergence = DEFAULT_CONVERGENCE) -> ElectronicSection:
     """Our SA2-CASSCF(2,2)/6-31G* with the CASSCF tolerances of the PYSCF.template."""
     return ElectronicSection.model_validate(
         {
             "method": "casscf",
             "basis": BASIS,
             "singlets": N_STATES,
-            "casscf": {"ncas": 2, "nelecas": 2, "conv_tol": 1e-10, "conv_tol_grad": 1e-6},
+            "casscf": {
+                "ncas": 2,
+                "nelecas": 2,
+                "conv_tol": convergence.conv_tol,
+                "conv_tol_grad": convergence.conv_tol_grad,
+            },
         }
     )
 
 
-def make_ethylene_backend(scratch: Path, *, threads: int = 2):
+def make_ethylene_backend(
+    scratch: Path, *, threads: int = 2, convergence: Convergence = DEFAULT_CONVERGENCE
+):
     from gqteashmd.electronic.base import MoleculeSpec
     from gqteashmd.electronic.pyscf_backend import PySCFBackend
 
@@ -149,7 +189,7 @@ def make_ethylene_backend(scratch: Path, *, threads: int = 2):
     scratch.mkdir(parents=True, exist_ok=True)
     return PySCFBackend(
         MoleculeSpec(symbols, 0, 1),
-        electronic_settings(),
+        electronic_settings(convergence),
         log_file=scratch / "electronic.log",
         threads=threads,
         memory_mb=2000,
@@ -223,6 +263,7 @@ def write_trajectory_files(
     input_text: str,
     provider: str,
     sharc_python: str | None = None,
+    template: str = PYSCF_TEMPLATE,
 ) -> None:
     """Write ``input``, ``geom``, ``veloc`` and ``QM/`` in ``work_dir`` (must not exist).
     ``"sharc_pyscf"``: ``QM/runQM.sh`` runs SHARC_PYSCF.py on our PYSCF.template;
@@ -243,7 +284,7 @@ def write_trajectory_files(
         return
     if sharc_python is None:
         raise ValueError("the sharc_pyscf provider needs sharc_python")
-    (qm / "PYSCF.template").write_text(PYSCF_TEMPLATE)
+    (qm / "PYSCF.template").write_text(template)
     (qm / "PYSCF.resources").write_text(PYSCF_RESOURCES)
     script = qm / "runQM.sh"
     script.write_text(
@@ -344,6 +385,7 @@ def run_sharc_trajectory(
     coupling: str = "overlap",
     model: SwapModel | None = None,
     phases_from_interface: bool | None = None,
+    convergence: Convergence = DEFAULT_CONVERGENCE,
     timeout_s: float = 3600.0,
 ) -> dict[str, Any]:
     """Run ``sharc.x input`` in ``workdir`` (must not exist; its own session, a whole-group
@@ -353,7 +395,8 @@ def run_sharc_trajectory(
     ``dt_au``, ``masses_me``, ``wall_time_s`` and the parsed ``trajectory``.
     ``"ours"`` needs ``model`` (a ``SwapModel``) and serves it for the duration of the run.
     ``phases_from_interface`` defaults to False for SHARC_PYSCF.py (measured: it stops at
-    step 1 with "'overlap' is not supported" when sharc.x requests PHASES) and True for ours."""
+    step 1 with "'overlap' is not supported" when sharc.x requests PHASES) and True for ours.
+    ``convergence`` sets the PYSCF.template CASSCF tolerances (``"sharc_pyscf"`` only)."""
     workdir = Path(workdir)
     if phases_from_interface is None:
         phases_from_interface = provider == "ours"
@@ -368,6 +411,7 @@ def run_sharc_trajectory(
         ),
         provider=provider,
         sharc_python=sharc_python,
+        template=pyscf_template(convergence),
     )
     server = None
     if provider == "ours":
@@ -428,6 +472,7 @@ def run_our_trajectory(
     coupling: str = "overlap",
     threads: int = 2,
     energy_drift_limit_eV: float | None = None,
+    convergence: Convergence = DEFAULT_CONVERGENCE,
 ) -> dict[str, Any]:
     """Our ``TrajectoryRunner`` on the same system with the SHARC settings (hopping off, no
     decoherence, ``substep_interpolation = "endpoint"``); the same keys as
@@ -442,7 +487,7 @@ def run_our_trajectory(
     from gqteashmd.trajectory.store import StepLog
 
     workdir = Path(workdir)
-    backend = make_ethylene_backend(workdir / "scratch", threads=threads)
+    backend = make_ethylene_backend(workdir / "scratch", threads=threads, convergence=convergence)
     masses = np.repeat(np.asarray(initial.masses_amu) * DALTON_IN_ME, 3)
     dt_au = DT_FS / AU_TIME_IN_FS
     options = DynamicsOptions(
