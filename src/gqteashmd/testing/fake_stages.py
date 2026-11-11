@@ -7,6 +7,8 @@ worker subprocesses inherit from the controller:
   skip_optimize: bool
   plan_raises: list of stage names whose plan() raises RuntimeError
   bad_fingerprint: list of stage names whose fingerprint_inputs returns non-JSON data
+  reopen: list of "stage:task_id" that reopen_tasks sends back to PENDING once (runs < 2)
+  reopen_bad: list of stage names whose reopen_tasks returns the unknown id "t999"
   requires: {"stage": ["module", ...]} required_modules per stage (checked by preflight)
 """
 
@@ -87,11 +89,28 @@ class FakeStage(Stage):
             name for name, path in ctx.upstream.items() if (path / "summary.json").exists()
         )
         (task_dir / "out.txt").write_text(key)
+        counter = task_dir / "runs.txt"
+        runs = int(counter.read_text()) + 1 if counter.exists() else 1
+        counter.write_text(str(runs))
         return {
             "index": task.payload["index"],
+            "runs": runs,
             "upstream": upstream,
             "threads": os.environ.get("OMP_NUM_THREADS"),
         }
+
+    def reopen_tasks(
+        self, ctx: StageContext, results: Mapping[str, Mapping[str, Any]]
+    ) -> list[str]:
+        behaviour = _behaviour()
+        if self.name in behaviour.get("reopen_bad", []):
+            return ["t999"]
+        wanted = {
+            key.split(":", 1)[1]
+            for key in behaviour.get("reopen", [])
+            if key.split(":", 1)[0] == self.name
+        }
+        return sorted(t for t in wanted if t in results and int(results[t].get("runs", 1)) < 2)
 
     def finalize(self, ctx: StageContext, results: Mapping[str, Mapping[str, Any]]) -> None:
         values = sorted(int(r["index"]) for r in results.values())

@@ -86,6 +86,17 @@ class Stage(ABC):
         """
         return section_fingerprint(ctx.config, self.config_sections)
 
+    def reopen_tasks(
+        self, ctx: StageContext, results: Mapping[str, Mapping[str, Any]]
+    ) -> list[str]:
+        """Ids of DONE tasks to run again although the stage is DONE and up to date (O16).
+
+        Called by the controller for a DONE stage whose fingerprint is unchanged, with the
+        results of its DONE tasks; e.g. `dynamics` reopens finished trajectories when
+        `tmax_fs` (not hashed) was raised. Must be deterministic and read no upstream artifacts.
+        """
+        return []
+
     @abstractmethod
     def plan(self, ctx: StageContext) -> list[TaskSpec]: ...
 

@@ -192,10 +192,18 @@ class Orchestrator:
                 state.reset_stage(stage.name)
                 record = None
             if record is not None and record.status == StageStatus.DONE:
-                summary.up_to_date.append(stage.name)
-                upstream_dirs[stage.name] = stage_dir
-                log.info("Stage %s: up to date", stage.name)
-                continue
+                reopened = self._reopen(state, stage, ctx)
+                if not reopened:
+                    summary.up_to_date.append(stage.name)
+                    upstream_dirs[stage.name] = stage_dir
+                    log.info("Stage %s: up to date", stage.name)
+                    continue
+                log.info(
+                    "Stage %s: reopening %d task(s): %s",
+                    stage.name,
+                    len(reopened),
+                    ", ".join(reopened),
+                )
             try:
                 finished = self._run_stage(state, stage, ctx, fp, should_stop)
             except Exception as exc:
@@ -453,6 +461,27 @@ class Orchestrator:
                     message="previous controller stopped while this task was running",
                     attempts_delta=-1,
                 )
+
+    def _reopen(self, state: StateStore, stage: Stage, ctx: StageContext) -> list[str]:
+        records = state.get_tasks(stage.name)
+        results = self._collect_results(stage, ctx, records)
+        ids = list(stage.reopen_tasks(ctx, results))
+        unknown = sorted(set(ids) - set(results))
+        if unknown:
+            raise ProjectError(
+                f"Stage {stage.name!r} asked to reopen tasks that are not done: "
+                f"{', '.join(unknown)}"
+            )
+        attempts = {r.task_id: r.attempts for r in records}
+        for task_id in ids:
+            state.set_task(
+                stage.name,
+                task_id,
+                TaskStatus.PENDING,
+                message="reopened",
+                attempts_delta=-attempts[task_id],
+            )
+        return ids
 
     def _collect_results(
         self, stage: Stage, ctx: StageContext, records: list[TaskRecord]

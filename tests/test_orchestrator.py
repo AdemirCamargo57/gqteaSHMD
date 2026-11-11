@@ -440,3 +440,28 @@ def test_o20_stop_then_allow_fewer_reruns_selection_finalize_only(tmp_path, writ
     summary = Orchestrator(load_config(path), pipeline_ref=CANNED, rerun_from="selection").run()
     assert summary.completed == ["selection"]
     assert read_json(stage_dir / "trajectories.json")["n_trajectories"] == 10
+
+
+def test_reopened_task_runs_again_and_finalize_repeats(project, behaviour):
+    _run(project)
+    stage_dir = _run_dir(project) / "04_dynamics"
+    summary = stage_dir / "summary.json"
+    before = summary.stat().st_mtime_ns
+    behaviour(reopen=["dynamics:t001"])
+    result = _run(project)
+    assert result.completed == ["dynamics"]
+    runs = {
+        t: read_json(stage_dir / "tasks" / t / "result.json")["result"]["runs"]
+        for t in ("t000", "t001", "t002", "t003")
+    }
+    assert runs == {"t000": 1, "t001": 2, "t002": 1, "t003": 1}
+    assert summary.stat().st_mtime_ns > before
+    third = _run(project)  # runs == 2 now: nothing to reopen
+    assert "dynamics" in third.up_to_date
+
+
+def test_reopening_an_unknown_task_is_a_project_error(project, behaviour):
+    _run(project)
+    behaviour(reopen_bad=["dynamics"])
+    with pytest.raises(ProjectError, match="t999"):
+        _run(project)
