@@ -33,7 +33,8 @@ class Trajectory:
 
     @property
     def t_final_fs(self) -> float:
-        return float(self.time_fs[-1])
+        # A failure at step 0 (P7b ruling R6) leaves no record: the trajectory ended at t = 0.
+        return float(self.time_fs[-1]) if self.time_fs.size else 0.0
 
     @property
     def last_full_step(self) -> int:

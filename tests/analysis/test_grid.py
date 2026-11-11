@@ -90,3 +90,13 @@ def test_non_finite_populations_are_inconsistent():
     a.populations[1, 0] = np.nan
     with pytest.raises(InconsistentData, match="non-finite"):
         on_grid([a], output_every=1, dt_fs=0.5, n_total=1, n_states=3)
+
+
+def test_a_trajectory_without_records_ends_at_zero_and_is_excluded():
+    # a failure at step 0 (P7b ruling R6) leaves an output.h5 with zero records
+    empty = traj("z", "electronic_failure", np.zeros(0, dtype=int), extra_grid=[])
+    assert empty.t_final_fs == 0.0 and empty.last_full_step == 0
+    included, excluded = select(
+        ["z"], {"z": empty}, {"z": 0.0}, energy_jump_eV=0.1, exclude_energy_jumps=True
+    )
+    assert included == [] and excluded == [Excluded("z", "electronic_failure", 0.0)]

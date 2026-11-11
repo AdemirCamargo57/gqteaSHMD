@@ -104,3 +104,23 @@ def test_warn_excluded_fraction_is_finalize_only(tmp_path, write_input):
     assert _main(_input(tmp_path, write_input)) == 0
     changed = _input(tmp_path, write_input, extra="[analysis]\nwarn_excluded_fraction = 0.5\n")
     assert _main(changed) == 0  # not stale
+
+
+def _logs(tmp_path):
+    return {p: p.stat().st_mtime_ns for p in sorted(_dyn(tmp_path).glob("tasks/traj_*/steps.log"))}
+
+
+def test_lowering_tmax_reopens_the_analysis_and_cuts_every_trajectory(tmp_path, write_input):
+    assert _main(_input(tmp_path, write_input, tmax="3.0")) == 0
+    assert _analysis(tmp_path)["horizon_fs"] == pytest.approx(3.0)
+    logs = _logs(tmp_path)
+    assert len(logs) == 3
+    lowered = _input(tmp_path, write_input, tmax="2.0")
+    assert _main(lowered) == 0
+    summary = _analysis(tmp_path)
+    assert summary["horizon_fs"] == pytest.approx(2.0)
+    assert summary["cut"] == ["traj_00000", "traj_00001", "traj_00002"]
+    assert _logs(tmp_path) == logs  # the dynamics did not run again
+    before = (_ana(tmp_path) / "analysis.json").stat().st_mtime_ns
+    assert _main(lowered) == 0  # a second run at 2.0 is a no-op for the analysis
+    assert (_ana(tmp_path) / "analysis.json").stat().st_mtime_ns == before

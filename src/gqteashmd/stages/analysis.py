@@ -79,6 +79,20 @@ class AnalysisStage(Stage):
         section.pop("warn_excluded_fraction")  # finalize-only
         return {"analysis": section, "project_seed": ctx.config.project.seed}
 
+    def reopen_tasks(
+        self, ctx: StageContext, results: Mapping[str, Mapping[str, Any]]
+    ) -> list[str]:
+        """Redo the analysis when tmax_fs (not hashed upstream) moved the end of the grid.
+
+        Lowering tmax_fs reopens no trajectory, so the analysis would otherwise keep the old
+        horizon (controller ruling P8-3). Reads only the config and the recorded result.
+        """
+        dyn = ctx.config.dynamics
+        if dyn is None or TASK not in results:
+            return []
+        n_total = round(dyn.tmax_fs / dyn.dt_fs)
+        return [] if results[TASK].get("n_total") == n_total else [TASK]
+
     def plan(self, ctx: StageContext) -> list[TaskSpec]:
         return [TaskSpec(TASK)]
 
@@ -141,7 +155,7 @@ class AnalysisStage(Stage):
             exclude_energy_jumps=section.exclude_energy_jumps,
         )
         for t in included:
-            _check_finite(t, files[t.task])
+            _check_included(t, files[t.task])
 
         counts = Counter(t.outcome for t in trajectories.values() if t is not None)
         outcomes = {o.value: int(counts.get(o.value, 0)) for o in TrajectoryOutcome}
@@ -159,7 +173,7 @@ class AnalysisStage(Stage):
                     "; set [analysis] exclude_energy_jumps = false and run with "
                     "--rerun-from analysis"
                 )
-            return _stop(task_dir, summary, error, 0)
+            return _stop(task_dir, summary, error, 0, n_total)
 
         deviation, worst = 0.0, included[0].task
         for t in included:
@@ -171,7 +185,7 @@ class AnalysisStage(Stage):
                 f"populations of {worst} sum to 1 within {deviation:.3e} only "
                 "(tolerance 1e-6): this indicates a program error"
             )
-            return _stop(task_dir, summary, error, len(included))
+            return _stop(task_dir, summary, error, len(included), n_total)
 
         try:
             g = grid.on_grid(
@@ -306,6 +320,7 @@ class AnalysisStage(Stage):
         write_json_atomic(task_dir / "analysis.json", report.json_safe(summary))
         return {
             "stage_failed": False,
+            "n_total": int(n_total),
             "n_included": int(n),
             "horizon_fs": float(g.horizon_fs),
             "tau_fs": fit.tau_fs,
@@ -360,7 +375,8 @@ def _check_consistent(
     output_every: int,
     dt_fs: float,
 ) -> None:
-    """Plan ruling PR5, plus the task name, the initial state and the record at t = 0."""
+    """Plan ruling PR5, plus the task name and the initial state (every file; the record at
+    t = 0 is checked for included trajectories only, in `_check_included`)."""
 
     def fail(field: str, detail: str) -> TaskError:
         return _task_error(f"{data.path}: {field} {detail}; {DYNAMICS_ADVICE}")
@@ -382,14 +398,17 @@ def _check_consistent(
         raise fail("task", f"{task!r} is not {entry.task_id!r}")
     if initial not in labels:
         raise fail("initial_state", f"{initial!r} is not among the state_labels {list(labels)}")
-    start = (data["grid_step"] == 0) & (data["ticks"] == 0)
-    if not bool(np.any(start)):
-        raise fail("records", "have no record at t = 0")
     if data["populations"].ndim != 2 or data["populations"].shape[1] != len(labels):
         raise fail("populations", f"do not have {len(labels)} states per record")
 
 
-def _check_finite(t: grid.Trajectory, path: Path) -> None:
+def _check_included(t: grid.Trajectory, path: Path) -> None:
+    """Checks of an included trajectory (spec section 8). An excluded one may have no record
+    at all (a failure at step 0, P7b ruling R6)."""
+    if not bool(np.any((t.grid_step == 0) & (t.ticks == 0))):
+        raise _task_error(
+            f"{path}: records have no record at t = 0 (outcome {t.outcome!r}); {DYNAMICS_ADVICE}"
+        )
     for name, values in (
         ("e_total", t.e_total),
         ("populations", t.populations),
@@ -461,14 +480,18 @@ def _base_summary(
     }
 
 
-def _stop(task_dir: Path, summary: dict[str, Any], error: str, n_included: int) -> dict[str, Any]:
-    """Record a stop (raised by `finalize`, PR6); stale outputs of an earlier attempt go."""
+def _stop(
+    task_dir: Path, summary: dict[str, Any], error: str, n_included: int, n_total: int
+) -> dict[str, Any]:
+    """Record a stop (raised by `finalize`, PR6); stale outputs of an earlier attempt go.
+
+    The result carries `n_total` like every result (`reopen_tasks`, ruling P8-3)."""
     for name in FILES:
         (task_dir / name).unlink(missing_ok=True)
     summary["stage_failed"] = True
     summary["error"] = error
     write_json_atomic(task_dir / "analysis.json", report.json_safe(summary))
-    return {"stage_failed": True, "n_included": n_included}
+    return {"stage_failed": True, "n_total": int(n_total), "n_included": n_included}
 
 
 def _table(

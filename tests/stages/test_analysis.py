@@ -72,7 +72,7 @@ def _write_traj(
             "dt_fs": dt_fs,
             "outcome": outcome,
             "task": task,
-            "initial_state": labels[active_by_step[0]],
+            "initial_state": labels[active_by_step[0] if active_by_step else 1],
             "sample": 1,
             "symbols": ["H"],
         },
@@ -109,7 +109,8 @@ def _context(tmp_path, write_input, trajs, *, analysis="", seed=None, file_only=
         outcome, active, kwargs = spec
         _write_traj(dyn_dir, task, outcome, active, **kwargs)
         if k not in file_only:
-            rows.append({"task": task, "outcome": outcome, "t_final_fs": 0.5 * (len(active) - 1)})
+            t_final = 0.5 * max(len(active) - 1, 0)
+            rows.append({"task": task, "outcome": outcome, "t_final_fs": t_final})
     write_json_atomic(
         dyn_dir / "dynamics_summary.json", {"schema_version": 1, "trajectories": rows}
     )
@@ -125,6 +126,15 @@ def run_stage(ctx, stage=None):
         results[task.task_id] = stage.run_task(ctx, task, task_dir)
     stage.finalize(ctx, results)
     return ctx.stage_dir
+
+
+def _run_task(ctx):
+    """run_task only (no finalize); returns the task result."""
+    stage = AnalysisStage()
+    (task,) = stage.plan(ctx)
+    task_dir = ctx.layout.task_dir(ctx.stage_dir, task.task_id)
+    task_dir.mkdir(parents=True, exist_ok=True)
+    return stage.run_task(ctx, task, task_dir)
 
 
 def _analysis(ctx):
@@ -399,3 +409,58 @@ def test_stage_attributes():
     assert stage.config_sections == ("analysis",)
     assert stage.required_modules == ("h5py>=3.9", "scipy>=1.11")
     assert stage.max_failed_fraction == 0.0
+
+
+def test_a_step_0_electronic_failure_is_excluded(tmp_path, write_input):
+    # P7b ruling R6: a failure at step 0 leaves an output.h5 with zero records
+    ctx = _context(
+        tmp_path,
+        write_input,
+        [(FIN, [1, 1, 1, 1, 1], {}), ("electronic_failure", [], {})],
+    )
+    run_stage(ctx)
+    data = _analysis(ctx)
+    assert data["n_included"] == 1 and data["included"] == ["traj_00000"]
+    assert data["outcomes"]["electronic_failure"] == 1 and data["outcomes"]["task_failed"] == 0
+    assert data["excluded"] == [
+        {
+            "task": "traj_00001",
+            "reason": "electronic_failure",
+            "t_final_fs": 0.0,
+            "energy_jump_eV": None,
+        }
+    ]
+    assert data["energy"]["flagged"] == []
+    assert (ctx.stage_dir / "hops.csv").read_text().splitlines() == [
+        "task,time_fs,from,to,frustrated,included,after_horizon"
+    ]
+
+
+def test_a_zero_record_finished_file_is_a_task_error(tmp_path, write_input):
+    ctx = _context(tmp_path, write_input, [(FIN, [1, 1, 1, 1, 1], {}), (FIN, [], {})])
+    with pytest.raises(TaskError, match="t = 0") as info:
+        run_stage(ctx)
+    assert info.value.retryable is False and "--rerun-from dynamics" in str(info.value)
+    assert "traj_00001" in str(info.value)
+
+
+def test_n_total_is_in_every_result(tmp_path, write_input):
+    ok = _run_task(_context(tmp_path / "ok", write_input, [(FIN, [1, 1, 1, 1, 1], {})]))
+    assert ok["stage_failed"] is False and ok["n_total"] == 4
+    none = _run_task(_context(tmp_path / "none", write_input, [("energy_drift", [1, 1], {})]))
+    assert none["stage_failed"] is True and none["n_total"] == 4
+    pops = [[0.0, 1.0]] * 5
+    pops[3] = [0.1, 1.0]
+    norm = _run_task(
+        _context(tmp_path / "norm", write_input, [(FIN, [1, 1, 1, 1, 1], {"populations": pops})])
+    )
+    assert norm["stage_failed"] is True and norm["n_total"] == 4
+
+
+def test_reopen_tasks_when_tmax_changes(tmp_path, write_input):
+    ctx = _context(tmp_path, write_input, [(FIN, [1, 1, 1, 1, 1], {})])  # tmax 2.0, dt 0.5
+    stage = AnalysisStage()
+    assert stage.reopen_tasks(ctx, {"analysis": {"n_total": 4}}) == []
+    assert stage.reopen_tasks(ctx, {"analysis": {"n_total": 6}}) == ["analysis"]
+    assert stage.reopen_tasks(ctx, {"analysis": {"stage_failed": False}}) == ["analysis"]
+    assert stage.reopen_tasks(ctx, {}) == []
