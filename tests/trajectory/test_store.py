@@ -41,6 +41,22 @@ def test_log_append_read_and_truncate(tmp_path):
         log.truncate(4)
 
 
+def test_append_refuses_a_log_with_a_cut_record(tmp_path):
+    log = StepLog(tmp_path / "steps.log", 2, 6)
+    for k in range(2):
+        log.append(_row(log.dtype, k))
+    with open(log.path, "ab") as fh:  # a record cut by a kill
+        fh.write(b"\x01" * 5)
+    size = log.path.stat().st_size
+    with pytest.raises(ValueError, match="truncate"):
+        log.append(_row(log.dtype, 2))
+    assert log.path.stat().st_size == size
+    log.truncate(2)
+    log.append(_row(log.dtype, 2))
+    assert len(log.read()) == 3
+    assert list(log.read()["step"]) == [0, 1, 2]
+
+
 def test_dtype_fields():
     dtype = log_dtype(3, 9)
     assert dtype["energies"].shape == (3,) and dtype["q"].shape == (9,)

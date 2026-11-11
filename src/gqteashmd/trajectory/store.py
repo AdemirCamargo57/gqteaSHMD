@@ -75,6 +75,13 @@ class StepLog:
     def append(self, row: np.ndarray) -> None:
         data = np.asarray(row, dtype=self.dtype).reshape(1).tobytes()
         with open(self.path, "ab") as fh:
+            size = os.fstat(fh.fileno()).st_size
+            if size % self.dtype.itemsize:
+                raise ValueError(
+                    f"{self.path} ends with a cut record ({size} bytes is not a whole number "
+                    f"of {self.dtype.itemsize}-byte records); truncate the log to the restart's "
+                    "record count before appending"
+                )
             fh.write(data)
             fh.flush()
             os.fsync(fh.fileno())
