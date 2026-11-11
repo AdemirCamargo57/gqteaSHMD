@@ -118,6 +118,7 @@ def test_default_pipeline_order(tmp_path, write_input):
         "excitations",
         "selection",
         "dynamics",
+        "analysis",
     ]
 
 
