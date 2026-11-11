@@ -584,6 +584,38 @@ def active_gradient_differences(a: dict[str, Any], b: dict[str, Any]) -> dict[st
     }
 
 
+def relative_population_differences(
+    ours: dict[str, Any], reference: dict[str, Any], *, state: int = 0, last: int | None = None
+) -> dict[str, Any]:
+    """Per common step (up to ``last``), the population of ``state`` in both runs and
+    ``|P_ours - P_ref| / P_ref`` (None where P_ref = 0, e.g. at step 0)."""
+    common = np.intersect1d(ours["steps"], reference["steps"])
+    if last is not None:
+        common = common[common <= last]
+    p_ours = np.asarray(ours["populations"])[np.searchsorted(ours["steps"], common), state]
+    p_ref = np.asarray(reference["populations"])[np.searchsorted(reference["steps"], common), state]
+    relative = [
+        None if r == 0 else float(abs(o - r) / r) for o, r in zip(p_ours, p_ref, strict=True)
+    ]
+    return {
+        "steps": [int(x) for x in common],
+        "state": state,
+        "ours": [float(x) for x in p_ours],
+        "reference": [float(x) for x in p_ref],
+        "relative_difference": relative,
+    }
+
+
+def format_relative_populations(data: dict[str, Any]) -> str:
+    """The per-step table of ``relative_population_differences``."""
+    lines = [f"step  P(S{data['state']}) ours    P(S{data['state']}) ref     |dP|/P_ref"]
+    for step, o, r, rel in zip(
+        data["steps"], data["ours"], data["reference"], data["relative_difference"], strict=True
+    ):
+        lines.append(f"{step:4d}  {o:13.4e}  {r:13.4e}  {'-' if rel is None else f'{rel:.3f}':>10}")
+    return "\n".join(lines)
+
+
 REPORT_DRIFT_LIMIT_EV = 100.0  # the report follows our trajectory past the energy-drift stop
 
 
@@ -591,9 +623,10 @@ def swap_report(
     *, sharc_home: Path, sharc_python: str, n_steps: int, work_dir: Path, out: Path
 ) -> dict[str, Any]:
     """The swap-test report (not asserted): our trajectory and sharc.x + our ``PySCFBackend``
-    (``QmServer``), both with ``coupling overlap``, and sharc.x + SHARC_PYSCF.py with
-    ``coupling nacdr`` (measured: SHARC_PYSCF.py has no overlaps); every pairwise per-step
-    difference goes to ``out`` (JSON)."""
+    (``QmServer``), both with ``coupling overlap``, our ``coupling nacdr`` trajectory, and
+    sharc.x + SHARC_PYSCF.py with ``coupling nacdr`` (measured: SHARC_PYSCF.py has no
+    overlaps); every pairwise per-step difference and the relative P(S0) differences of both
+    our couplings against SHARC_PYSCF go to ``out`` (JSON)."""
     work_dir = Path(work_dir)
     work_dir.mkdir(parents=True, exist_ok=False)
     initial = ethylene_initial_conditions()
@@ -607,6 +640,13 @@ def swap_report(
         initial,
         n_steps=n_steps,
         workdir=work_dir / "ours",
+        energy_drift_limit_eV=REPORT_DRIFT_LIMIT_EV,
+    )
+    ours_nacdr = run_our_trajectory(
+        initial,
+        n_steps=n_steps,
+        workdir=work_dir / "ours_nacdr",
+        coupling="nacdr",
         energy_drift_limit_eV=REPORT_DRIFT_LIMIT_EV,
     )
     sharc = run_sharc_trajectory(
@@ -647,10 +687,12 @@ def swap_report(
         "n_steps": n_steps,
         "wall_time_s": {
             "ours": ours["wall_time_s"],
+            "ours_nacdr": ours_nacdr["wall_time_s"],
             "sharc_pyscf": sharc["wall_time_s"],
             "swap": swap["wall_time_s"],
         },
         "our_result": ours["result"],
+        "our_nacdr_result": ours_nacdr["result"],
         "swap_min_singular_values": model.min_singular_values,
         "dt_au": {"ours": ours["dt_au"], "sharc": sharc["dt_au"]},
         "masses_me": {
@@ -659,6 +701,11 @@ def swap_report(
         },
         **{name: _jsonable(step_differences(*pair)) for name, pair in pairs.items()},
         "active_gradient_sharc_pyscf_vs_swap": active_gradient_differences(sharc, swap),
+        "sharc_pyscf_vs_ours_nacdr": _jsonable(step_differences(sharc, ours_nacdr)),
+        "relative_population_s0_vs_sharc_pyscf": {
+            "ours": relative_population_differences(ours, sharc),
+            "ours_nacdr": relative_population_differences(ours_nacdr, sharc),
+        },
         "e_total_Eh": {
             "ours": [float(x) for x in ours["e_total"]],
             "sharc_pyscf": [float(x) for x in sharc["e_total"]],
@@ -671,6 +718,7 @@ def swap_report(
         },
         "populations": {
             "ours": np.asarray(ours["populations"]).tolist(),
+            "ours_nacdr": np.asarray(ours_nacdr["populations"]).tolist(),
             "sharc_pyscf": np.asarray(sharc["populations"]).tolist(),
             "swap": np.asarray(swap["populations"]).tolist(),
         },
@@ -684,6 +732,8 @@ def swap_report(
         print(
             f"{name}: " + ", ".join(f"{k} {data[f'overall_max_abs_{k}']:.3e}" for k in QUANTITIES)
         )
+    for name, data in report["relative_population_s0_vs_sharc_pyscf"].items():
+        print(f"P(S0), {name} vs sharc_pyscf:\n{format_relative_populations(data)}")
     return report
 
 

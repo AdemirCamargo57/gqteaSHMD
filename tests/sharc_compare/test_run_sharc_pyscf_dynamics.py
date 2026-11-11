@@ -257,6 +257,18 @@ def test_step_differences_align_by_step_number():
     assert len(table) == 3 and table[1].split()[:2] == ["1", "5.000e-01"]
 
 
+def test_relative_population_differences():
+    ours = {"steps": np.arange(4), "populations": np.array([[0, 1], [2e-8, 1], [3e-8, 1], [1, 0]])}
+    ref = {"steps": np.arange(5), "populations": np.array([[0, 1], [1e-8, 1], [3e-8, 1]] * 2)[:5]}
+    data = dyn.relative_population_differences(ours, ref, last=2)
+    assert data["steps"] == [0, 1, 2] and data["state"] == 0
+    assert data["ours"] == [0.0, 2e-8, 3e-8] and data["reference"] == [0.0, 1e-8, 3e-8]
+    assert data["relative_difference"] == [None, pytest.approx(1.0), 0.0]
+    table = dyn.format_relative_populations(data).splitlines()
+    assert len(table) == 4 and table[1].split()[-1] == "-" and table[2].split()[-1] == "1.000"
+    assert len(dyn.relative_population_differences(ours, ref)["steps"]) == 4
+
+
 class _FakeBackend:
     """Two singlets; records the requests and the resets."""
 

@@ -44,6 +44,12 @@ of the first runs (both runs identical to every printed digit):
   steps: dq 2.1e-7 bohr, dv 2.1e-9, dE 4.6e-8 Eh, dP 8.7e-7), at the brief's tolerances. Its
   reference trajectory of ours runs with ``energy_drift_limit_eV = 100`` so that it covers the
   same 40 steps as sharc.x.
+- The direct population bound does not discriminate (review finding, P7b Task 10 fix round 2):
+  over steps 0-23 P(S0) <= 2.4e-5 in both programs, so the 1e-4 bound cannot fail, while the
+  relative P(S0) differences against SHARC reach a factor of about 3 (e.g. 9.6e-9 vs 3.4e-8 at
+  step 7, ours overlap). The populations are validated by the swap test (the same electronic
+  structure under both drivers, agreement to about 4 digits); the relative P(S0) differences of
+  both our couplings are printed, report-only (``test_relative_s0_population_report``).
 
 Run with ``-s`` to see the per-step differences.
 """
@@ -193,7 +199,13 @@ def test_casscf_solution_change_at_step_24(sharc_run, our_run):
 def test_trajectory_matches_sharc_before_the_solution_change(harness, sharc_run, our_run, quantity):
     """Changed after the measured numbers were seen (P7b Task 10, controller ruling): compared
     over steps 0-23, before the CASSCF solution change at step 24 (the overlap populations
-    differed by 6.4e-3 at step 24 itself)."""
+    differed by 6.4e-3 at step 24 itself).
+
+    The populations case does not discriminate (review finding, P7b Task 10 fix round 2): over
+    steps 0-23 P(S0) <= 2.4e-5 in both programs, so |dP| <= 1e-4 cannot fail, and the relative
+    P(S0) differences reach a factor of about 3; the populations are validated by the swap test
+    (``test_swap_matches_our_trajectory``), the relative numbers are reported by
+    ``test_relative_s0_population_report``."""
     # changed after the measured numbers were seen (P7b Task 10, controller ruling): steps 0-23
     coupling, ours = our_run
     above, numbers = _compare(
@@ -223,6 +235,25 @@ def test_positions_before_the_solution_change(harness, sharc_run, our_run):
         last=LAST_COMPARED,
         label=f"REPORT ONLY: ours ({coupling}) vs SHARC (nacdr)",
     )
+
+
+def test_relative_s0_population_report(harness, sharc_run, our_run):
+    """Report-only (review finding, P7b Task 10 fix round 2): P(S0) of ours and SHARC and
+    |P_ours - P_SHARC| / P_SHARC per step over steps 0-23, for both our couplings (SHARC's side
+    uses nacdr). Only the window and the bound P(S0) <= 1e-4 are checked: the absolute
+    population bound is meaningless when P(S0) itself stays below it."""
+    # review finding, P7b Task 10 fix round 2: report only
+    coupling, ours = our_run
+    data = harness.relative_population_differences(ours, sharc_run, last=LAST_COMPARED)
+    assert data["steps"] == list(range(LAST_COMPARED + 1))
+    relative = [r for r in data["relative_difference"] if r is not None]
+    print(
+        f"REPORT ONLY: P(S0), ours ({coupling}) vs SHARC (nacdr), steps 0-{LAST_COMPARED}: "
+        f"max P(S0) ours {max(data['ours']):.3e}, SHARC {max(data['reference']):.3e}; "
+        f"max relative difference {max(relative):.3f}\n"
+        f"{harness.format_relative_populations(data)}"
+    )
+    assert max(data["ours"]) < TOLERANCES["populations"]  # the reason the bound is blind
 
 
 # --- the swap test: sharc.x with our PySCFBackend behind QM.out ------------------------------
