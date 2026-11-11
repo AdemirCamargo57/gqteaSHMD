@@ -62,7 +62,7 @@ def _invalid_excitations(
 
 class ExcitationsStage(Stage):
     name = "excitations"
-    version = 1
+    version = 2
     depends_on = ("prepare", "sampling")
     config_sections = ("electronic", "excitations")
     required_modules = ("pyscf>=2.6", "h5py>=3.9")
