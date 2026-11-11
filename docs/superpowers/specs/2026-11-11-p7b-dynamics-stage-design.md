@@ -7,6 +7,22 @@
 > (plan ruling R5). (3) Sections 3.2 and 6: `steps.log` holds every accepted (sub)step and
 > `output.h5` is thinned by `output_every`, keeping every hop, flag and rejection (plan ruling
 > R2). The plan's Rulings R1-R10 are binding where they differ from this text.
+>
+> **Erratum (from the implementation, 2026-11-11, Task 11):** (4) Section 8: the hook is
+> `Stage.reopen_tasks(ctx, results)`: the orchestrator also passes the recorded results of the
+> DONE tasks, which `DynamicsStage` uses (finished with `n_grid_steps` below the new total); a
+> reopening first marks the stage RUNNING (same fingerprint) and a RUNNING stage whose class
+> overrides the hook has the hook applied again, so a kill during a reopening is recovered; only
+> stages that override the hook are reopened or read. (5) Section 4: non-finite energies, a
+> non-finite or missing active gradient and non-finite overlaps are electronic failures (a
+> rejection signal), and a failed gradient refresh after a hop is a rejection signal (R7). (6)
+> Section 7 and the plan: the pause rule is "a stage pauses only if a later stage is enabled"
+> (`pause_after = ["selection"]` pauses before the dynamics with a `[dynamics]` table). (7)
+> Section 9 (validation): the PySCF tests use SA2-CASSCF(2,2)/6-31G\* instead of STO-3G (the
+> STO-3G solution is metastable) and the water CIS drift test uses a dt^2 ratio over 2 fs, with
+> the original assertions kept as strict expected failures; the SHARC comparison asserts steps
+> 0-23, reports positions, and asserts the swap test; `ExcitationsStage.version` was raised to 2
+> by the TDA/TDDFT root fix that Task 9 required (USER_MANUAL.md 8.6.3, 8.16.8).
 
 Status: approved by the owner on 2026-11-11 (design in chat; this file records it). The
 implementation plan follows in `docs/superpowers/plans/`.
