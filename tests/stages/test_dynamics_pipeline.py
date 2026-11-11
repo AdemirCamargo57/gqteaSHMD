@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from gqteashmd.cli import main
+from gqteashmd.project.state import StageStatus, StateStore, TaskStatus
 from gqteashmd.testing import canned_lvc
 
 LVC = Path(__file__).resolve().parents[1] / "data" / "lvc" / "lvc_singlets.template"
@@ -75,6 +76,21 @@ def test_raising_tmax_extends_and_changing_dt_is_stale(tmp_path, write_input):
         extra=ELECTRONIC + "[dynamics]\ntmax_fs = 3.0\ndt_fs = 0.5\n",
     )
     assert _main(stale) == 3
+
+
+def test_raising_tmax_after_a_stop_extends_every_trajectory_in_one_run(tmp_path, write_input):
+    path = _input(tmp_path, write_input)
+    assert _main(path) == 0
+    # The state after a user stop: the stage PENDING, one trajectory PENDING, two DONE.
+    with StateStore(tmp_path / "run" / ".gqteashmd" / "state.db") as state:
+        state.set_stage("dynamics", StageStatus.PENDING, message="stopped by user")
+        state.set_task("dynamics", "traj_00002", TaskStatus.PENDING)
+    path = _input(tmp_path, write_input, tmax="3.0")
+    assert _main(path) == 0
+    summary = _summary(tmp_path)
+    assert summary["tmax_fs"] == 3.0
+    finals = [t["t_final_fs"] for t in summary["trajectories"]]
+    assert len(finals) == 3 and finals == [pytest.approx(3.0)] * 3
 
 
 def test_without_a_dynamics_table_the_stage_is_skipped(tmp_path, write_input):

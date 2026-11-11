@@ -192,9 +192,22 @@ class Orchestrator:
                 state.reset_stage(stage.name)
                 record = None
             has_hook = type(stage).reopen_tasks is not Stage.reopen_tasks
-            if record is not None and record.status == StageStatus.RUNNING and has_hook:
-                # A controller killed part-way through a reopening: finish reopening.
-                self._reopen(state, stage, ctx, fp)
+            if (
+                record is not None
+                and record.status not in (StageStatus.SKIPPED, StageStatus.DONE)
+                and has_hook
+            ):
+                # RUNNING (a controller killed part-way, maybe through a reopening), PENDING
+                # (stopped by the user) or FAILED: done tasks may need reopening too (e.g. a
+                # raised tmax_fs), so that this run ends with every task up to date.
+                reopened = self._reopen(state, stage, ctx, fp)
+                if reopened:
+                    log.info(
+                        "Stage %s: reopening %d task(s): %s",
+                        stage.name,
+                        len(reopened),
+                        ", ".join(reopened),
+                    )
             if record is not None and record.status == StageStatus.DONE:
                 reopened = self._reopen(state, stage, ctx, fp) if has_hook else []
                 if not reopened:

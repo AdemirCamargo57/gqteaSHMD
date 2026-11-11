@@ -488,6 +488,42 @@ def test_reopen_interrupted_midway_is_resumed(project, behaviour, monkeypatch):
         assert state.get_stage("dynamics").status == StageStatus.DONE
 
 
+def _runs(project):
+    stage_dir = _run_dir(project) / "04_dynamics"
+    return {
+        t: read_json(stage_dir / "tasks" / t / "result.json")["result"]["runs"]
+        for t in ("t000", "t001", "t002", "t003")
+    }
+
+
+def test_reopen_hook_applies_to_a_stopped_stage(project, behaviour):
+    _run(project)
+    # The state after a user stop: the stage PENDING, one task PENDING, the others DONE.
+    with _state(project) as state:
+        state.set_stage("dynamics", StageStatus.PENDING, message="stopped by user")
+        state.set_task("dynamics", "t003", TaskStatus.PENDING)
+    behaviour(reopen=["dynamics:t001"])
+    result = _run(project)
+    assert result.completed == ["dynamics"]
+    assert _runs(project) == {"t000": 1, "t001": 2, "t002": 1, "t003": 2}
+    with _state(project) as state:
+        assert state.get_stage("dynamics").status == StageStatus.DONE
+
+
+def test_reopen_hook_applies_to_a_failed_stage(project, behaviour):
+    behaviour(fail=["dynamics:t002", "dynamics:t003"])
+    with pytest.raises(StageFailedError):
+        _run(project)
+    with _state(project) as state:
+        assert state.get_stage("dynamics").status == StageStatus.FAILED
+    behaviour(reopen=["dynamics:t001"])
+    result = _run(project)
+    assert result.completed == ["dynamics"]
+    assert _runs(project) == {"t000": 1, "t001": 2, "t002": 1, "t003": 1}
+    with _state(project) as state:
+        assert state.get_stage("dynamics").status == StageStatus.DONE
+
+
 def test_stage_without_the_hook_ignores_damaged_results(project, behaviour):
     _run(project)
     for result in (_run_dir(project) / "00_prepare" / "tasks").glob("*/result.json"):
