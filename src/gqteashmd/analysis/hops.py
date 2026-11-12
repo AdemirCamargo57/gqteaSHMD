@@ -9,7 +9,7 @@ from typing import Any
 
 import numpy as np
 
-from gqteashmd.analysis.grid import STOPPED_IN_S0, Trajectory
+from gqteashmd.analysis.grid import Trajectory
 
 _TOL = 1e-9
 
@@ -65,10 +65,8 @@ def hop_statistics(
     arrivals: list[float] = []
     for t in included:
         hits = np.flatnonzero((t.active == 0) & (t.time_fs <= horizon_fs + _TOL))
-        if hits.size:
+        if hits.size:  # no active-0 record up to the horizon: censored (spec section 6)
             arrivals.append(float(t.time_fs[hits[0]]))
-        elif t.outcome == STOPPED_IN_S0:
-            arrivals.append(float(t.time_fs[-1]))
     hop_mean, hop_median = _stats(first_hop)
     s0_mean, s0_median = _stats(arrivals)
     return {

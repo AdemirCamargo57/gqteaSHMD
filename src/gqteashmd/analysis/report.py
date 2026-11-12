@@ -31,8 +31,10 @@ def _n(x: Any) -> str:
         return "-"
     if isinstance(x, bool):
         return str(x)
-    if isinstance(x, (int, float)):
-        return format(x, ".4g")
+    if isinstance(x, int):
+        return str(x)
+    if isinstance(x, float):
+        return format(x, ".4g") if math.isfinite(x) else "-"
     if isinstance(x, (list, tuple)):
         return "[" + ", ".join(_n(v) for v in x) + "]"
     return str(x)
@@ -59,6 +61,7 @@ def analysis_markdown(summary: Mapping[str, Any]) -> str:
         out.append(f"- {key}: {_n(settings.get(key))}")
     out += ["", f"- n_selected: {_n(s.get('n_selected'))}"]
     out += [f"- n_included: {_n(s.get('n_included'))}"]
+    out += [f"- small_ensemble: {_n(s.get('small_ensemble'))}"]
     out += [f"- horizon_fs: {_n(s.get('horizon_fs'))}", f"- dt_out_fs: {_n(s.get('dt_out_fs'))}"]
     out += ["", "## Outcomes"]
     for key, count in (s.get("outcomes") or {}).items():

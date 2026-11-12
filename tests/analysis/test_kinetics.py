@@ -1,3 +1,6 @@
+import math
+import warnings
+
 import numpy as np
 import pytest
 
@@ -5,6 +8,7 @@ from gqteashmd.analysis.kinetics import (
     bootstrap_fit,
     fit_delayed_exponential,
     model_curve,
+    tau_from_log,
 )
 from gqteashmd.analysis.populations import bootstrap_indices
 
@@ -46,6 +50,25 @@ def test_synthetic_ensemble_recovers_tau_and_t0_within_the_bootstrap_error():
     assert abs(fit.t0_fs - 10.0) <= 4 * result.t0_std_fs + 0.5
     lo, hi = result.tau_interval_fs
     assert lo < fit.tau_fs < hi and result.bootstrap_failures == 0
+
+
+def test_one_trajectory_has_no_bootstrap_uncertainty():
+    per = (T[None, :] < 20.0).astype(float)  # one trajectory, a step at 20 fs
+    result = bootstrap_fit(T, per, bootstrap_indices(np.random.default_rng(1), 1, 50), dt_out=0.5)
+    assert result.fit.tau_fs is not None
+    assert result.t0_interval_fs is None and result.tau_interval_fs is None
+    assert result.t0_std_fs is None and result.tau_std_fs is None
+    assert result.bootstrap_failures == 0
+
+
+def test_an_extreme_log_tau_does_not_underflow_to_zero():
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        tau = tau_from_log(-1000.0)
+        assert tau > 0.0
+        curve = model_curve(T, 1.0, 10.0, tau)
+        assert np.all(np.isfinite(curve)) and curve[0] == 1.0 and curve[-1] == 0.0
+        assert tau_from_log(1000.0) == tau_from_log(700.0) < math.inf
 
 
 def test_no_fit_means_no_bootstrap():

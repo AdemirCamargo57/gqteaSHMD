@@ -42,6 +42,7 @@ FILES = ("populations.h5", "populations.csv", "hops.csv")
 DYNAMICS_ADVICE = "rerun with --rerun-from dynamics"
 TASK = "analysis"
 TABLE_ROWS = 25
+SMALL_ENSEMBLE = 20  # fewer included trajectories: warn, `small_ensemble` (ruling P8-5)
 _TIME_TOLERANCE_FS = 1e-9
 
 FIT_FLAG_MEANINGS = {
@@ -199,6 +200,12 @@ class AnalysisStage(Stage):
             raise _task_error(f"{exc}; {DYNAMICS_ADVICE}") from exc
 
         n = len(included)
+        warnings: list[str] = summary["warnings"]
+        if n < SMALL_ENSEMBLE:
+            warnings.append(
+                f"only {n} trajectories are included (fewer than {SMALL_ENSEMBLE}): populations, "
+                "intervals and the fit are not statistically reliable"
+            )
         p_classical, n_counts = populations.classical_populations(g.active, len(labels))
         p_lo, p_hi = populations.wilson_intervals(n_counts, n)
         rho = populations.quantum_populations(g.populations)
@@ -218,7 +225,6 @@ class AnalysisStage(Stage):
             curve = kinetics.model_curve(g.time_fs, fit.a, fit.t0_fs, fit.tau_fs)
         else:
             curve = np.full(g.time_fs.shape, np.nan)
-        warnings: list[str] = summary["warnings"]
         for flag in fit.flags:
             meaning = FIT_FLAG_MEANINGS.get(flag)
             warnings.append(f"fit: {flag}" + (f" ({meaning})" if meaning else ""))
@@ -247,6 +253,13 @@ class AnalysisStage(Stage):
             for name in (e.task_id for e in selected)
             if name in jumps and jumps[name] > section.energy_jump_eV
         ]
+        k = sum(1 for f in flagged if f["task"] in included_tasks)
+        if k:
+            warnings.append(
+                f"{k} included trajectories have an energy jump above energy_jump_eV = "
+                f"{section.energy_jump_eV} eV (see energy.flagged); consider "
+                "exclude_energy_jumps = true"
+            )
 
         summary.update(
             {
@@ -338,10 +351,12 @@ class AnalysisStage(Stage):
                 f"{fraction:.0%} of the selected trajectories are excluded (more than "
                 f"warn_excluded_fraction = {limit}): possible selection bias, see 'excluded'"
             )
-        for name in FILES:
+        for name in FILES:  # the stage directory mirrors the task: no stale copy survives
             source = task_dir / name
             if source.exists():
                 write_bytes_atomic(ctx.stage_dir / name, source.read_bytes())
+            else:
+                (ctx.stage_dir / name).unlink(missing_ok=True)
         write_json_atomic(ctx.stage_dir / "analysis.json", summary)
         write_text_atomic(ctx.stage_dir / "report.md", report.analysis_markdown(summary))
         for warning in summary["warnings"]:
@@ -451,6 +466,7 @@ def _base_summary(
         "schema_version": 1,
         "n_selected": len(selected),
         "n_included": len(included),
+        "small_ensemble": len(included) < SMALL_ENSEMBLE,
         "outcomes": dict(outcomes),
         "included": [t.task for t in included],
         "excluded": [

@@ -7,6 +7,7 @@ def summary_example():
         "schema_version": 1,
         "n_selected": 3,
         "n_included": 2,
+        "small_ensemble": True,
         "outcomes": {
             "finished": 2,
             "energy_drift": 1,
@@ -73,7 +74,12 @@ def summary_example():
             "warn_excluded_fraction": 0.1,
             "project_seed": 7,
         },
-        "warnings": ["1 of 3 trajectories excluded"],
+        "warnings": [
+            "only 2 trajectories are included (fewer than 20): populations, intervals and the "
+            "fit are not statistically reliable",
+            "33% of the selected trajectories are excluded (more than "
+            "warn_excluded_fraction = 0.1): possible selection bias, see 'excluded'",
+        ],
         "stage_failed": False,
         "error": None,
     }

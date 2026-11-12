@@ -192,6 +192,7 @@ def test_no_included_trajectory_stops_after_writing_the_report(tmp_path, write_i
         run_stage(ctx)
     data = json.loads((stage_dir / "analysis.json").read_text())
     assert data["stage_failed"] is True and (stage_dir / "report.md").exists()
+    assert data["small_ensemble"] is True  # present on the stop paths too
     assert "energy_drift 2" in data["error"]
     assert data["n_included"] == 0 and data["fit"] is None
     assert not (stage_dir / "populations.h5").exists()
@@ -320,6 +321,7 @@ def test_energy_jump_flag_and_exclusion(tmp_path, write_input):
     assert [f["task"] for f in data["energy"]["flagged"]] == ["traj_00000"]
     assert data["energy"]["flagged"][0]["energy_jump_eV"] == pytest.approx(0.2)
     assert data["energy"]["jump_threshold_eV"] == pytest.approx(0.1)
+    assert JUMP_WARNING.format(k=1, x=0.1) in data["warnings"]
 
     ctx = _context(
         tmp_path / "b",
@@ -334,6 +336,60 @@ def test_energy_jump_flag_and_exclusion(tmp_path, write_input):
     assert excluded["task"] == "traj_00000" and excluded["reason"] == "energy_jump"
     assert excluded["energy_jump_eV"] == pytest.approx(0.2)
     assert excluded["t_final_fs"] == pytest.approx(2.0)
+    assert not any("included trajectories have an energy jump" in w for w in data["warnings"])
+
+
+JUMP_WARNING = (
+    "{k} included trajectories have an energy jump above energy_jump_eV = {x} eV "
+    "(see energy.flagged); consider exclude_energy_jumps = true"
+)
+SMALL_WARNING = (
+    "only {n} trajectories are included (fewer than 20): populations, intervals and the fit "
+    "are not statistically reliable"
+)
+
+
+def test_one_trajectory_is_a_small_ensemble_without_fit_uncertainties(tmp_path, write_input):
+    ctx = _context(tmp_path, write_input, [(FIN, [1, 1, 0, 0, 0], {})])
+    run_stage(ctx)
+    data = _analysis(ctx)
+    assert data["n_included"] == 1 and data["small_ensemble"] is True
+    assert SMALL_WARNING.format(n=1) in data["warnings"]
+    fit = data["fit"]
+    assert fit["tau_fs"] is not None
+    for key in ("t0_interval_fs", "tau_interval_fs", "t0_std_fs", "tau_std_fs"):
+        assert fit[key] is None, key
+    assert "- small_ensemble: True\n" in (ctx.stage_dir / "report.md").read_text()
+
+
+def test_twenty_trajectories_are_not_a_small_ensemble(tmp_path, write_input):
+    ctx = _context(tmp_path, write_input, _varied_trajectories(5) * 4)
+    run_stage(ctx)
+    data = _analysis(ctx)
+    assert data["n_included"] == 20 and data["small_ensemble"] is False
+    assert not any("fewer than 20" in w for w in data["warnings"])
+    assert "- small_ensemble: False\n" in (ctx.stage_dir / "report.md").read_text()
+
+
+def test_a_stop_removes_the_stage_files_of_an_earlier_success(tmp_path, write_input):
+    ctx = _context(tmp_path, write_input, [(FIN, [1, 1, 1, 1, 1], {})])
+    run_stage(ctx)
+    for name in ("populations.h5", "populations.csv", "hops.csv"):
+        assert (ctx.stage_dir / name).exists()
+    dyn_dir = ctx.upstream["dynamics"]
+    _write_traj(dyn_dir, "traj_00000", "energy_drift", [1, 1])
+    write_json_atomic(
+        dyn_dir / "dynamics_summary.json",
+        {
+            "schema_version": 1,
+            "trajectories": [{"task": "traj_00000", "outcome": "energy_drift", "t_final_fs": 0.5}],
+        },
+    )
+    with pytest.raises(StageFailedError, match="No trajectory can be analysed"):
+        run_stage(ctx)
+    for name in ("populations.h5", "populations.csv", "hops.csv"):
+        assert not (ctx.stage_dir / name).exists(), name
+    assert _analysis(ctx)["stage_failed"] is True
 
 
 def _varied_trajectories(n=5):

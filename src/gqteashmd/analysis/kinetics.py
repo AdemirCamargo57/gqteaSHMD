@@ -7,6 +7,13 @@ from dataclasses import dataclass
 
 import numpy as np
 
+LOG_TAU_LIMIT = 700.0  # |log tau| bound: exp stays finite and tau never underflows to 0
+
+
+def tau_from_log(log_tau: float) -> float:
+    """tau = exp(log tau), with log tau clipped to [-LOG_TAU_LIMIT, LOG_TAU_LIMIT]."""
+    return float(np.exp(np.clip(log_tau, -LOG_TAU_LIMIT, LOG_TAU_LIMIT)))
+
 
 def model_curve(t: np.ndarray, a: float, t0: float, tau: float) -> np.ndarray:
     with np.errstate(over="ignore", under="ignore"):
@@ -39,7 +46,7 @@ def fit_delayed_exponential(t: np.ndarray, y: np.ndarray, *, dt_out: float) -> F
     t_e = float(t[below[0]]) if below.size else horizon
 
     def residual(x: np.ndarray) -> np.ndarray:
-        tau = float(np.exp(min(x[1], 700.0)))
+        tau = tau_from_log(float(x[1]))
         res: np.ndarray = model_curve(t, a, float(x[0]), tau) - y
         return res
 
@@ -57,7 +64,7 @@ def fit_delayed_exponential(t: np.ndarray, y: np.ndarray, *, dt_out: float) -> F
     if best is None:
         return FitResult(a, None, None, None, False, ("fit_failed",))
     t0 = float(best.x[0])
-    tau = float(np.exp(min(best.x[1], 700.0)))
+    tau = tau_from_log(float(best.x[1]))
     rms = float(np.sqrt(np.mean(residual(best.x) ** 2)))
     flags: list[str] = []
     if tau > horizon:
@@ -83,7 +90,8 @@ def bootstrap_fit(
     t: np.ndarray, per_trajectory: np.ndarray, indices: np.ndarray, *, dt_out: float
 ) -> FitWithUncertainty:
     fit = fit_delayed_exponential(t, per_trajectory.mean(axis=0), dt_out=dt_out)
-    if fit.tau_fs is None:
+    if fit.tau_fs is None or per_trajectory.shape[0] < 2:
+        # a resample of one trajectory is that trajectory: no information on the spread
         return FitWithUncertainty(fit, None, None, None, None, 0)
     taus: list[float] = []
     t0s: list[float] = []
