@@ -106,3 +106,112 @@ def test_one_short_sharc_trajectory(tmp_path):
     assert list(out["steps"]) == [0, 1, 2]
     summary = ens.trajectory_summary("t", out, dt_fs=0.5, tmax_fs=1.0)
     assert summary["ended"] == "finished"
+
+
+# --- run_ensemble with a stubbed run_sharc_trajectory (no SHARC) -------------------------------
+
+
+def _fake_world(monkeypatch, behaviour):
+    """Stub the project and sharc.x: behaviour(task_id, kwargs) -> result dict (or raises)."""
+    from types import SimpleNamespace
+
+    starts = [
+        SimpleNamespace(task_id=f"traj_{k:05d}", index=k, state="S1", q=np.zeros(6), v=np.zeros(6))
+        for k in range(2)
+    ]
+    inputs = SimpleNamespace(
+        config=None,
+        project_dir=Path("proj"),
+        symbols=("H", "H"),
+        masses_amu=np.ones(2),
+        starts=starts,
+    )
+    sections = _sections()
+    monkeypatch.setattr(ens, "load_project_inputs", lambda p: inputs)
+    monkeypatch.setattr(ens, "variant_sections", lambda c, v: sections)
+    calls = []
+
+    def stub(*args, workdir, **kwargs):
+        calls.append((workdir.name, kwargs))
+        workdir.mkdir(parents=True, exist_ok=False)
+        (workdir / "output.dat").write_text("garbage")
+        return behaviour(workdir.name, kwargs)
+
+    monkeypatch.setattr(ens, "run_sharc_trajectory", stub)
+    return calls
+
+
+def _run(tmp_path):
+    from gqteashmd.config.schema import DynamicsStageSection  # noqa: F401
+
+    variant = ens.Variant("base")
+    return ens.run_ensemble(
+        Path("proj"), variant, tmp_path, sharc_home=Path("/x"), sharc_python="py", workers=1
+    )
+
+
+def test_a_raising_job_is_recorded(tmp_path, monkeypatch):
+    def behaviour(task, kwargs):
+        if task == "traj_00000":
+            raise RuntimeError("sharc.x did not finish")
+        return {"returncode": 0, "data": None, "stderr_tail": "", "wall_time_s": 1.0}
+
+    _fake_world(monkeypatch, behaviour)
+    summary = _run(tmp_path)
+    assert summary["n_errors"] == 1
+    bad = summary["trajectories"][0]
+    assert bad["ended"] == "stopped" and bad["returncode"] is None
+    assert "did not finish" in bad["error"]
+    assert (tmp_path / "base" / "sharc_summary.json").is_file()
+
+
+def test_status_json_is_reused_with_its_failure(tmp_path, monkeypatch):
+    def behaviour(task, kwargs):
+        return {"returncode": 3, "data": None, "stderr_tail": "boom", "wall_time_s": 2.0}
+
+    calls = _fake_world(monkeypatch, behaviour)
+    _run(tmp_path)
+    assert len(calls) == 2
+    second = _run(tmp_path)
+    assert len(calls) == 2  # nothing rerun
+    t = second["trajectories"][0]
+    assert t["reused"] is True and t["returncode"] == 3 and t["stderr_tail"] == "boom"
+
+
+def test_a_dir_without_status_is_moved_aside(tmp_path, monkeypatch):
+    calls = _fake_world(
+        monkeypatch, lambda t, k: {"returncode": 0, "data": None, "stderr_tail": ""}
+    )
+    stale = tmp_path / "base" / "traj_00000"
+    stale.mkdir(parents=True)
+    (stale / "output.dat").write_text("old")
+    summary = _run(tmp_path)
+    assert (tmp_path / "base" / "traj_00000.stale-0" / "output.dat").read_text() == "old"
+    assert tuple(c[0] for c in calls[:1]) == ("traj_00000",)
+    assert summary["trajectories"][0]["reused"] is False
+
+
+def test_ended_needs_returncode_zero():
+    eh = 1 / 27.211386245988
+    out = {
+        "returncode": 1,
+        "steps": np.arange(5),
+        "e_total": np.zeros(5),
+        "energies": np.zeros((5, 2)) * eh,
+        "active": np.ones(5, dtype=int),
+    }
+    s = ens.trajectory_summary("t", {**out, "data": out}, dt_fs=0.5, tmax_fs=2.0)
+    assert s["ended"] == "stopped" and s["t_final_fs"] == 2.0
+
+
+def test_thread_variables_reach_sharc(tmp_path, monkeypatch):
+    seen = []
+
+    def behaviour(task, kwargs):
+        seen.append(kwargs["env_extra"])
+        return {"returncode": 0, "data": None, "stderr_tail": ""}
+
+    _fake_world(monkeypatch, behaviour)
+    _run(tmp_path)
+    for name in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS"):
+        assert seen[0][name] == "1"

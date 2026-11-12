@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import time
 from collections.abc import Sequence
@@ -105,11 +106,12 @@ def trajectory_summary(
     task_id: str, out: dict[str, Any], *, dt_fs: float, tmax_fs: float
 ) -> dict[str, Any]:
     """Per-trajectory summary of a ``run_sharc_trajectory`` result (success or failure)."""
-    data = out if out.get("returncode") == 0 else out.get("data")
+    data = out if out.get("returncode") == 0 and "steps" in out else out.get("data")
     summary: dict[str, Any] = {
         "task": task_id,
         "returncode": out.get("returncode"),
         "stderr_tail": out.get("stderr_tail"),
+        "error": out.get("error"),
         "t_final_fs": None,
         "n_steps": 0,
         "n_hops": 0,
@@ -139,18 +141,63 @@ def trajectory_summary(
                 active=active,
             )
         ),
-        ended="finished" if t[-1] >= tmax_fs - dt_fs / 2 else "stopped",
+        ended="finished"
+        if out.get("returncode") == 0 and t[-1] >= tmax_fs - dt_fs / 2
+        else "stopped",
     )
     return summary
 
 
+THREAD_VARIABLES = {
+    "OMP_NUM_THREADS": "1",
+    "OPENBLAS_NUM_THREADS": "1",
+    "MKL_NUM_THREADS": "1",
+}  # PYSCF.resources has ncpu 1: several sharc.x in parallel must not oversubscribe the cores
+STATUS_FILE = "status.json"
+
+
+def _write_status(workdir: Path, out: dict[str, Any], error: str | None, wall_time_s: float):
+    """status.json: what the run ended with (written atomically after every run)."""
+    status = {
+        "returncode": out.get("returncode"),
+        "stderr_tail": out.get("stderr_tail"),
+        "error": error,
+        "wall_time_s": wall_time_s,
+    }
+    workdir.mkdir(parents=True, exist_ok=True)
+    tmp = workdir / f".{STATUS_FILE}.tmp"
+    tmp.write_text(json.dumps(status))
+    os.replace(tmp, workdir / STATUS_FILE)
+
+
 def _read_existing(workdir: Path) -> dict[str, Any]:
-    """A run directory with an output.dat: parse it (resume by skipping)."""
-    try:
-        data = trajectory_data(parse_lvc_output_dat(workdir / "output.dat"))
-    except (ValueError, IndexError, OSError):
-        return {"returncode": None, "data": None, "stderr_tail": "unreadable output.dat"}
-    return {**data, "returncode": 0}
+    """A finished run directory (it has status.json): its recorded ending and its output.dat."""
+    status = json.loads((workdir / STATUS_FILE).read_text())
+    out: dict[str, Any] = {
+        "returncode": status.get("returncode"),
+        "stderr_tail": status.get("stderr_tail"),
+        "error": status.get("error"),
+        "wall_time_s": status.get("wall_time_s"),
+        "data": None,
+    }
+    if (workdir / "output.dat").is_file():
+        try:
+            data = trajectory_data(parse_lvc_output_dat(workdir / "output.dat"))
+        except (ValueError, IndexError, OSError):
+            return out
+        out["data"] = data
+        if out["returncode"] == 0:
+            out.update(data)
+    return out
+
+
+def _move_aside(workdir: Path) -> Path:
+    """Rename a work dir that has no status.json to <task>.stale-<k> (first free k)."""
+    k = 0
+    while (target := workdir.with_name(f"{workdir.name}.stale-{k}")).exists():
+        k += 1
+    workdir.rename(target)
+    return target
 
 
 def run_ensemble(
@@ -176,25 +223,36 @@ def run_ensemble(
 
     def job(start) -> dict[str, Any]:
         workdir = base / start.task_id
-        reused = (workdir / "output.dat").is_file()
+        if workdir.exists() and not (workdir / STATUS_FILE).is_file():
+            _move_aside(workdir)
+        reused = workdir.exists()
         if reused:
             out = _read_existing(workdir)
         else:
-            out = run_sharc_trajectory(
-                interface_geometry(start.q.reshape(-1, 3)),
-                start.v.reshape(-1, 3),
-                n_steps=n_steps,
-                workdir=workdir,
-                symbols=inputs.symbols,
-                masses_amu=inputs.masses_amu,
-                sharc_home=Path(sharc_home),
-                sharc_python=sharc_python,
-                provider="sharc_pyscf",
-                seed=start.index + 1,
-                state_mch=StateLabel.parse(start.state).index,
-                check=False,
-                **settings,
-            )
+            t0 = time.perf_counter()
+            error = None
+            try:
+                out = run_sharc_trajectory(
+                    interface_geometry(start.q.reshape(-1, 3)),
+                    start.v.reshape(-1, 3),
+                    n_steps=n_steps,
+                    workdir=workdir,
+                    symbols=inputs.symbols,
+                    masses_amu=inputs.masses_amu,
+                    sharc_home=Path(sharc_home),
+                    sharc_python=sharc_python,
+                    provider="sharc_pyscf",
+                    seed=start.index + 1,
+                    state_mch=StateLabel.parse(start.state).index,
+                    check=False,
+                    env_extra=dict(THREAD_VARIABLES),
+                    **settings,
+                )
+            except Exception as exc:  # noqa: BLE001 - recorded, never aborts the ensemble
+                error = f"{type(exc).__name__}: {exc}"
+                out = {"returncode": None, "stderr_tail": None, "data": None}
+            _write_status(workdir, out, error, time.perf_counter() - t0)
+            out = {**out, "error": error}
         s = trajectory_summary(start.task_id, out, dt_fs=dynamics.dt_fs, tmax_fs=tmax)
         s["reused"] = reused
         return s
@@ -211,6 +269,7 @@ def run_ensemble(
         "n_trajectories": len(trajectories),
         "tmax_fs": tmax,
         "ended": ended,
+        "n_errors": sum(1 for s in trajectories if s["error"]),
         "n_with_jump": sum(1 for s in trajectories if s["jumps"]),
         "n_finished_without_jump": sum(
             1 for s in trajectories if s["ended"] == "finished" and not s["jumps"]

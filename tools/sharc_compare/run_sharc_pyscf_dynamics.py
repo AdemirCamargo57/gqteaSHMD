@@ -434,6 +434,7 @@ def run_sharc_trajectory(
     decoherence: str = "none",
     seed: int = 1,
     check: bool = True,
+    env_extra: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Run ``sharc.x input`` in ``workdir`` (must not exist; its own session, a whole-group
     kill on a timeout) and return the per-step data of output.dat in atomic units:
@@ -448,7 +449,8 @@ def run_sharc_trajectory(
     roots=n_states)``). ``timeout_s`` None is ``timeout_for(n_steps)``. With ``check=False`` a
     failed sharc.x does not raise: the result has ``returncode``, ``stderr_tail``,
     ``stdout_tail``, ``wall_time_s`` and ``data`` (the reduced partial output.dat, else None);
-    a timeout still raises. A successful run has ``returncode`` 0."""
+    a timeout still raises. ``env_extra`` adds variables to sharc.x's environment. A
+    successful run has ``returncode`` 0."""
     workdir = Path(workdir)
     if template is None:
         template = pyscf_template(convergence, roots=n_states)
@@ -487,7 +489,7 @@ def run_sharc_trajectory(
         proc = run_in_session(
             ["bash", "-c", SHARC_X_COMMAND],
             cwd=workdir,
-            env=sharc_environment(Path(sharc_home)),
+            env={**sharc_environment(Path(sharc_home)), **(env_extra or {})},
             timeout=timeout_s,
             what="sharc.x",
         )
