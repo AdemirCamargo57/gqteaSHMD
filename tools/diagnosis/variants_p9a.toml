@@ -1,0 +1,40 @@
+# Setup variants of P9a plan 1 (spec section 3.3). Each overrides the project's
+# [electronic] and [dynamics] sections; "base" reproduces the M4 study.
+
+[[variant]]
+name = "base"
+description = "M4 as run: SA2-CASSCF(2,2)/6-31G*, overlap coupling, dt 0.5 fs"
+
+[[variant]]
+name = "nacdr"
+description = "NAC coupling instead of local diabatization"
+[variant.dynamics]
+coupling = "nacdr"
+
+[[variant]]
+name = "dt_quarter"
+description = "half the time step"
+[variant.dynamics]
+dt_fs = 0.25
+
+[[variant]]
+name = "sa3_cas22"
+description = "three states, same active space"
+[variant.electronic]
+singlets = 3
+
+[[variant]]
+name = "sa3_cas23"
+description = "three states, a third active orbital"
+[variant.electronic]
+singlets = 3
+[variant.electronic.casscf]
+ncas = 3
+nelecas = 2
+
+[[variant]]
+name = "sa2_cas43"
+description = "two states, four electrons in three orbitals"
+[variant.electronic.casscf]
+ncas = 3
+nelecas = 4
