@@ -3,7 +3,7 @@
 Status: design approved by the owner in chat on 2026-11-11 (sections 1-4); this written spec awaits review.
 Branch: `feat/p8-analysis-stage` (from `main` at `cc9d203`).
 
-> **Erratum (Task 12, 2026-11-11): where the implementation differs from this spec.** The plan's rulings PR1-PR9 and the controller rulings P8-1 to P8-4 (ledger `.superpowers/sdd/2026-11-11-p8-analysis-stage/progress.md`) are binding; USER_MANUAL.md §4.2, §6, §7.5 and §8.13 document the code.
+> **Erratum (Task 12, 2026-11-11): where the implementation differs from this spec.** The plan's rulings PR1-PR9 and the controller rulings P8-1 to P8-5 (ledger `.superpowers/sdd/2026-11-11-p8-analysis-stage/progress.md`) are binding; USER_MANUAL.md §4.2, §6, §7.5 and §8.13 document the code.
 > - **Frustrated hops (PR2):** `output.h5` does not record the target of a frustrated hop, so section 6's "frustrated hops per pair" is **per originating state** (`hops.frustrated_from`), and `hops.csv` leaves `to` empty for them.
 > - **Energy jump (PR3):** the jump of section 7 is taken over the records with `grid_step <= n_total` (the current `tmax_fs`), not "up to `T`", because `exclude_energy_jumps` decides the inclusion that defines `T`; the drift is taken up to the horizon.
 > - **Reopening the analysis itself (P8-3):** `AnalysisStage` overrides `Stage.reopen_tasks` and reopens its task `analysis` when the recorded result's `n_total` differs from `round(tmax_fs / dt_fs)`. Lowering `tmax_fs` after a complete run therefore re-analyses at the new horizon on a plain run (the trajectories that ran longer are `cut`); raising it reopens the trajectories and section 9 resets the analysis first. `tmax_fs` is still in no fingerprint. Every task result carries `n_total`.
