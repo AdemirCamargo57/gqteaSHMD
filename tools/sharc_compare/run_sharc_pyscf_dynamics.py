@@ -102,11 +102,18 @@ DEFAULT_CONVERGENCE = Convergence(1e-10, 1e-6)  # the P3a template and our defau
 TIGHT_CONVERGENCE = Convergence(1e-12, 1e-8)
 
 
-def pyscf_template(convergence: Convergence = DEFAULT_CONVERGENCE) -> str:
+def pyscf_template(
+    convergence: Convergence = DEFAULT_CONVERGENCE,
+    *,
+    ncas: int = 2,
+    nelecas: int = 2,
+    roots: int = N_STATES,
+    basis: str = BASIS,
+) -> str:
     """PYSCF.template (manual 6.24, table 6.36): the keywords of ``run_sharc_pyscf.TEMPLATE``
-    (P3a/P6) with the given CASSCF convergence."""
+    (P3a/P6) with the given CASSCF convergence and active space."""
     return (
-        f"ncas 2\nnelecas 2\nroots {N_STATES}\nbasis {BASIS}\nmethod casscf\n"
+        f"ncas {ncas}\nnelecas {nelecas}\nroots {roots}\nbasis {basis}\nmethod casscf\n"
         f"fix-spin-shift 0.2\nconv-tol {_power(convergence.conv_tol)}\n"
         f"conv-tol-grad {_power(convergence.conv_tol_grad)}\nverbose 3\n"
     )
@@ -122,6 +129,17 @@ PYSCF_TEMPLATE = pyscf_template()
 PYSCF_RESOURCES = "scratchdir ./SCRATCH\nmemory 2000\nncpu 1\n"
 PROVIDERS = ("sharc_pyscf", "ours")
 COUPLINGS = ("overlap", "nacdr")
+HOPPING = ("off", "sharc")
+DECOHERENCE = ("none", "edc")
+MIN_TIMEOUT_S = 600.0
+TIMEOUT_PER_STEP_S = 60.0
+
+
+def timeout_for(n_steps: int) -> float:
+    """The sharc.x timeout for ``n_steps`` steps (seconds): 60 s per step, at least 600 s."""
+    return max(MIN_TIMEOUT_S, TIMEOUT_PER_STEP_S * n_steps)
+
+
 DECIMALS_ANGSTROM = 7  # sharc.x writes the interface geometry with 7 decimals in angstrom
 
 
@@ -203,21 +221,31 @@ def make_ethylene_backend(
 def sharc_input(
     n_steps: int,
     *,
-    coupling: str = "overlap",
+    coupling: str,
     dt_fs: float = DT_FS,
     nsubsteps: int = NSUBSTEPS,
     state_mch: int = INITIAL_STATE,
     n_states: int = N_STATES,
     seed: int = 1,
     phases_from_interface: bool = True,
+    hopping: str = "off",
+    decoherence: str = "none",
+    decoherence_param_Eh: float = 0.1,
 ) -> str:
-    """The sharc.x ``input`` (manual 4.1) for a singlet trajectory with hopping off and no
-    decoherence (``surf sharc``, no spin-orbit coupling, ``ekincorrect parallel_vel``). Our
+    """The sharc.x ``input`` (manual 4.1) for a singlet trajectory (``surf sharc``, no
+    spin-orbit coupling, ``ekincorrect parallel_vel``), by default with hopping off and no
+    decoherence (``hopping_procedure``, ``decoherence_scheme``, ``decoherence_param``). Our
     ``state_mch`` is 0-based; SHARC's ``state`` is 1-based. The length is set with ``tmax``
     (``nsteps`` was ignored by this sharc.x, P7a-1). Every step is printed with its gradients
     and its overlaps (``overlap``) or NACs (``nacdr``)."""
     if coupling not in COUPLINGS:
         raise ValueError(f"coupling must be one of {', '.join(COUPLINGS)}; got {coupling!r}")
+    if hopping not in HOPPING:
+        raise ValueError(f"hopping must be one of {', '.join(HOPPING)}; got {hopping!r}")
+    if decoherence not in DECOHERENCE:
+        raise ValueError(
+            f"decoherence must be one of {', '.join(DECOHERENCE)}; got {decoherence!r}"
+        )
     if n_steps < 1:
         raise ValueError(f"n_steps must be >= 1; got {n_steps}")
     lines = [
@@ -240,10 +268,11 @@ def sharc_input(
         "nogradcorrect",
         "ekincorrect parallel_vel",
         "reflect_frustrated none",
-        "decoherence_scheme none",
-        "hopping_procedure off",
-        "grad_all",
+        f"decoherence_scheme {decoherence}",
     ]
+    if decoherence == "edc":
+        lines.append(f"decoherence_param {float(decoherence_param_Eh)!r}")
+    lines += [f"hopping_procedure {hopping}", "grad_all"]
     if coupling == "nacdr":
         lines.append("nac_all")
     if not phases_from_interface:
@@ -289,8 +318,8 @@ def write_trajectory_files(
     script = qm / "runQM.sh"
     script.write_text(
         "cd QM/ || exit 1\n"
-        "# measured: SHARC_PYSCF.py (interface version 4.0) stops at the 'step 0' that sharc.x\n"
-        "# writes (it looks for SAVE/pyscf.chk) and runs with 'init' (the keyword P3a/P6 used)\n"
+        "# measured (P7b Task 10): with 'step 0' SHARC_PYSCF.py stops with "
+        "\"File .../pyscf.chk not found, cannot move to old!\"; with 'init' it runs\n"
         "sed -i 's/^step[[:space:]]*0[[:space:]]*$/init/' QM.in || exit 1\n"
         f'exec "{sharc_python}" "$SHARC/SHARC_PYSCF.py" QM.in\n'
     )
@@ -353,8 +382,18 @@ class SwapModel:
         for (a, b), d in result.nacs.items():
             nacs[index[a], index[b]] = np.asarray(d, dtype=float).reshape(-1)
             nacs[index[b], index[a]] = -nacs[index[a], index[b]]
+        if not np.all(np.isfinite(energies)):
+            raise ValueError(f"the backend returned non-finite energies {energies.tolist()}")
+        if not np.all(np.isfinite(gradients)):
+            raise ValueError("the backend returned non-finite gradients")
+        if self.coupling == "nacdr" and not np.all(np.isfinite(nacs)):
+            raise ValueError("the backend returned non-finite NACs")
         overlaps = None
         if result.overlaps is not None:
+            if not np.all(np.isfinite(result.overlaps)):
+                raise ValueError(
+                    "the backend returned non-finite overlaps with the previous geometry"
+                )
             self.min_singular_values.append(
                 float(np.linalg.svd(np.asarray(result.overlaps), compute_uv=False).min())
             )
@@ -380,13 +419,21 @@ def run_sharc_trajectory(
     symbols: Sequence[str],
     masses_amu: Sequence[float],
     sharc_home: Path,
+    provider: str,
+    coupling: str,
     sharc_python: str | None = None,
-    provider: str = "sharc_pyscf",
-    coupling: str = "overlap",
     model: SwapModel | None = None,
     phases_from_interface: bool | None = None,
     convergence: Convergence = DEFAULT_CONVERGENCE,
-    timeout_s: float = 3600.0,
+    timeout_s: float | None = None,
+    template: str | None = None,
+    n_states: int = N_STATES,
+    dt_fs: float = DT_FS,
+    state_mch: int = INITIAL_STATE,
+    hopping: str = "off",
+    decoherence: str = "none",
+    seed: int = 1,
+    check: bool = True,
 ) -> dict[str, Any]:
     """Run ``sharc.x input`` in ``workdir`` (must not exist; its own session, a whole-group
     kill on a timeout) and return the per-step data of output.dat in atomic units:
@@ -396,8 +443,17 @@ def run_sharc_trajectory(
     ``"ours"`` needs ``model`` (a ``SwapModel``) and serves it for the duration of the run.
     ``phases_from_interface`` defaults to False for SHARC_PYSCF.py (measured: it stops at
     step 1 with "'overlap' is not supported" when sharc.x requests PHASES) and True for ours.
-    ``convergence`` sets the PYSCF.template CASSCF tolerances (``"sharc_pyscf"`` only)."""
+    ``convergence`` sets the PYSCF.template CASSCF tolerances (``"sharc_pyscf"`` only);
+    ``template`` replaces the whole PYSCF.template (default: ``pyscf_template(convergence,
+    roots=n_states)``). ``timeout_s`` None is ``timeout_for(n_steps)``. With ``check=False`` a
+    failed sharc.x does not raise: the result has ``returncode``, ``stderr_tail``,
+    ``stdout_tail``, ``wall_time_s`` and ``data`` (the reduced partial output.dat, else None);
+    a timeout still raises. A successful run has ``returncode`` 0."""
     workdir = Path(workdir)
+    if template is None:
+        template = pyscf_template(convergence, roots=n_states)
+    if timeout_s is None:
+        timeout_s = timeout_for(n_steps)
     if phases_from_interface is None:
         phases_from_interface = provider == "ours"
     write_trajectory_files(
@@ -407,11 +463,19 @@ def run_sharc_trajectory(
         q0=geometry_bohr,
         v0=velocities_au,
         input_text=sharc_input(
-            n_steps, coupling=coupling, phases_from_interface=phases_from_interface
+            n_steps,
+            coupling=coupling,
+            dt_fs=dt_fs,
+            state_mch=state_mch,
+            n_states=n_states,
+            seed=seed,
+            phases_from_interface=phases_from_interface,
+            hopping=hopping,
+            decoherence=decoherence,
         ),
         provider=provider,
         sharc_python=sharc_python,
-        template=pyscf_template(convergence),
+        template=template,
     )
     server = None
     if provider == "ours":
@@ -428,12 +492,27 @@ def run_sharc_trajectory(
             what="sharc.x",
         )
     wall = time.perf_counter() - started
-    if proc.returncode != 0 or not (workdir / "output.dat").is_file():
-        raise RuntimeError(
-            f"sharc.x failed ({proc.returncode}) in {workdir}:\n{proc.stderr[-2000:]}"
-            f"\n{proc.stdout[-2000:]}"
-        )
-    return trajectory_data(parse_lvc_output_dat(workdir / "output.dat"), wall)
+    output = workdir / "output.dat"
+    if proc.returncode != 0 or not output.is_file():
+        if check:
+            raise RuntimeError(
+                f"sharc.x failed ({proc.returncode}) in {workdir}:\n{proc.stderr[-2000:]}"
+                f"\n{proc.stdout[-2000:]}"
+            )
+        data = None
+        if output.is_file():
+            try:
+                data = trajectory_data(parse_lvc_output_dat(output), wall)
+            except (ValueError, IndexError, OSError):
+                data = None
+        return {
+            "returncode": proc.returncode,
+            "stderr_tail": proc.stderr[-2000:],
+            "stdout_tail": proc.stdout[-2000:],
+            "wall_time_s": wall,
+            "data": data,
+        }
+    return {**trajectory_data(parse_lvc_output_dat(output), wall), "returncode": 0}
 
 
 def trajectory_data(trajectory, wall_time_s: float = math.nan) -> dict[str, Any]:
@@ -541,6 +620,9 @@ QUANTITIES = ("q", "v", "energies", "populations")
 def step_differences(a: dict[str, Any], b: dict[str, Any]) -> dict[str, np.ndarray]:
     """Per printed step, max |a - b| of positions, velocities, MCH energies and populations,
     over the steps both have (aligned by step number)."""
+    for name, side in (("first", a), ("second", b)):
+        if not np.all(np.diff(side["steps"]) > 0):
+            raise ValueError(f"the {name} trajectory's steps are not strictly increasing")
     common = np.intersect1d(a["steps"], b["steps"])
     ia = np.searchsorted(a["steps"], common)
     ib = np.searchsorted(b["steps"], common)
