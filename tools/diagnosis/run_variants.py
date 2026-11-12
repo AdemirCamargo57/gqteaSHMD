@@ -4,6 +4,11 @@ The orchestrator is bypassed on purpose: a changed [electronic] section would ch
 surface and so the samples. Each trajectory uses the stage's random stream
 task_rng(project.seed, "dynamics", index), so the variant "base" reproduces the project.
 
+Rerunning into an existing --out resumes: unfinished trajectories continue from their restart
+generation and finished ones are reused. This is allowed only if <out>/<variant>/variant.json
+(the merged settings, seed, backend and project) is identical; otherwise run_variant raises
+ValueError (use a new --out or remove the variant directory).
+
 Example (WSL):
   python tools/diagnosis/run_variants.py ~/p8_m4/run tools/diagnosis/variants_p9a.toml \\
       --out ~/p9a/variants --workers 8 --threads 2 --memory-mb 800 --variant base
@@ -214,6 +219,22 @@ def run_variant(
     electronic, dynamics = variant_sections(inputs.config, variant)
     base = Path(out_dir).expanduser() / variant.name
     base.mkdir(parents=True, exist_ok=True)
+    identity = {
+        "electronic": electronic.model_dump(mode="json"),
+        "dynamics": dynamics.model_dump(mode="json"),
+        "seed": inputs.config.project.seed,
+        "backend": backend,
+        "project": str(inputs.project_dir),
+    }
+    marker = base / "variant.json"
+    if marker.is_file():
+        if json.loads(marker.read_text()) != json.loads(json.dumps(jsonable(identity))):
+            raise ValueError(
+                f"{marker}: the variant directory was run with other settings; "
+                "use a new --out or remove the directory"
+            )
+    else:
+        marker.write_text(json.dumps(jsonable(identity), indent=1, allow_nan=False) + "\n")
     jobs = [
         Job(
             str(base / s.task_id),

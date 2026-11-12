@@ -135,3 +135,24 @@ def test_run_variant_only_runs_the_named_tasks(tmp_path):
         only=["traj_00001"],
     )
     assert [r["task"] for r in summary["trajectories"]] == ["traj_00001"]
+
+
+def test_rerun_into_the_same_out_reuses_finished_trajectories(tmp_path):
+    inputs = pi.load_project_inputs(make_project(tmp_path))
+    kwargs = dict(workers=1, threads=1, memory_mb=500, backend=f"lvc:{LVC}")
+    variant = rv.Variant("base", {}, {})
+    first = rv.run_variant(inputs, variant, tmp_path / "out", **kwargs)
+    assert (tmp_path / "out" / "base" / "variant.json").is_file()
+    second = rv.run_variant(inputs, variant, tmp_path / "out", **kwargs)
+    assert second["outcomes"] == first["outcomes"]
+    assert [r["outcome"] for r in second["trajectories"]] == [
+        r["outcome"] for r in first["trajectories"]
+    ]
+
+
+def test_rerun_with_other_settings_is_refused(tmp_path):
+    inputs = pi.load_project_inputs(make_project(tmp_path))
+    kwargs = dict(workers=1, threads=1, memory_mb=500, backend=f"lvc:{LVC}")
+    rv.run_variant(inputs, rv.Variant("base", {}, {}), tmp_path / "out", **kwargs)
+    with pytest.raises(ValueError, match="variant.json"):
+        rv.run_variant(inputs, rv.Variant("base", {}, {"dt_fs": 0.25}), tmp_path / "out", **kwargs)
