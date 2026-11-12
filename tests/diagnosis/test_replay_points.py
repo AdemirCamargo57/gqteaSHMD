@@ -32,6 +32,21 @@ def test_probe_window_and_failure_record():
     assert rp.failure_record({"jumps": [], "n_records": 9}) == 8
 
 
+def test_segments_construction():
+    # jump at the end: one window, no failed step requested
+    assert rp.segments(20, 19, 19, 4, False) == [[16, 17, 18, 19]]
+    # failure at the end, jump there too: one merged segment with failed_step
+    assert rp.segments(20, 19, 19, 4, True) == [[16, 17, 18, 19, "failed_step"]]
+    # jump far before the end: two segments, failed_step in the second
+    assert rp.segments(40, 10, 39, 3, True) == [[8, 9, 10], [37, 38, 39, "failed_step"]]
+    # windows touching (first ends at 10, second starts at 11): merged
+    assert rp.segments(20, 10, 13, 3, True) == [[8, 9, 10, 11, 12, 13, "failed_step"]]
+    # overlapping windows
+    assert rp.segments(20, 10, 11, 4, True) == [[7, 8, 9, 10, 11, "failed_step"]]
+    # just not touching: 11 is a gap of one record
+    assert len(rp.segments(20, 10, 14, 3, True)) == 2
+
+
 def test_replay_variants_are_the_spec_list():
     names = [v.name for v in rp.REPLAY_VARIANTS]
     assert names == ["base", "sa3_cas22", "sa3_cas23", "sa2_cas43"]

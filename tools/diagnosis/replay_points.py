@@ -67,6 +67,7 @@ class PointResult:
     rung: str | None
     wall_time_s: float
     error: str | None
+    segment: int = 0
 
 
 def active_orbital_overlap(
@@ -96,8 +97,31 @@ def failure_record(report: dict[str, Any]) -> int:
     return int(report["n_records"]) - 1
 
 
-def _failed(label: str, mode: str, variant: str, wall: float, exc: Exception) -> PointResult:
-    return PointResult(label, mode, variant, None, None, None, None, None, None, wall, str(exc))
+def segments(
+    n_records: int, jump_record: int, end_record: int, window: int, with_failed_step: bool
+) -> list[list[int | str]]:
+    """Contiguous runs of records to replay, each solved as its own path.
+
+    The first run is the window ending at the jump (or the end); for an overlap or electronic
+    failure a second run is the window ending at the last record, followed by "failed_step".
+    Runs that overlap or touch are merged into one.
+    """
+    first = probe_window(n_records, jump_record, window)
+    if not with_failed_step:
+        return [list(first)]
+    tail = probe_window(n_records, end_record, window)
+    if tail[0] <= first[-1] + 1:
+        merged: list[int | str] = list(range(first[0], max(first[-1], tail[-1]) + 1))
+        return [[*merged, "failed_step"]]
+    return [list(first), [*tail, "failed_step"]]
+
+
+def _failed(
+    label: str, mode: str, variant: str, wall: float, exc: Exception, segment: int
+) -> PointResult:
+    return PointResult(
+        label, mode, variant, None, None, None, None, None, None, wall, str(exc), segment
+    )
 
 
 def solve_path(
@@ -112,6 +136,7 @@ def solve_path(
     threads: int,
     memory_mb: int,
     scratch: Path,
+    segment: int = 0,
 ) -> list[PointResult]:
     """Solve every geometry; results come back in the order of `geometries` for every mode."""
     import pyscf.fci.direct_spin1
@@ -151,7 +176,9 @@ def solve_path(
                 )
             )
         except ElectronicStructureError as exc:
-            results[i] = _failed(labels[i], mode, variant, time.perf_counter() - started, exc)
+            results[i] = _failed(
+                labels[i], mode, variant, time.perf_counter() - started, exc, segment
+            )
             continue
         live = backend._live
         mc = live.solver
@@ -179,6 +206,7 @@ def solve_path(
             rung=res.meta.get("casscf"),
             wall_time_s=time.perf_counter() - started,
             error=None,
+            segment=segment,
         )
     return [results[i] for i in range(len(geometries))]
 
@@ -308,24 +336,18 @@ def replay_trajectory(
     report = trajectory_report(traj)
     rows, labels, _ = read_rows(traj)
     end = failure_record(report)
-    records = probe_window(int(rows.size), end, window)
-    geometries = [np.asarray(rows["q"][i], dtype=float).reshape(-1, 3) for i in records]
-    point_labels = [f"r{i}" for i in records]
     scratch = Path(scratch)
     outcome = report["outcome"]
     last = int(rows.size) - 1
+    failing = outcome in ("overlap_failure", "electronic_failure")
+    runs = segments(int(rows.size), end, last, window, failing)
     gradient_error = None
-    if outcome in ("overlap_failure", "electronic_failure"):
-        if end != last:  # the failure is at the trajectory's end, not at the first jump
-            tail = [i for i in probe_window(int(rows.size), last, window) if i not in records]
-            records += tail
-            geometries += [np.asarray(rows["q"][i], dtype=float).reshape(-1, 3) for i in tail]
-            point_labels += [f"r{i}" for i in tail]
-        tail_records = probe_window(int(rows.size), last, window)
+    q_failed = None
+    if failing:
         try:
             g = _active_gradient(
                 inputs,
-                tail_records,
+                probe_window(int(rows.size), last, window),
                 rows,
                 labels,
                 base,
@@ -342,11 +364,26 @@ def replay_trajectory(
                 g,
                 masses,
                 dt_min,
-            )
-            geometries.append(q_failed.reshape(-1, 3))
-            point_labels.append("failed_step")
+            ).reshape(-1, 3)
         except Exception as exc:  # noqa: BLE001 - recorded, the other points still run
             gradient_error = f"{type(exc).__name__}: {exc}"
+    seg_geoms: list[list[np.ndarray]] = []
+    seg_labels: list[list[str]] = []
+    for run in runs:
+        geoms, labs = [], []
+        for item in run:
+            if item == "failed_step":
+                if q_failed is None:
+                    continue
+                geoms.append(q_failed)
+                labs.append("failed_step")
+            else:
+                geoms.append(np.asarray(rows["q"][item], dtype=float).reshape(-1, 3))
+                labs.append(f"r{item}")
+        seg_geoms.append(geoms)
+        seg_labels.append(labs)
+    records = [i for run in runs for i in run if isinstance(i, int)]
+    point_labels = [lab for labs in seg_labels for lab in labs]
     points: dict[str, Any] = {}
     for variant in REPLAY_VARIANTS:
         try:
@@ -357,35 +394,40 @@ def replay_trajectory(
             points[variant.name] = {"error": str(exc)}
             continue
         points[variant.name] = {
-            mode: solve_path(
-                inputs.symbols,
-                inputs.charge,
-                geometries,
-                point_labels,
-                section,
-                mode=mode,
-                variant=variant.name,
-                threads=threads,
-                memory_mb=memory_mb,
-                scratch=scratch / task_id / variant.name / mode,
-            )
+            mode: [
+                point
+                for k, (geoms, labs) in enumerate(zip(seg_geoms, seg_labels, strict=True))
+                for point in solve_path(
+                    inputs.symbols,
+                    inputs.charge,
+                    geoms,
+                    labs,
+                    section,
+                    mode=mode,
+                    variant=variant.name,
+                    threads=threads,
+                    memory_mb=memory_mb,
+                    scratch=scratch / task_id / variant.name / mode / f"seg{k}",
+                    segment=k,
+                )
+            ]
             for mode in MODES
         }
     det = determinism(
         inputs.symbols,
         inputs.charge,
-        geometries[records.index(end)],
+        np.asarray(rows["q"][end], dtype=float).reshape(-1, 3),
         base,
         threads=threads,
         memory_mb=memory_mb,
         scratch=scratch / task_id / "determinism",
     )
     trials: list[dict[str, Any]] = []
-    if outcome == "electronic_failure" and point_labels[-1] == "failed_step":
+    if outcome == "electronic_failure" and q_failed is not None:
         trials = convergence_trials(
             inputs.symbols,
             inputs.charge,
-            geometries[-1],
+            q_failed,
             base,
             threads=threads,
             memory_mb=memory_mb,
@@ -397,6 +439,7 @@ def replay_trajectory(
         "onset": report["onset"],
         "records": records,
         "labels": point_labels,
+        "segments": [[x for x in run] for run in runs],
         "stored_energies_eV": [(rows["energies"][i] * HARTREE_IN_EV).tolist() for i in records],
         "failed_geometry_error": gradient_error,
         "points": points,
