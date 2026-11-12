@@ -60,6 +60,15 @@ def test_workflow_runs_dynamics_resumes_and_extends(tmp_path, write_input):
     layout = _layout(path)
     stage = layout.stage_dir(6, "dynamics")
     _check_rows(layout)
+    analysis = json.loads((layout.stage_dir(7, "analysis") / "analysis.json").read_text())
+    included = {
+        r["task"]
+        for r in _summary(layout)["trajectories"]
+        if r["outcome"] in ("finished", "stopped_in_s0")
+    }
+    assert set(analysis["included"]) == included and analysis["stage_failed"] is False
+    assert analysis["horizon_fs"] == pytest.approx(1.0)
+    assert (layout.stage_dir(7, "analysis") / "populations.csv").exists()
     logs = sorted(stage.glob("tasks/traj_*/steps.log"))
     assert [p.parent.name for p in logs] == _selected(layout)
     before = {p: p.stat().st_mtime_ns for p in logs}
@@ -78,6 +87,8 @@ def test_workflow_runs_dynamics_resumes_and_extends(tmp_path, write_input):
     assert finished, rows  # the extension check below must not be vacuous
     assert "traj_00000" in {r["task"] for r in finished}, rows  # measured: finished at 1.5 fs
     assert all(r["t_final_fs"] == pytest.approx(1.5) for r in finished), rows
+    analysis = json.loads((layout.stage_dir(7, "analysis") / "analysis.json").read_text())
+    assert analysis["horizon_fs"] == pytest.approx(1.5)  # recomputed after the reopen (P8)
 
 
 @pytest.mark.slow
@@ -110,3 +121,5 @@ def test_a_killed_controller_resumes_the_dynamics(tmp_path, write_input):
     assert main(["run", str(path)]) == 0
     print(f"second run: {time.perf_counter() - start:.1f} s")
     _check_rows(layout)
+    analysis = json.loads((layout.stage_dir(7, "analysis") / "analysis.json").read_text())
+    assert analysis["stage_failed"] is False

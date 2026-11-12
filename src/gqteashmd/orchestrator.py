@@ -319,6 +319,24 @@ class Orchestrator:
         if moved is not None:
             log.info("Stage %s: previous results moved to %s", stage.name, moved)
 
+    def _reset_dependants(self, state: StateStore, stage: Stage) -> list[str]:
+        """Reset every later stage that depends on `stage` and has results (P8 spec 9)."""
+        start = [s.name for s in self.stages].index(stage.name)
+        affected = {stage.name}
+        reset: list[str] = []
+        for index in range(start + 1, len(self.stages)):
+            later = self.stages[index]
+            if affected.isdisjoint(later.depends_on):
+                continue
+            affected.add(later.name)
+            record = state.get_stage(later.name)
+            if record is None or not self._has_results(state, later, record):
+                continue
+            log.warning("Stage %s is recomputed because %s was extended", later.name, stage.name)
+            self._reset_stage(state, index, later)
+            reset.append(later.name)
+        return reset
+
     # ------------------------------------------------------------------ one stage
     def _run_stage(
         self,
@@ -493,6 +511,9 @@ class Orchestrator:
             )
         if not ids:
             return ids
+        # Dependants first: a kill before the RUNNING mark leaves this stage as it was and its
+        # dependants without results, so the next run reopens again and recomputes them (P8).
+        self._reset_dependants(state, stage)
         # RUNNING first: a kill part-way leaves a stage the normal path resumes.
         state.set_stage(stage.name, StageStatus.RUNNING, fingerprint=fp)
         attempts = {r.task_id: r.attempts for r in records}

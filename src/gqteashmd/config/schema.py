@@ -313,6 +313,45 @@ class DynamicsStageSection(_Section):
         return self
 
 
+ENERGY_JUMP_DEFAULT_EV = 0.1  # P8 Task 1 measurement (plan ruling PR9)
+
+
+class AnalysisSection(_Section):
+    """[analysis] of the workflow (P8). Meanings: USER_MANUAL.md section 4."""
+
+    enabled: bool = True
+    fit_states: list[str] | None = None
+    fit_population: Literal["classical", "quantum"] = "classical"
+    n_bootstrap: int = Field(default=1000, ge=100)
+    energy_jump_eV: float = Field(default=ENERGY_JUMP_DEFAULT_EV, gt=0, allow_inf_nan=False)
+    exclude_energy_jumps: bool = False
+    warn_excluded_fraction: float = Field(default=0.2, ge=0, le=1, allow_inf_nan=False)
+
+    @field_validator("fit_states")
+    @classmethod
+    def _fit_states_are_excited_singlets(cls, value: list[str] | None) -> list[str] | None:
+        if value is None:
+            return None
+        from gqteashmd.core.states import StateLabel
+
+        labels: list[StateLabel] = []
+        for text in value:
+            try:
+                label = StateLabel.parse(text)
+            except ValueError as exc:
+                raise ValueError(f"invalid state label {text!r}: {exc}") from exc
+            if label.multiplicity != 1:
+                raise ValueError(f"{label} is a triplet; analysis.fit_states takes singlets")
+            if label.index == 0:
+                raise ValueError("S0 cannot be in analysis.fit_states (fit excited states)")
+            if label in labels:
+                raise ValueError(f"duplicate state {label} in analysis.fit_states")
+            labels.append(label)
+        if not labels:
+            raise ValueError("analysis.fit_states must not be empty (omit it to use all)")
+        return [str(label) for label in labels]
+
+
 class ShmdConfig(_Section):
     schema_version: Literal[1] = 1
     project: ProjectSection
@@ -327,6 +366,7 @@ class ShmdConfig(_Section):
     excitations: ExcitationsSection = Field(default_factory=ExcitationsSection)
     selection: SelectionSection = Field(default_factory=SelectionSection)
     dynamics: DynamicsStageSection | None = None
+    analysis: AnalysisSection = Field(default_factory=AnalysisSection)
 
     @model_validator(mode="after")
     def _consistent(self) -> ShmdConfig:
@@ -363,6 +403,16 @@ class ShmdConfig(_Section):
                 if StateLabel.parse(text).index >= singlets:
                     problems.append(
                         f"selection.states: {text} does not exist with [electronic] "
+                        f"singlets = {singlets} (S0..S{singlets - 1})"
+                    )
+        if self.electronic is not None and self.analysis.fit_states is not None:
+            from gqteashmd.core.states import StateLabel
+
+            singlets = self.electronic.singlets
+            for text in self.analysis.fit_states:
+                if StateLabel.parse(text).index >= singlets:
+                    problems.append(
+                        f"analysis.fit_states: {text} does not exist with [electronic] "
                         f"singlets = {singlets} (S0..S{singlets - 1})"
                     )
         if self.selection.mode == "fixed" and (

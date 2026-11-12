@@ -10,6 +10,8 @@ worker subprocesses inherit from the controller:
   reopen: list of "stage:task_id" that reopen_tasks sends back to PENDING once (runs < 2)
   reopen_bad: list of stage names whose reopen_tasks returns the unknown id "t999"
   requires: {"stage": ["module", ...]} required_modules per stage (checked by preflight)
+  analysis: bool, append a one-task stage "analysis" that depends on "dynamics"
+  analysis_disabled: bool, that "analysis" stage is disabled
 """
 
 from __future__ import annotations
@@ -120,7 +122,7 @@ class FakeStage(Stage):
 def make_pipeline(config: ShmdConfig) -> list[Stage]:
     behaviour = _behaviour()
     requires = behaviour.get("requires", {})
-    return [
+    stages: list[Stage] = [
         PrepareStage(),
         FakeStage(
             "optimize",
@@ -139,6 +141,16 @@ def make_pipeline(config: ShmdConfig) -> list[Stage]:
             required_modules=requires.get("dynamics", ()),
         ),
     ]
+    if behaviour.get("analysis", False):
+        stages.append(
+            FakeStage(
+                "analysis",
+                1,
+                ("dynamics",),
+                enabled=not behaviour.get("analysis_disabled", False),
+            )
+        )
+    return stages
 
 
 def read_summary(stage_dir: Path) -> dict[str, Any]:

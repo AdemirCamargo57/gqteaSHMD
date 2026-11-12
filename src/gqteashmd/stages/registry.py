@@ -1,9 +1,10 @@
 """The production pipeline: prepare, optimize, frequencies, sampling, excitations, selection,
-dynamics (optional: enabled by a [dynamics] table)."""
+dynamics (optional: a [dynamics] table), analysis (after dynamics; [analysis] enabled)."""
 
 from __future__ import annotations
 
 from gqteashmd.config.schema import ShmdConfig
+from gqteashmd.stages.analysis import AnalysisStage
 from gqteashmd.stages.base import Stage
 from gqteashmd.stages.dynamics import DynamicsStage
 from gqteashmd.stages.excitations import ExcitationsStage
@@ -23,6 +24,7 @@ def default_pipeline(config: ShmdConfig) -> list[Stage]:
         ExcitationsStage(max_failed_fraction=config.excitations.max_failed_fraction),
         SelectionStage(),
         DynamicsStage(max_failed_fraction=dynamics_max_failed_fraction(config)),
+        AnalysisStage(),
     ]
 
 

@@ -115,3 +115,10 @@ def canned_dynamics(config: ShmdConfig) -> list[Stage]:
             max_failed_fraction=dynamics_max_failed_fraction(config),
         ),
     ]
+
+
+def canned_analysis(config: ShmdConfig) -> list[Stage]:
+    """`canned_dynamics` followed by the real `analysis` stage (plan ruling PR7)."""
+    from gqteashmd.stages.analysis import AnalysisStage
+
+    return [*canned_dynamics(config), AnalysisStage()]
