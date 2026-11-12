@@ -422,3 +422,36 @@ def test_swap_model_refuses_non_finite_data(coupling, damage, match):
     backend.compute = damaged
     with pytest.raises(ValueError, match=f"non-finite {match}"):
         model.evaluate(np.full(3, 0.01), None if damage == "energies" else object())
+
+
+def test_main_single_trajectory_passes_provider_and_coupling(monkeypatch, tmp_path, capsys):
+    calls = []
+    steps = np.array([0, 1])
+
+    def stub(*args, **kwargs):
+        calls.append(kwargs)
+        return {
+            "steps": steps,
+            "energies": np.zeros((2, 2)),
+            "populations": np.zeros((2, 2)),
+            "wall_time_s": 1.0,
+        }
+
+    monkeypatch.setattr(dyn, "run_sharc_trajectory", stub)
+    dyn.main(
+        [
+            "--sharc-home",
+            str(tmp_path),
+            "--python",
+            "python",
+            "--steps",
+            "2",
+            "--work-dir",
+            str(tmp_path / "w"),
+            "--coupling",
+            "nacdr",
+        ]
+    )
+    assert len(calls) == 1
+    assert calls[0]["provider"] == "sharc_pyscf" and calls[0]["coupling"] == "nacdr"
+    assert "2 printed steps" in capsys.readouterr().out

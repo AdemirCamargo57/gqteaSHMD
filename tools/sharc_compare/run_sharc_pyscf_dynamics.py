@@ -819,7 +819,7 @@ def swap_report(
     return report
 
 
-def main() -> None:
+def main(argv: Sequence[str] | None = None) -> None:
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     p.add_argument("--sharc-home", required=True)
     p.add_argument("--python", required=True, help="Python of the SHARC conda environment")
@@ -832,7 +832,7 @@ def main() -> None:
         help="SHARC_PYSCF.py has no overlaps (measured), so 'overlap' stops at step 1",
     )
     p.add_argument("--report", help="run the swap-test report and write its JSON here")
-    args = p.parse_args()
+    args = p.parse_args(argv)
     work = Path(args.work_dir).expanduser()
     if args.report:
         swap_report(
@@ -853,6 +853,7 @@ def main() -> None:
         masses_amu=initial.masses_amu,
         sharc_home=Path(args.sharc_home),
         sharc_python=args.python,
+        provider="sharc_pyscf",
         coupling=args.coupling,
     )
     n_printed = len(data["steps"])
