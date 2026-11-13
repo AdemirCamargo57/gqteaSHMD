@@ -82,7 +82,7 @@ Steps 1, 3 and 5 of Task 7 ran together (at most 6 processes x 2 threads); Steps
 
 ### 2.3 F4, the extra CASSCF rungs (Tasks 3 and 8)
 
-- **What exists.** `pyscf_casscf.EXTRA_RUNGS`, fixed by owner decision 5 before any probe number:
+- **What existed (historical: removed on 2026-11-13, owner decision, commit `086d3c4`; see section 7).** `pyscf_casscf.EXTRA_RUNGS`, fixed by owner decision 5 before any probe number:
   - rung 4, `"previous orbitals, more iterations"`: the previous orbitals, 4 x the macro iterations, the nominal tolerances;
   - rung 5, `"loose tolerances"`: the previous orbitals or else the SCF orbitals, 3 x the macro iterations, `conv_tol` 1e-8, `conv_tol_grad` 1e-4 (each `max(user, rung)`, never tighter than the input).
 

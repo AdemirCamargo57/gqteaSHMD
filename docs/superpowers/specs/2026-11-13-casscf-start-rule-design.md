@@ -14,7 +14,7 @@
 >   - cost: one reference search at the equilibrium geometry (SCF + 4 guesses) **0.516 s**; one first `compute` at a start (search, SCF, projected solve; 8 workers x 2 threads) 0.893-1.653 s;
 >   - the stage cost was measured on a 10-sample project derived from the M4 input (SA2-CAS(2,2)/6-31G\*, 8 tasks x 2 threads, no `[dynamics]`; `main` `e1bdc74` against the branch, both from the WSL native filesystem), not on the ethylene end-to-end test: `optimize` 9 / 9 s, `frequencies` (37 tasks) 26 / 29 s, `excitations` (11 tasks) 4 / 6 s, whole run 42 / 48 s (each ±1 s, log resolution); the excitation energies of the two runs differ by at most 3.3e-6 Eh (their optimized geometries by 7.0e-6 bohr) and the same two trajectories were selected. The rung counts of the samples are not recorded anywhere (above).
 
-**Status:** design approved in conversation by the owner on 2026-11-13 (both parts); the written spec was approved on 2026-11-13 (the plan records it) and is implemented on `feat/casscf-start-rule` (commits `086d3c4` to `9e11747`, then the documents), with the deviations of the erratum above.
+**Status:** design approved in conversation by the owner on 2026-11-13 (both parts); the written spec was approved on 2026-11-13 (the plan records it) and is implemented on `feat/casscf-start-rule` (commits `086d3c4` to `9e11747`, then the documents `d080dd4` and Task 6b `a0acd10`), with the deviations of the erratum above.
 **Branch:** `feat/casscf-start-rule` (from `main` at `e1bdc74`).
 **Inputs:** the P9a acceptance report `docs/superpowers/reports/2026-11-13-p9a-acceptance.md` (section 3.2, the start-solution survey; section 6, the open decisions) and the diagnosis report `docs/superpowers/reports/2026-11-12-p9a-diagnosis.md`.
 
