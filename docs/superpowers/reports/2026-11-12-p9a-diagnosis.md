@@ -1,6 +1,6 @@
 # P9a diagnosis report: why the M4 study lost 18 of 20 trajectories
 
-Status: **for the owner's approval** (spec section 3.5). Plan 2 (fixes and the acceptance run) is written only after this report is approved.
+Status: **approved by the owner on 2026-11-13** (spec section 3.5). The owner asked for the recommended option of each decision; the decisions as taken are in "Owner decisions (2026-11-13)" at the end. Plan 2 is `docs/superpowers/plans/2026-11-13-p9a2-fixes.md`.
 Date: 2026-11-12. Branch `feat/p9a-trajectory-losses`, from `main` at `4f076a5`. The spec is `docs/superpowers/specs/2026-11-12-p9a-trajectory-losses-design.md` (`e09cd79`) and plan 1 is `docs/superpowers/plans/2026-11-12-p9a1-diagnosis.md` (`722b393`). Tasks 1-5 built the tools (`ab4cb04` to `58811f6`). Tasks 6 and 7 ran the measurements; they have no diff. The final fix wave, after the whole-branch review, corrected this report and added the measurements listed in section 7. Nothing under `src/` changed in plan 1.
 
 The numbers come from these sources:
@@ -553,3 +553,25 @@ SA3-CAS(2,2) is not free of switches, so an SA3 solution switch is a candidate c
    - the 5 unreproduced base overlap failures, from the hop to the end (section 2.2; 130 records).
 8. **`[selection] states = ["S1"]`.** Whether the acceptance run uses it, as measured, or the default selection with `singlets = 3`.
 9. **The reading of the "ours" rule with several solutions** (Definitions; section 7). Whether a fresh solve that lands on another SA-CASSCF solution, while the run's solution is reproduced by a continued replay or by SHARC, counts as "not ours". The reading was made after the numbers were seen. Without it, most lost trajectories meet the literal fresh-solve test of "ours".
+
+## Owner decisions (2026-11-13)
+
+The owner approved this report and asked for the recommended option of each decision. The controller wrote the recommendations; they are recorded here as the owner's decisions and are binding for plan 2.
+
+1. **Acceptance setup:** `sa3_cas22` as in section 5 (SA3-CASSCF(2,2)/6-31G\*, `dt_fs` 0.5, overlap coupling), plus the code changes that enter plan 2 (items 4 and 5).
+2. **The 16/20 target stays.** Plan 2 first measures on seed 2026: the replays of item 7, the start-solution survey of item 3, the F4 probe of item 5, and a re-run of `sa3_cas22` with the final code. The acceptance run on seed 2027 then runs once. A shortfall is documented under spec 2, rule 3; nothing is re-tuned on seed 2027.
+3. **No start-solution rule in plan 2's code.** Plan 2 only measures: a survey at t = 0 of the 20 seed-2026 starts in SA3-CAS(2,2) from a fixed set of starting guesses. It records the distinct solutions, their SA-average energies, their active-orbital character against the equilibrium-geometry solution, and which one our run and SHARC used. A rule needs a criterion, and the criterion cannot be fixed before the solutions are known. The lowest SA energy, for example, can pick a sigma,pi\* active space, as on STO-3G in P7b. So the rule, if any, is an owner decision after the survey.
+4. **F1 enters plan 2, as an owner exception to spec 4.1 rule 1** (its class is labelled "method"). The reason is the detection gap: a solution switch of 0.64-0.93 eV passes every rejection signal. It is a new `[dynamics]` key, `energy_jump_limit_eV`, with the default 0.1 eV fixed in the spec, and the new outcome `electronic_discontinuity`. **F2 does not enter.** No threshold has been validated, and F1 covers the drift class while the overlap signal covers the rest.
+5. **F4 enters, conditionally.** Two extra CASSCF rungs, fixed now, sit behind a backend flag that is off by default:
+   - **rung 4:** the previous orbitals, 4 x the macro iterations, the nominal tolerances;
+   - **rung 5:** the previous orbitals, or else the SCF orbitals, 3 x the macro iterations, `conv_tol` 1e-8, `conv_tol_grad` 1e-4.
+
+   A probe at the three failure geometries decides, by conditions fixed now (plan 2, Task 4), whether the dynamics stage turns the flag on.
+6. **None of 00014, 00007 and 00016 is counted "ours" now. Plan 2 investigates each:**
+   - 00014, with the rejection reasons that plan 2 records;
+   - 00007 and 00016, with the F4 probe.
+
+   A defect found by the investigation is fixed with a test that fails first (spec 2, rule 2). Otherwise the case is documented as method or settings.
+7. **Both replays run in plan 2:** the 9 `sa3_cas22` losses, and the 5 unreproduced base overlap failures from the hop to the end.
+8. **`[selection] states = ["S1"]`** in the acceptance run.
+9. **The "several solutions" reading is accepted.** It stays stated as decided after the numbers were seen.
