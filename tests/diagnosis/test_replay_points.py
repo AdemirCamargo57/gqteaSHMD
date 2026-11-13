@@ -2,7 +2,8 @@ from pathlib import Path
 
 import numpy as np
 import pytest
-from tests.diagnosis.conftest import load_tool
+from tests.diagnosis.conftest import load_tool, make_rows, write_trajectory
+from tests.diagnosis.test_project_inputs import make_project
 
 rp = load_tool("diagnosis", "replay_points")
 
@@ -100,7 +101,7 @@ def test_continued_path_reproduces_the_backend(tmp_path):
 def test_hop_to_end_segment():
     assert rp.hop_to_end_segment(10, 6, True) == [6, 7, 8, 9, "failed_step"]
     assert rp.hop_to_end_segment(10, 9, False) == [9]
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="outside 0..9"):
         rp.hop_to_end_segment(10, 10, False)
 
 
@@ -111,3 +112,23 @@ def test_replay_cli_accepts_the_new_options(capsys):
     text = capsys.readouterr().out
     for option in ("--trajectories", "--base-variant", "--from-first-hop"):
         assert option in text
+
+
+def test_from_first_hop_without_a_hop_is_recorded_per_task(tmp_path):
+    project = make_project(tmp_path)
+    trajectories = tmp_path / "variant_run"
+    rows = make_rows([0.0, 0.0, 0.0], [[0.0, 9.0]] * 3)
+    write_trajectory(trajectories / "traj_00000", rows, outcome="finished")
+    args = (str(project), "traj_00000", 6, 1, 100, str(tmp_path / "scratch"))
+    task, result = rp._replay_one((*args, str(trajectories), "base", True))
+    assert task == "traj_00000"
+    assert set(result) == {"task", "error"} and "no hop" in result["error"]
+
+
+def test_setup_errors_abort_under_from_first_hop(tmp_path):
+    project = make_project(tmp_path)
+    args = (str(project), "traj_00000", 6, 1, 100, str(tmp_path / "scratch"))
+    with pytest.raises(ValueError, match="no such trajectory"):
+        rp._replay_one((*args, str(tmp_path / "typo"), "base", True))
+    with pytest.raises(ValueError, match="base variant 'nope'"):
+        rp._replay_one((*args, None, "nope", True))

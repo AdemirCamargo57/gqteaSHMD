@@ -116,6 +116,10 @@ def segments(
     return [list(first), [*tail, "failed_step"]]
 
 
+class NoHopError(ValueError):
+    """The trajectory has no hop record, so there is no hop-to-end segment."""
+
+
 def hop_to_end_segment(n_records: int, hop_record: int, with_failed_step: bool) -> list[int | str]:
     """One run from the first hop record to the last record, plus "failed_step" if asked."""
     if not 0 <= hop_record < n_records:
@@ -363,7 +367,7 @@ def replay_trajectory(
     failing = outcome in ("overlap_failure", "electronic_failure")
     if from_first_hop:
         if not report["hops"]:
-            raise ValueError(f"{task_id}: the trajectory has no hop")
+            raise NoHopError(f"{task_id}: the trajectory has no hop")
         hop = report["hops"][0]
         hop_record = int(hop["record"] if isinstance(hop, dict) else hop.record)
         runs = [hop_to_end_segment(int(rows.size), hop_record, failing)]
@@ -492,10 +496,8 @@ def _replay_one(args: tuple) -> tuple[str, dict[str, Any]]:
             base_variant=base_variant,
             from_first_hop=hop,
         )
-    except ValueError as exc:
-        if not hop:
-            raise
-        return task, {"task": task, "error": str(exc)}  # e.g. no hop in the trajectory
+    except NoHopError as exc:
+        return task, {"task": task, "error": str(exc)}
 
 
 def _lost_tasks(project: Path, trajectories: Path | None = None) -> list[str]:
