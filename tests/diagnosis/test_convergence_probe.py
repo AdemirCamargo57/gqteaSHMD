@@ -59,3 +59,28 @@ def test_both_enabled_in_ladder_order():
 
 def test_max_abs_diff():
     assert tool.max_abs_diff([1.0, 2.0], [1.5, 1.0]) == pytest.approx(1.0)
+
+
+def test_an_unusable_accuracy_point_blocks_loose():
+    two = {
+        ("loose", "traj_00000_failed_step"): "loose tolerances",
+        ("loose", "traj_00007_full_step"): "loose tolerances",
+    }
+    probe = _probe(two)
+    probe["accuracy"][-1] = {"point": "x", "error": "RuntimeError: boom"}
+    decision = tool.f4_decision(probe)
+    assert decision["enabled"] == [] and not decision["loose"]
+    assert any("4 of 5 accuracy points usable" in r for r in decision["reasons"])
+    probe["accuracy"] = probe["accuracy"][:4]
+    assert tool.f4_decision(probe)["enabled"] == []
+
+
+def test_a_rung_with_a_gradient_error_does_not_count():
+    # solve_configuration records rung None when the gradient fails; the energy rung is separate
+    probe = _probe({})
+    probe["geometries"]["traj_00007_full_step"]["more_iterations"] = {
+        "rung": None,
+        "energy_rung": "previous orbitals, more iterations",
+        "error": "ElectronicStructureError: gradient",
+    }
+    assert tool.f4_decision(probe)["enabled"] == []

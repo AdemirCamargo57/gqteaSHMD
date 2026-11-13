@@ -76,39 +76,47 @@ def f4_decision(probe: dict[str, Any]) -> dict[str, Any]:
     more = n_more >= 1
     n_loose = count("loose", LOOSE_RUNG)
     acc = probe.get("accuracy", [])
-    dE = max((a["max_abs_dE_Eh"] for a in acc), default=float("nan"))
-    dg = max((a["max_abs_dg_Eh_per_bohr"] for a in acc), default=float("nan"))
-    accurate = bool(acc) and dE <= MAX_DE_EH and dg <= MAX_DG_EH_PER_BOHR
+    usable = [a for a in acc if "error" not in a and "max_abs_dE_Eh" in a]
+    dE = max((a["max_abs_dE_Eh"] for a in usable), default=float("nan"))
+    dg = max((a["max_abs_dg_Eh_per_bohr"] for a in usable), default=float("nan"))
+    n_need = len(ACCURACY_POINTS)
+    complete = len(acc) == n_need and len(usable) == n_need
+    accurate = complete and dE <= MAX_DE_EH and dg <= MAX_DG_EH_PER_BOHR
     loose = n_loose >= 2 and accurate
     reasons = [
         f"more_iterations converged with its rung at {n_more} of {len(geoms)} (need 1)",
         f"loose converged with its rung at {n_loose} of {len(geoms)} (need 2)",
-        f"loose accuracy over {len(acc)} points: max |dE| {dE:.3g} Eh (<= {MAX_DE_EH:g}), "
+        f"{len(usable)} of {n_need} accuracy points usable",
+        f"loose accuracy: max |dE| {dE:.3g} Eh (<= {MAX_DE_EH:g}), "
         f"max |dg| {dg:.3g} Eh/bohr (<= {MAX_DG_EH_PER_BOHR:g}): {accurate}",
     ]
     enabled = [name for name, on in ((MORE_ITERATIONS_RUNG, more), (LOOSE_RUNG, loose)) if on]
     return {"more_iterations": more, "loose": loose, "enabled": enabled, "reasons": reasons}
 
 
-def _sharc_geometries(sharc_dir: Path, task: str) -> list[np.ndarray]:
+def _sharc_geometries(sharc_dir: Path, task: str) -> tuple[list[np.ndarray], str]:
+    """The records at SHARC_TIMES_FS and the active state label at the last one."""
     from run_sharc_lvc import parse_lvc_output_dat
     from run_sharc_pyscf_dynamics import trajectory_data
 
     data = trajectory_data(parse_lvc_output_dat(Path(sharc_dir) / task / "output.dat"))
     t_fs = np.asarray(data["steps"], dtype=float) * float(data["dt_au"]) * AU_TIME_IN_FS
     out = []
+    label = "S1"
     for target in SHARC_TIMES_FS:
         k = int(np.argmin(np.abs(t_fs - target)))
         if abs(t_fs[k] - target) > 1e-3:
             raise ValueError(f"{task}: no SHARC record at {target} fs (nearest {t_fs[k]:.4f} fs)")
         out.append(np.asarray(data["q"][k], dtype=float).reshape(-1, 3))
-    return out
+        if data.get("active") is not None:
+            label = f"S{int(data['active'][k])}"
+    return out, label
 
 
 def probe_geometries(
     project: Path, sharc_dir: Path, *, threads: int, memory_mb: int, scratch: Path
-) -> dict[str, tuple[list[np.ndarray], np.ndarray]]:
-    """name -> (path geometries, probe geometry), all (n_atoms, 3) bohr."""
+) -> dict[str, tuple[list[np.ndarray], np.ndarray, str]]:
+    """name -> (path geometries, probe geometry, active label), geometries in bohr."""
     inputs = load_project_inputs(project)
     dyn, base = inputs.config.dynamics, inputs.config.electronic
     assert dyn is not None and base is not None
@@ -116,9 +124,11 @@ def probe_geometries(
     masses = np.repeat(inputs.masses_amu * DALTON_IN_ME, 3)
     dt = dyn.dt_fs / AU_TIME_IN_FS
     dt_min = dt / 2**dyn.max_step_halvings
-    out: dict[str, tuple[list[np.ndarray], np.ndarray]] = {}
+    out: dict[str, tuple[list[np.ndarray], np.ndarray, str]] = {}
 
-    def verlet(task: str, records: list[int], step: float) -> tuple[list[np.ndarray], np.ndarray]:
+    def verlet(
+        task: str, records: list[int], step: float
+    ) -> tuple[list[np.ndarray], np.ndarray, str]:
         rows, labels, _ = read_rows(stage / task)
         g = _active_gradient(
             inputs,
@@ -139,21 +149,27 @@ def probe_geometries(
             step,
         )
         path = [np.asarray(rows["q"][i], dtype=float).reshape(-1, 3) for i in records]
-        return path, q_probe.reshape(-1, 3)
+        label = labels[int(rows["active"][last])]
+        return path, q_probe.reshape(-1, 3), label
 
     rows0, _, _ = read_rows(stage / "traj_00000")
     last = int(rows0.size) - 1
     out["traj_00000_failed_step"] = verlet("traj_00000", [last - 2, last - 1, last], dt_min)
     out["traj_00007_full_step"] = verlet("traj_00007", [0], dt)
-    sharc = _sharc_geometries(sharc_dir, "traj_00016")
-    out["traj_00016_sharc_17fs"] = (sharc[:2], sharc[2])
+    sharc, sharc_label = _sharc_geometries(sharc_dir, "traj_00016")
+    out["traj_00016_sharc_17fs"] = (sharc[:2], sharc[2], sharc_label)
     return out
 
 
 def solve_configuration(
-    inputs, electronic, path, probe_q, rungs, *, threads, memory_mb, scratch
+    inputs, electronic, path, probe_q, label, rungs, *, threads, memory_mb, scratch
 ) -> dict[str, Any]:
-    """A fresh backend, the path continued, then the probe geometry."""
+    """A fresh backend, the path continued, then the probe geometry with the active gradient.
+
+    "rung" is set only if the energies and the gradient both succeed; "energy_rung" is the rung
+    the energy solve reached.
+    """
+    from gqteashmd.core.states import StateLabel
     from gqteashmd.electronic.base import MoleculeSpec, Request
     from gqteashmd.electronic.pyscf_backend import PySCFBackend
 
@@ -170,14 +186,20 @@ def solve_configuration(
             scratch_dir=scratch,
             casscf_extra_rungs=tuple(rungs),
         )
-        res = None
-        for q in [*path, probe_q]:
-            res = backend.compute(
+        for q in path:
+            backend.compute(
                 Request(np.asarray(q, dtype=float), gradients=frozenset(), overlaps=True)
             )
-        assert res is not None
+        state = StateLabel.parse(label)
+        res = backend.compute(
+            Request(np.asarray(probe_q, dtype=float), gradients=frozenset({state}), overlaps=True)
+        )
+        if state not in res.gradients:
+            raise RuntimeError(f"no gradient returned for {label}")
         return {
             "rung": res.meta.get("casscf"),
+            "energy_rung": res.meta.get("casscf"),
+            "gradient_state": label,
             "energies_eV": [float(res.energies[s]) * HARTREE_IN_EV for s in backend.states],
             "wall_time_s": time.perf_counter() - started,
         }
@@ -249,10 +271,17 @@ def run_probe(
         planned = probe_geometries(project, sharc_dir, scratch=scratch, **kw)
     except Exception as exc:  # noqa: BLE001
         return {"error": f"{type(exc).__name__}: {exc}", "geometries": {}, "accuracy": []}
-    for name, (path, probe_q) in planned.items():
+    for name, (path, probe_q, label) in planned.items():
         geometries[name] = {
             config: solve_configuration(
-                inputs, electronic, path, probe_q, rungs, scratch=scratch / name / config, **kw
+                inputs,
+                electronic,
+                path,
+                probe_q,
+                label,
+                rungs,
+                scratch=scratch / name / config,
+                **kw,
             )
             for config, rungs in CONFIGURATIONS.items()
         }
@@ -275,8 +304,7 @@ def run_probe(
         )
     probe: dict[str, Any] = {
         "geometries": geometries,
-        "accuracy": [a for a in accuracy if "error" not in a],
-        "accuracy_all": accuracy,
+        "accuracy": accuracy,
     }
     probe["decision"] = f4_decision(probe)
     return probe
