@@ -5,6 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from numpy.typing import ArrayLike
+
 from gqteashmd.config.schema import ElectronicSection, ShmdConfig
 from gqteashmd.electronic.base import ElectronicBackend, MoleculeSpec
 from gqteashmd.errors import ConfigError
@@ -40,6 +42,7 @@ def make_backend(
     threads: int | None = None,
     memory_mb: int | None = None,
     scratch_dir: Path | None = None,
+    reference_coords_bohr: ArrayLike | None = None,
 ) -> ElectronicBackend:
     chosen = settings if settings is not None else config.electronic
     if chosen is None:
@@ -56,4 +59,5 @@ def make_backend(
         threads=threads,
         memory_mb=memory_mb,
         scratch_dir=scratch_dir,
+        reference_coords_bohr=reference_coords_bohr,
     )

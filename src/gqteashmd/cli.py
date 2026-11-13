@@ -298,14 +298,15 @@ def _cmd_single_point(args: argparse.Namespace) -> int:
         raise ConfigError(f"Invalid geometry file {path}: {exc}") from exc
     # The backend validates charge/multiplicity against the elements in its constructor.
     molecule = MoleculeSpec(geometry.symbols, cfg.molecule.charge, cfg.molecule.multiplicity)
+    coords = np.array(geometry.coords_angstrom, dtype=float) * ANGSTROM_TO_BOHR
     backend = make_backend(
         cfg,
         molecule,
         log_file=args.log,
         threads=cfg.resources.threads_per_task,
         memory_mb=cfg.resources.memory_mb_per_task,
+        reference_coords_bohr=coords,
     )
-    coords = np.array(geometry.coords_angstrom, dtype=float) * ANGSTROM_TO_BOHR
     result = backend.compute(Request(coords, transition_dipoles=True))
     data = result.to_json()
     settings = cfg.electronic
