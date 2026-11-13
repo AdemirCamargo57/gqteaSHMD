@@ -1,6 +1,6 @@
 # P9a acceptance report: the fixes of plan 2 and the seed-2027 run
 
-Status: **the acceptance run missed the success rule: 13 of 20 trajectories kept, 16 needed** (spec section 2, rule 3). The shortfall is documented here; the threshold was not lowered and nothing was re-tuned on seed 2027. The merge of `feat/p9a-trajectory-losses` waits for the owner.
+Status: **the acceptance run missed the success rule: 13 of 20 trajectories kept, 16 needed** (spec section 2, rule 3). The shortfall is documented here; the threshold was not lowered and nothing was re-tuned on seed 2027. **The owner closed P9a with the miss documented on 2026-11-13** (section 7, with the other three decisions).
 
 Date: 2026-11-13. Branch `feat/p9a-trajectory-losses`. The spec is `docs/superpowers/specs/2026-11-12-p9a-trajectory-losses-design.md`, the approved diagnosis is `docs/superpowers/reports/2026-11-12-p9a-diagnosis.md` (with its "Owner decisions (2026-11-13)", binding for plan 2), and plan 2 is `docs/superpowers/plans/2026-11-13-p9a2-fixes.md` (plan commit `f050839`). The code tasks are the commits `0631880` to `8c1e6f8`; Tasks 7, 10 and 11 are measurements with no diff, and Task 8 made no code change (ruling P9a2-7).
 
@@ -78,7 +78,7 @@ Steps 1, 3 and 5 of Task 7 ran together (at most 6 processes x 2 threads); Steps
 - **Version.** `DynamicsStage.version` 1 → 2: a project with `dynamics` results needs `--rerun-from dynamics`.
 - **Analysis.** `electronic_discontinuity` is excluded (it is not `finished` or `stopped_in_s0`) and counted in `outcomes` (test `test_an_electronic_discontinuity_is_excluded_and_counted`).
 - **Tests.** RED: 5 failed (`unexpected keyword argument 'energy_jump_limit_au'`). New scripted faults `energy_jump` (every energy + 0.01 Eh) and `energy_jump_rung` (with a rung change, for the signal order). Fast tier after the change: **1182 passed, 20 skipped, 190 deselected in 716.63 s**; the live SHARC module `test_sharc_pyscf_dynamics.py` **18 passed in 596.97 s** (`task-2-report.md`).
-- **The P7b step-24 run with F1** (spec 5, re-check): both couplings end `electronic_discontinuity` at `t_final_fs` 11.8125 after **23** completed grid steps, `rejections_by_signal` `{"energy": 4}`, message `|E_tot - E_tot(previous record)| = 0.9431 eV exceeds energy_jump_limit_eV = 0.1` at $\Delta t/8$. The plan asserted 24 grid steps; **ruling P9a2-4** changed the assertion after the number was seen (section 7).
+- **The P7b step-24 run with F1** (spec 5, re-check): both couplings end `electronic_discontinuity` at `t_final_fs` 11.8125 after **23** completed grid steps, `rejections_by_signal` `{"energy": 4}`, message `|E_tot - E_tot(previous record)| = 0.9431 eV exceeds energy_jump_limit_eV = 0.1` at $\Delta t/8$. The plan asserted 24 grid steps; **ruling P9a2-4** changed the assertion after the number was seen (section 8).
 
 ### 2.3 F4, the extra CASSCF rungs (Tasks 3 and 8)
 
@@ -139,7 +139,7 @@ The loose-rung energies lie on SHARC's solution: 00007 at 0.5 fs +5.8e-5 / −5.
 - **SHARC started on sol0 in 7 of 20** (to at most 1.35e-6 eV); in the other **13** its solution is **none of the four** (0.176-0.372 eV from sol0 in some state), with an SA energy above ours in 8 and below in 5 (−0.0062 to −0.1136 eV);
 - all 11 trajectories kept by plan 1's `sa3_cas22` started on sol0; 6 of them (00000, 00004, 00012, 00014, 00018, 00019) are starts where SHARC used a solution the survey did not find.
 
-So the fixed guess set cannot separate "lowest SA energy" from "most like equilibrium" (they coincide everywhere), and it does not reach SHARC's second solution in 13 of 20. Wall time per solve 0.14-1.05 s.
+So the fixed guess set cannot separate "lowest SA energy" from "most like equilibrium" (they coincide everywhere), and it does not reach SHARC's second solution in 13 of 20. Wall time per solve 0.14-1.05 s. (Afterwards the owner added a start rule built on this guess set: section 7, decision 2.)
 
 ### 3.3 The nine `sa3_cas22` losses, replayed (owner decision 7)
 
@@ -268,7 +268,16 @@ From `dynamics_summary.json` and `analysis.json`:
    - the excitations of seed 2027 have S2 at 15.06 eV with f 1.3e-4, so `states = ["S1"]` excluded nothing in practice; the default selection with `singlets = 3` was not measured.
 6. **The merge** of `feat/p9a-trajectory-losses` (after the full suite and the final review, which the controller runs after this report).
 
-## 7. Honest summary: what was decided after the numbers were seen
+## 7. Owner decisions (2026-11-13)
+
+Taken after this report, on items 1-4 of section 6 (recorded in section 0 of `docs/superpowers/specs/2026-11-13-casscf-start-rule-design.md`; the branch had been merged into `main` locally before, `99c2062`):
+
+1. **The shortfall.** P9a closes with the miss documented: 13 of 20 kept on seed 2027, success rule 16. The post-hop losses are not a work item now.
+2. **The start-solution rule.** A rule is added: the CASSCF start rule of `docs/superpowers/specs/2026-11-13-casscf-start-rule-design.md` (branch `feat/casscf-start-rule`). Every fresh SA-CASSCF solve starts from a reference solution, the lowest SA energy among a fixed guess set at the stage's reference geometry, projected onto the current geometry. Measured on the 20 seed-2026 starts (SA3-CAS(2,2), reference = the M4 optimized geometry; ledger `.superpowers/sdd/2026-11-13-casscf-start-rule/task-5-report.md`, `~/start_rule/start_rule_check.json`): the rule's step-0 solution is the survey's sol0 of section 3.2 in **20 of 20** starts (`n_sol0` 20, `n_other` 0, `n_unmatched` 0, `n_errors` 0; max $\lvert\Delta E\rvert$ to sol0 6.5e-10 to 3.5e-8 Eh per start), every start on the rung `"reference orbitals"`, reference guess `[7, 8]` with 4 of 4 guesses counted, `reference_active_min_sv` 0.9498-0.9973. So the rule keeps the start our runs already had; SHARC's start, none of the four solutions in 13 of 20, is not sought by it. Nothing was tuned.
+3. **The dormant F4 rungs** are removed (`EXTRA_RUNGS`, `casscf_extra_rungs`), together with `tools/diagnosis/convergence_probe.py` and its tests (commit `086d3c4` on `feat/casscf-start-rule`). The measurement of section 3.1 was made with that tool at commit `95fb881`; its JSON stays at `~/p9a/plan2/convergence_probe.json`.
+4. **F1's default** stays: `energy_jump_limit_eV = 0.1`.
+
+## 8. Honest summary: what was decided after the numbers were seen
 
 - **Ruling P9a2-1** (before any number, pre-flight scan): Task 6's CLI test must assert the new options in the `--help` text, not only that `--help` exits. A stronger test than the plan's.
 - **Ruling P9a2-4** (after the live number): the plan asserted `n_grid_steps == 24` for the step-24 F1 run; measured 23. The assertion became `n_grid_steps == CHANGE_STEP - 1` plus $(\text{CHANGE\_STEP} - 1)\,\Delta t < t_{\text{final}} < \text{CHANGE\_STEP}\,\Delta t$ (11.5 < 11.8125 < 12.0 fs), and its docstring says it was changed after the measurement. Reason: with F1 the jumping 24th interval is rejected, so 23 grid steps complete; the old `energy_drift` test counted the accepted jump step.
