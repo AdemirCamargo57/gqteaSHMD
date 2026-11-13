@@ -142,7 +142,10 @@ def test_energy_drift_outcome(tmp_path):
     result, d = _run(tmp_path, settings=_settings(options={"energy_drift_limit_au": 1e-14}))
     assert result["outcome"] == "energy_drift" and result["n_grid_steps"] == 1
     again, _ = _run(tmp_path, settings=_settings(options={"energy_drift_limit_au": 1e-14}))
-    assert again == {**result, "wall_time_s": again["wall_time_s"]}  # a final outcome stays
+    # a final outcome stays; the second call resumed from the final generation, and says so
+    assert again["resumes"] == ["gen_00000001"]
+    same = {"wall_time_s": again["wall_time_s"], "resumes": again["resumes"]}
+    assert again == {**result, **same}
 
 
 def test_stopped_in_s0_outcome(tmp_path):
@@ -279,3 +282,24 @@ def test_a_failed_gradient_refresh_after_a_hop_rejects_the_step(tmp_path):
     assert result["outcome"] in {"finished", "electronic_failure", "energy_drift"}
     rows = _log(d)
     assert np.all(np.isfinite(rows["e_total"])) and np.all(np.isfinite(rows["q"]))
+
+
+def test_rejections_are_counted_by_signal(tmp_path):
+    result, _ = _run(tmp_path, faults={6: "low_overlap", 12: "rung", 18: "error"})
+    assert result["outcome"] == "finished" and result["n_rejections"] == 3
+    assert result["rejections_by_signal"] == {"overlap": 1, "rung": 1, "electronic": 1}
+
+
+def test_a_persistent_signal_counts_every_rejected_attempt(tmp_path):
+    result, _ = _run(tmp_path, faults={c: "low_overlap" for c in (6, 7, 8, 9)})
+    assert result["rejections_by_signal"] == {"overlap": 4}
+
+
+def test_a_resume_is_recorded_with_its_generation(tmp_path):
+    with pytest.raises(SimulatedCrash):
+        _run(tmp_path, name="b", faults={8: "crash"})
+    result, d = _run(tmp_path, name="b", calls=7)
+    assert result["outcome"] == "finished"
+    assert len(result["resumes"]) == 1 and result["resumes"][0].startswith("gen_")
+    fresh, _ = _run(tmp_path, name="c")
+    assert fresh["resumes"] == [] and fresh["rejections_by_signal"] == {}

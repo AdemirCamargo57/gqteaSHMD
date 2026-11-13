@@ -8,10 +8,11 @@ generations, resume and extension. It reimplements no part of the step order.
 from __future__ import annotations
 
 import dataclasses
+import logging
 import math
 import time
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -28,6 +29,8 @@ from gqteashmd.trajectory.model import BackendModel
 from gqteashmd.trajectory.outcomes import TrajectoryOutcome
 from gqteashmd.trajectory.store import RestartStore, StepLog, log_row, write_output_h5
 from gqteashmd.util.fileio import read_json, write_json_atomic
+
+log = logging.getLogger("gqteashmd.trajectory.runner")
 
 STATE_FILE = "state.npz"
 ELECTRONIC_FILE = "electronic.npz"
@@ -106,6 +109,8 @@ class Progress:
     log_records: int = 0
     outcome: str | None = None
     message: str | None = None
+    rejections_by_signal: dict[str, int] = field(default_factory=dict)
+    resumes: list[str] = field(default_factory=list)
 
     def to_json(self) -> dict[str, Any]:
         data = dataclasses.asdict(self)
@@ -198,11 +203,17 @@ class TrajectoryRunner:
             self.model.backend.load_state(generation / ELECTRONIC_FILE)
             progress = Progress.from_json(read_json(generation / META_FILE))
             self.log.truncate(progress.log_records)
+            progress.resumes.append(generation.name)
         except (OSError, ValueError, TypeError, KeyError) as exc:
             raise RestartError(
                 f"cannot resume from the restart in {self.restarts.directory}: "
                 f"{type(exc).__name__}: {exc}"
             ) from exc
+        log.info(
+            "resumed from restart generation %s at t = %.4f fs",
+            generation.name,
+            self._time_au(progress) * AU_TIME_IN_FS,
+        )
         return state, source, progress
 
     # ---------------------------------------------------------------- one (sub)step
@@ -245,6 +256,7 @@ class TrajectoryRunner:
         if signal is not None:
             source = self._rollback(saved)
             progress.n_rejections += 1
+            progress.rejections_by_signal[signal] = progress.rejections_by_signal.get(signal, 0) + 1
             progress.pending_rejections += 1
             if progress.depth < settings.max_step_halvings:
                 progress.depth += 1
@@ -423,6 +435,8 @@ class TrajectoryRunner:
             "n_frustrated": progress.n_frustrated,
             "n_rejections": progress.n_rejections,
             "n_flagged": progress.n_flagged,
+            "rejections_by_signal": dict(sorted(progress.rejections_by_signal.items())),
+            "resumes": list(progress.resumes),
             "max_drift_eV": drift * HARTREE_IN_EV if math.isfinite(drift) else None,
             "message": progress.message,
             "wall_time_s": elapsed,

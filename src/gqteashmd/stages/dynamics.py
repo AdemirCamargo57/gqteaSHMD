@@ -250,20 +250,34 @@ class DynamicsStage(Stage):
                     "n_hops": int(r.get("n_hops", 0)),
                     "n_rejections": int(r.get("n_rejections", 0)),
                     "n_flagged": int(r.get("n_flagged", 0)),
+                    "rejections_by_signal": dict(r.get("rejections_by_signal") or {}),
+                    "n_resumes": len(r.get("resumes") or []),
                     "max_drift_eV": _finite_or_none(r.get("max_drift_eV")),
                     "message": r.get("message"),
                 }
             )
+        for task_id in sorted(results):
+            resumes = results[task_id].get("resumes") or []
+            if resumes:
+                log.info(
+                    "Stage dynamics: %s resumed from restart generation(s) %s",
+                    task_id,
+                    ", ".join(resumes),
+                )
         if missing:
             log.warning("Stage dynamics: no %s for: %s", OUTPUT_FILE, ", ".join(missing))
         counts = Counter(row["outcome"] for row in rows)
         outcomes = {o.value: int(counts.get(o.value, 0)) for o in TrajectoryOutcome}
         drifts = [row["max_drift_eV"] for row in rows if row["max_drift_eV"] is not None]
+        by_signal: Counter[str] = Counter()
+        for row in rows:
+            by_signal.update(row["rejections_by_signal"])
         totals = {
             "n_hops": sum(row["n_hops"] for row in rows),
             "n_frustrated": sum(int(results[row["task"]].get("n_frustrated", 0)) for row in rows),
             "n_rejections": sum(row["n_rejections"] for row in rows),
             "n_flagged": sum(row["n_flagged"] for row in rows),
+            "rejections_by_signal": dict(sorted(by_signal.items())),
         }
         summary = {
             "schema_version": 1,
@@ -291,7 +305,15 @@ def _markdown(summary: Mapping[str, Any]) -> str:
         f"- trajectories: {summary['n_results']}",
         f"- tmax: {summary['tmax_fs']} fs, dt: {summary['dt_fs']} fs",
         "- outcomes: " + ", ".join(f"{k} {v}" for k, v in summary["outcomes"].items()),
-        "- totals: " + ", ".join(f"{k} {v}" for k, v in summary["totals"].items()),
+        "- totals: "
+        + ", ".join(
+            f"{k} {v}" for k, v in summary["totals"].items() if k != "rejections_by_signal"
+        ),
+        "- rejections by signal: "
+        + (
+            ", ".join(f"{k} {v}" for k, v in summary["totals"]["rejections_by_signal"].items())
+            or "none"
+        ),
         f"- largest energy drift (eV): {_fmt(summary['max_drift_eV'], '.4g')}",
     ]
     if summary["missing_output"]:
