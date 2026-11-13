@@ -269,7 +269,7 @@ The measured remedy is a setting: SA3-CAS(2,2) keeps 5 of the 8.
 - *00007* (0.25 fs):
   - *Forensics:* the first full step from t = 0 was rejected (`n_rejections` 4), and the trajectory went on at dt/8 (records at 0.0625-0.25 fs, depth 3). The CASSCF rung changed at 0.25 fs (flagged), and the next dt/8 step failed on every rung. The run does not record why the attempts were rejected (rejected attempts appear in no log record).
   - *Replay of the failed step (0.3125 fs):* reproduced; a single solution in the window (singular values 1.0000).
-  - *Convergence trials at the failed step:* converged at `conv_tol_grad` 1e-5 and 1e-4 (the two agree to 1e-4 eV).
+  - *Convergence trials at the failed step:* converged at `conv_tol_grad` 1e-5 and 1e-4, both with `conv_tol` 1e-8 (the two agree to 1e-4 eV).
   - *The first full step, replayed in the final fix wave* (`final_fix/i1_traj00007.json`, `i1b_trials.json`; M4 `[electronic]` settings, 2 threads).
     - *Method:* the S1 gradient was computed at t = 0 from a fresh solve, as the run starts. The Verlet positions of the full step and of its retries at dt/2, dt/4 and dt/8 were built from it. The dt/8 position equals the run's first record to 4.4e-16 bohr.
     - *What each attempt gives, continued from the t = 0 solve:*
@@ -330,12 +330,12 @@ The measured remedy is a setting: SA3-CAS(2,2) keeps 5 of the 8.
 
 - *00000:* SHARC takes another path, so the only test at the failed geometry is a fresh solve.
   - At the run's settings (`conv_tol_grad` 1e-6) the fresh solve fails, as the run did.
-  - With `conv_tol_grad` 1e-4 it converges.
+  - With `conv_tol_grad` 1e-4 (and `conv_tol` 1e-8) it converges.
   - The solver sits at a stationary energy at the iteration limit.
 
   So it is not ours by that test.
 - *00007:* the two references disagree.
-  - *Fresh-solve test: settings.* At the run's settings our fresh solve fails at the run's geometries, both at the rejected full step (0.5 fs) and at the failed dt/8 step (0.3125 fs), as the run did. A looser `conv_tol_grad` converges: 1e-4 at 0.5 fs, and 1e-5 or 1e-4 at 0.3125 fs.
+  - *Fresh-solve test: settings.* At the run's settings our fresh solve fails at the run's geometries, both at the rejected full step (0.5 fs) and at the failed dt/8 step (0.3125 fs), as the run did. Looser tolerances converge: `conv_tol_grad` 1e-4 at 0.5 fs, and 1e-5 or 1e-4 at 0.3125 fs, each with `conv_tol` loosened from 1e-10 to 1e-8 as well.
   - *SHARC test: a candidate "ours".* At the 0.5 fs geometry (the same to 1.0e-7 bohr), `SHARC_PYSCF.py` returns a converged result with the same nominal tolerances (`conv_tol` 1e-10, `conv_tol_grad` 1e-6), and our three rungs fail.
   - *What is not known:* whether SHARC's result meets our convergence criterion (black box). Our 1e-4 solve lands within 6.2e-5 eV of it, so it is the same solution.
 
@@ -348,7 +348,7 @@ The measured remedy is a setting: SA3-CAS(2,2) keeps 5 of the 8.
 **Candidate fixes.**
 
 - **F4: supported for 2 of 3.** Fresh solves converge with a looser `conv_tol_grad` (00000, 00007).
-  - SHARC's interface gets through two geometries where our three rungs fail at the same nominal tolerances: 00007 at 0.5 fs and 00016 at 17.0 fs. At the first, our solve converges only at `conv_tol_grad` 1e-4, and then on SHARC's solution (within 6.2e-5 eV).
+  - SHARC's interface gets through two geometries where our three rungs fail at the same nominal tolerances: 00007 at 0.5 fs and 00016 at 17.0 fs. At the first, our solve converges only at `conv_tol_grad` 1e-4 with `conv_tol` 1e-8, and then on SHARC's solution (within 6.2e-5 eV).
   - Why SHARC converges there is not known (black box). It may be a different start, a different convergence check, or a looser effective criterion.
   - What was not measured:
     - whether a looser rung degrades the gradients or the energy conservation;

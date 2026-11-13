@@ -277,7 +277,7 @@ tools/sharc_compare/   executes SHARC 4.1 as a black box (never imported by gqte
     - `overlap_failure`: the same switch after the hop (3 of 8 reproduced, 5 with indirect evidence; those 5 equal SHARC to 5e-5 eV up to the hop). It comes 5.8-42.9 fs after the hop, and no intruder state was found.
     - `electronic_failure`: CASSCF stops at its 150-macro-iteration limit.
       - 00000 converges fresh at a looser `conv_tol_grad`.
-      - 00007: SHARC converges at the geometry of our rejected first full step (0.5 fs) where all three of our rungs fail (continued and fresh; ours converges only at 1e-4, on SHARC's solution). The two "ours" references disagree.
+      - 00007: SHARC converges at the geometry of our rejected first full step (0.5 fs) where all three of our rungs fail (continued and fresh; ours converges only at `conv_tol_grad` 1e-4 with `conv_tol` 1e-8, on SHARC's solution). The two "ours" references disagree.
       - 00016: both programs converge at 17.0 fs and fail on the next call (shared), but our solver also fails at SHARC's 17.0 fs geometry; our run's own convergence there is not reproduced (cf. limitation 3a).
     - Candidate "ours" cases for the owner (report decision 6): 00014, 00007 and 00016.
     - The "several solutions" reading of the "ours" rule (a fresh solve on another SA-CASSCF solution is not by itself "ours") was made after the numbers were seen; it is report decision 9.
