@@ -271,12 +271,17 @@ tools/sharc_compare/   executes SHARC 4.1 as a black box (never imported by gqte
 - **P9a plan 1, the diagnosis of the M4 losses: DONE on `feat/p9a-trajectory-losses`** (not merged).
   - **Scope and commits.** P9 was split by the owner on 2026-11-12: P9a is the M4 losses, P9b the SHARC comparison campaign. Plan 1 is report scripts only. Tasks 1-5 are commits `ab4cb04` to `58811f6`; Tasks 6 and 7 are measurements with no diff; Task 8 is the report and these documents.
   - **Waiting.** **Plan 2 (fixes and the seed-2027 acceptance run) waits for the owner's approval of the diagnosis report**, `docs/superpowers/reports/2026-11-12-p9a-diagnosis.md`. The report ends with its list of decisions for the owner.
-  - **Kept counts** (spec 4.3) of 20, on the seed-2026 M4 initial conditions: base 0, `nacdr` 0, `dt_fs` 0.25 1, SA3-CAS(2,2) **11**, SA3-CAS(2,3) 0, SA2-CAS(4,3) 0; SHARC base 1, SHARC SA3-CAS(2,2) 2. **No variant reaches the 16 of the success rule.**
+  - **Kept counts** (spec 4.3) of 20, on the seed-2026 M4 initial conditions: base 0, `nacdr` 0, `dt_fs` 0.25 1, SA3-CAS(2,2) **11**, SA3-CAS(2,3) 0, SA2-CAS(4,3) 0; SHARC base 1, SHARC SA3-CAS(2,2) 2. **No variant reaches 16 of 20 on seed 2026** (the success rule itself is judged on the seed-2027 acceptance run).
   - **Root causes** (report section 2):
-    - `energy_drift`: an SA2-CAS(2,2) solution switch (method). SHARC_PYSCF jumps at the same step in 6 of 7, and none of our rejection signals sees it, a detection gap (F1).
-    - `overlap_failure`: the same switch after the hop (3 of 8 reproduced, 5 with indirect evidence). It comes 5.8-42.9 fs after the hop, and no intruder state was found.
-    - `electronic_failure`: CASSCF stops at its 150-macro-iteration limit. 2 of 3 converge fresh at a looser `conv_tol_grad`. In the third (00016), SHARC fails at the same place, but our run's own convergence at its last geometry is not reproduced by fresh solves: unexplained, and history-dependent convergence (cf. limitation 3a) is not excluded.
-    - Candidate "ours" cases for the owner: 00014 and 00016.
+    - `energy_drift`: an SA2-CAS(2,2) solution switch (method). SHARC_PYSCF jumps at the same step in 6 of 7, with energies equal to ours to 3.2e-5 eV, and none of our rejection signals sees it, a detection gap (F1).
+    - `overlap_failure`: the same switch after the hop (3 of 8 reproduced, 5 with indirect evidence; those 5 equal SHARC to 5e-5 eV up to the hop). It comes 5.8-42.9 fs after the hop, and no intruder state was found.
+    - `electronic_failure`: CASSCF stops at its 150-macro-iteration limit.
+      - 00000 converges fresh at a looser `conv_tol_grad`.
+      - 00007: SHARC converges at the geometry of our rejected first full step (0.5 fs) where all three of our rungs fail (continued and fresh; ours converges only at 1e-4, on SHARC's solution). The two "ours" references disagree.
+      - 00016: both programs converge at 17.0 fs and fail on the next call (shared), but our solver also fails at SHARC's 17.0 fs geometry; our run's own convergence there is not reproduced (cf. limitation 3a).
+    - Candidate "ours" cases for the owner (report decision 6): 00014, 00007 and 00016.
+    - The "several solutions" reading of the "ours" rule (a fresh solve on another SA-CASSCF solution is not by itself "ours") was made after the numbers were seen; it is report decision 9.
+  - **Final fix wave** (after the final review): new measurements by throwaway scripts in `~/p9a/final_fix/` (WSL, not in the repository); the report, CLAUDE.md and USER_MANUAL.md corrected; ledger report `final-fix-report.md`.
   - **SA3-CAS(2,2) also has two solutions at the start** in 13 of 20 (ours against SHARC).
   - **Documents.** USER_MANUAL 8.16.9 and section 10 carry the findings; no behaviour changed.
 - **Implemented features:**
