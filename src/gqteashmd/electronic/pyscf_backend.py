@@ -101,9 +101,7 @@ class PySCFBackend(ElectronicBackend):
         threads: int | None = None,
         memory_mb: int | None = None,
         scratch_dir: Path | None = None,
-        casscf_extra_rungs: tuple[str, ...] = (),
     ) -> None:
-        self._casscf_extra_rungs = pyscf_casscf.check_extra_rungs(casscf_extra_rungs)
         self._version = require_pyscf()
         if molecule.multiplicity != 1:
             raise ConfigError(
@@ -155,7 +153,6 @@ class PySCFBackend(ElectronicBackend):
                     self._settings,
                     self._states,
                     prev_orbitals,
-                    extra_rungs=self._casscf_extra_rungs,
                 )
                 solver, energies, spins = outcome.mc, outcome.energies, outcome.spin_squares
                 mo_coeff = np.asarray(solver.mo_coeff)

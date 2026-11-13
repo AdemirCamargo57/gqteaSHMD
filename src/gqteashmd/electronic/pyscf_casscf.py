@@ -24,17 +24,14 @@ SPIN_TOLERANCE = 1e-3  # |<S^2>| above this means a root is not a singlet
 class Rung:
     """One attempt of the SA-CASSCF ladder.
 
-    start: "previous" (the previous geometry's orbitals, skipped without them), "scf" (the SCF
-    orbitals) or "previous_or_scf". conv_tol/conv_tol_grad: None = the [electronic.casscf]
-    value; a number loosens it (max(user, rung)), never tightens it.
+    start: "previous" (the previous geometry's orbitals, skipped without them) or "scf" (the SCF
+    orbitals).
     """
 
     name: str
     start: str
     spin_shift: float
     macro_factor: int
-    conv_tol: float | None = None
-    conv_tol_grad: float | None = None
 
 
 LADDER: tuple[Rung, ...] = (
@@ -42,23 +39,6 @@ LADDER: tuple[Rung, ...] = (
     Rung("SCF orbitals", "scf", 0.0, 1),
     Rung("SCF orbitals + spin penalty", "scf", 0.5, 3),
 )
-# P9a plan 2: off unless a caller enables them; no stage does (ruling P9a2-7: the probe's
-# accuracy conditions were not met)
-EXTRA_RUNGS: tuple[Rung, ...] = (
-    Rung("previous orbitals, more iterations", "previous", 0.0, 4),
-    Rung("loose tolerances", "previous_or_scf", 0.0, 3, 1e-8, 1e-4),
-)
-EXTRA_RUNG_NAMES: tuple[str, ...] = tuple(r.name for r in EXTRA_RUNGS)
-
-
-def check_extra_rungs(names: Iterable[str]) -> tuple[str, ...]:
-    chosen = tuple(names)
-    unknown = sorted(set(chosen) - set(EXTRA_RUNG_NAMES))
-    if unknown:
-        raise ValueError(
-            f"unknown CASSCF extra rung(s) {unknown}; known: {', '.join(EXTRA_RUNG_NAMES)}"
-        )
-    return chosen
 
 
 @dataclass(eq=False)
@@ -96,10 +76,8 @@ def run_casscf(
     settings: ElectronicSection,
     states: tuple[StateLabel, ...],
     previous: tuple[np.ndarray, Any] | None,
-    *,
-    extra_rungs: tuple[str, ...] = (),
 ) -> CasscfOutcome:
-    """Equal-weight SA-CASSCF over `states` (singlets): the rungs of LADDER, then `extra_rungs`.
+    """Equal-weight SA-CASSCF over `states` (singlets): the rungs of LADDER.
 
     `previous` = (MO coefficients, Mole) of the previous geometry, projected onto this geometry
     for the first rung.
@@ -111,13 +89,8 @@ def run_casscf(
     check_active_space(mol, settings)
     n_states = len(states)
     problems: list[str] = []
-    enabled = set(check_extra_rungs(extra_rungs))
-    rungs = LADDER + tuple(r for r in EXTRA_RUNGS if r.name in enabled)
-    for rung in rungs:
+    for rung in LADDER:
         name = rung.name
-        use_previous = rung.start == "previous" or (
-            rung.start == "previous_or_scf" and previous is not None
-        )
         if rung.start == "previous" and previous is None:
             continue
         mc = mcscf.CASSCF(mf, cas.ncas, cas.nelecas)
@@ -125,15 +98,11 @@ def run_casscf(
         mc = mc.state_average_([1.0 / n_states] * n_states)
         if rung.spin_shift:
             mc.fix_spin_(ss=0, shift=rung.spin_shift)  # also penalise quintets and higher spins
-        mc.conv_tol = cas.conv_tol if rung.conv_tol is None else max(cas.conv_tol, rung.conv_tol)
-        mc.conv_tol_grad = (
-            cas.conv_tol_grad
-            if rung.conv_tol_grad is None
-            else max(cas.conv_tol_grad, rung.conv_tol_grad)
-        )
+        mc.conv_tol = cas.conv_tol
+        mc.conv_tol_grad = cas.conv_tol_grad
         mc.max_cycle_macro = mc.max_cycle_macro * rung.macro_factor
         mo0 = mf.mo_coeff
-        if use_previous:
+        if rung.start == "previous":
             assert previous is not None
             previous_mo, previous_mol = previous
             try:
