@@ -28,7 +28,12 @@ from gqteashmd.dynamics.ensemble import (
 from gqteashmd.electronic.base import MoleculeSpec, Request
 from gqteashmd.electronic.factory import make_backend
 from gqteashmd.errors import ConfigError, ProjectError, ShmdError
-from gqteashmd.logging_setup import FILE_ONLY, close_logging, configure_logging
+from gqteashmd.logging_setup import (
+    FILE_ONLY,
+    close_logging,
+    configure_logging,
+    configure_task_logging,
+)
 from gqteashmd.orchestrator import Orchestrator
 from gqteashmd.project.layout import ProjectLayout
 from gqteashmd.project.lock import locked_by
@@ -280,6 +285,7 @@ def _check_log_output(path: Path) -> None:
 
 
 def _cmd_single_point(args: argparse.Namespace) -> int:
+    configure_task_logging()
     cfg = load_config(args.input).config
     if args.json is not None:
         _check_json_output(args.json)

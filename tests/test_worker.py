@@ -148,3 +148,13 @@ def test_unserialisable_result_gives_an_error_result(make_task, monkeypatch, kin
     assert result["status"] == "error" and result["retryable"] is False
     assert "task result is not JSON-serializable" in result["message"]
     assert result["error_type"] == {"circular": "ValueError", "set": "TypeError"}[kind]
+
+
+def test_main_configures_task_logging_before_running(monkeypatch):
+    import gqteashmd.worker as worker
+
+    calls = []
+    monkeypatch.setattr(worker, "configure_task_logging", lambda: calls.append("log"))
+    monkeypatch.setattr(worker, "run_task_file", lambda path: calls.append("run") or 0)
+    assert worker.main(["task.json"]) == 0
+    assert calls == ["log", "run"]

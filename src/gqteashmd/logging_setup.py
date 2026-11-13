@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import sys
 from pathlib import Path
 
 _FORMAT = "%(asctime)s %(levelname)-7s %(name)s: %(message)s"
@@ -40,6 +41,24 @@ def configure_logging(log_file: Path | None, *, verbose: bool = False) -> None:
         file_handler.setLevel(logging.DEBUG)
         file_handler.setFormatter(formatter)
         logger.addHandler(file_handler)
+
+
+_TASK_HANDLER_NAME = "gqteashmd-task-stderr"
+
+
+def configure_task_logging() -> None:
+    """Send gqteashmd records at WARNING and above to stderr, once.
+
+    Used by a worker (whose stderr is its task's worker.log) and by `single-point`, which
+    otherwise drop every warning (the package logger carries only a NullHandler)."""
+    logger = logging.getLogger("gqteashmd")
+    if any(h.get_name() == _TASK_HANDLER_NAME for h in logger.handlers):
+        return
+    handler = logging.StreamHandler(sys.stderr)
+    handler.set_name(_TASK_HANDLER_NAME)
+    handler.setLevel(logging.WARNING)
+    handler.setFormatter(logging.Formatter("%(levelname)s %(name)s: %(message)s"))
+    logger.addHandler(handler)
 
 
 def close_logging() -> None:
