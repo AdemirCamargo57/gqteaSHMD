@@ -6,7 +6,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from gqteashmd.core.units import AU_TIME_IN_FS
+from gqteashmd.core.units import AU_TIME_IN_FS, HARTREE_IN_EV
 from gqteashmd.dynamics.driver import initial_state, step
 from gqteashmd.dynamics.lvc import LVCModel, lvc_wigner_samples
 from gqteashmd.dynamics.options import DynamicsOptions
@@ -303,3 +303,50 @@ def test_a_resume_is_recorded_with_its_generation(tmp_path):
     assert len(result["resumes"]) == 1 and result["resumes"][0].startswith("gen_")
     fresh, _ = _run(tmp_path, name="c")
     assert fresh["resumes"] == [] and fresh["rejections_by_signal"] == {}
+
+
+F1 = 0.1 / HARTREE_IN_EV  # the stage default, in Eh
+
+
+def test_without_faults_the_energy_check_rejects_nothing(tmp_path):
+    result, _ = _run(tmp_path, settings=_settings(energy_jump_limit_au=F1))
+    assert result["outcome"] == "finished" and result["n_rejections"] == 0
+
+
+def test_one_energy_jump_halves_one_interval(tmp_path):
+    result, d = _run(
+        tmp_path, settings=_settings(energy_jump_limit_au=F1), faults={6: "energy_jump"}
+    )
+    assert result["outcome"] == "finished" and result["rejections_by_signal"] == {"energy": 1}
+    rows = _log(d)
+    assert len(rows) == N + 2
+    assert (rows[5]["grid_step"], rows[5]["ticks"], rows[5]["depth"]) == (4, 4, 1)
+
+
+def test_a_persistent_energy_jump_ends_the_trajectory(tmp_path):
+    result, _ = _run(
+        tmp_path,
+        settings=_settings(energy_jump_limit_au=F1),
+        faults={c: "energy_jump" for c in range(6, 200)},
+    )
+    assert result["outcome"] == "electronic_discontinuity"
+    assert result["n_rejections"] == 4 and result["n_grid_steps"] == 4
+    assert "energy_jump_limit_eV" in result["message"] and "fs" in result["message"]
+
+
+def test_an_energy_jump_with_a_rung_change_at_the_smallest_step_is_not_accepted(tmp_path):
+    faults = {c: "energy_jump_rung" for c in range(6, 200)}
+    result, _ = _run(tmp_path, settings=_settings(energy_jump_limit_au=F1), faults=faults)
+    assert result["outcome"] == "electronic_discontinuity" and result["n_flagged"] == 0
+
+
+def test_the_energy_check_is_off_by_default_in_run_settings(tmp_path):
+    result, _ = _run(tmp_path, faults={6: "energy_jump"})
+    assert result["outcome"] == "finished" and result["n_rejections"] == 0
+
+
+def test_energy_jump_limit_validation():
+    options = DynamicsOptions(dt_au=DT)
+    for bad in (0.0, -1.0, float("nan"), float("inf")):
+        with pytest.raises(ValueError, match="energy_jump_limit_au"):
+            RunSettings(options, tmax_au=10 * DT, energy_jump_limit_au=bad)

@@ -553,13 +553,15 @@ def run_our_trajectory(
     coupling: str = "overlap",
     threads: int = 2,
     energy_drift_limit_eV: float | None = None,
+    energy_jump_limit_eV: float | None = None,
     convergence: Convergence = DEFAULT_CONVERGENCE,
 ) -> dict[str, Any]:
     """Our ``TrajectoryRunner`` on the same system with the SHARC settings (hopping off, no
     decoherence, ``substep_interpolation = "endpoint"``); the same keys as
     ``run_sharc_trajectory`` (the records on the dt grid) plus ``result`` (the runner's
     summary) and ``rows`` (all of steps.log). ``energy_drift_limit_eV`` None keeps our
-    default (0.5 eV)."""
+    default (0.5 eV). ``energy_jump_limit_eV`` None keeps the library default (the energy-jump
+    rejection is off); the ``[dynamics]`` stage default is 0.1 eV."""
     from gqteashmd.dynamics.options import DynamicsOptions
     from gqteashmd.dynamics.randomness import GeneratorSource
     from gqteashmd.trajectory.model import BackendModel
@@ -586,8 +588,11 @@ def run_our_trajectory(
             options, energy_drift_limit_au=energy_drift_limit_eV / HARTREE_IN_EV
         )
     model = BackendModel(backend, masses, coupling=coupling)
+    jump_au = None if energy_jump_limit_eV is None else energy_jump_limit_eV / HARTREE_IN_EV
     runner = TrajectoryRunner(
-        model, RunSettings(options, tmax_au=n_steps * dt_au), workdir / "traj"
+        model,
+        RunSettings(options, tmax_au=n_steps * dt_au, energy_jump_limit_au=jump_au),
+        workdir / "traj",
     )
     started = time.perf_counter()
     result = runner.run(

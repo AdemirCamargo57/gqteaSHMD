@@ -65,6 +65,7 @@ def run_settings(section: DynamicsStageSection) -> RunSettings:
         stop_after_s0_au=(
             None if section.stop_after_s0_fs is None else section.stop_after_s0_fs / AU_TIME_IN_FS
         ),
+        energy_jump_limit_au=section.energy_jump_limit_eV / HARTREE_IN_EV,
     )
 
 
@@ -77,7 +78,7 @@ def _finite_or_none(value: Any) -> float | None:
 
 class DynamicsStage(Stage):
     name = "dynamics"
-    version = 1
+    version = 2
     depends_on = ("prepare", "sampling", "selection")
     config_sections = ("electronic", "dynamics")
     required_modules: tuple[str, ...] = ("pyscf>=2.6", "h5py>=3.9")

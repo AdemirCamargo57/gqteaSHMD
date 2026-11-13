@@ -11,3 +11,4 @@ class TrajectoryOutcome(StrEnum):
     STOPPED_IN_S0 = "stopped_in_s0"
     OVERLAP_FAILURE = "overlap_failure"
     ELECTRONIC_FAILURE = "electronic_failure"
+    ELECTRONIC_DISCONTINUITY = "electronic_discontinuity"

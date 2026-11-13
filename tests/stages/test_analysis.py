@@ -520,3 +520,15 @@ def test_reopen_tasks_when_tmax_changes(tmp_path, write_input):
     assert stage.reopen_tasks(ctx, {"analysis": {"n_total": 6}}) == ["analysis"]
     assert stage.reopen_tasks(ctx, {"analysis": {"stage_failed": False}}) == ["analysis"]
     assert stage.reopen_tasks(ctx, {}) == []
+
+
+def test_an_electronic_discontinuity_is_excluded_and_counted(tmp_path, write_input):
+    ctx = _context(
+        tmp_path,
+        write_input,
+        [(FIN, [1, 1, 1, 1, 1], {}), ("electronic_discontinuity", [1, 1], {})],
+    )
+    stage_dir = run_stage(ctx)
+    summary = json.loads((stage_dir / "analysis.json").read_text())
+    assert summary["outcomes"]["electronic_discontinuity"] == 1
+    assert any(e["reason"] == "electronic_discontinuity" for e in summary["excluded"])

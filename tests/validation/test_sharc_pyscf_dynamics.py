@@ -311,3 +311,35 @@ def test_swap_matches_our_trajectory(harness, swap_runs, quantity):
         harness, swap, ours, quantity, last=N_STEPS, label="sharc.x + our PySCFBackend vs ours"
     )
     assert above.size == 0, numbers
+
+
+F1_EV = 0.1  # the [dynamics] default of energy_jump_limit_eV (P9a plan 2, Task 2)
+
+
+@pytest.fixture(scope="module", params=["overlap", "nacdr"])
+def our_run_f1(request, harness, initial, tmp_path_factory):
+    data = harness.run_our_trajectory(
+        initial,
+        n_steps=N_STEPS,
+        workdir=tmp_path_factory.mktemp(f"ours_f1_{request.param}"),
+        coupling=request.param,
+        energy_jump_limit_eV=F1_EV,
+    )
+    print(f"ours with F1 ({request.param}): {data['result']}")
+    return request.param, data
+
+
+def test_the_energy_check_ends_the_run_at_the_step_24_solution_change(harness, our_run_f1):
+    """P9a plan 2: with the F1 default, the CASSCF solution change at step 24 (E_tot +0.976 eV)
+    ends our run as electronic_discontinuity inside the 24th interval.
+
+    changed after the measured numbers were seen (P9a plan 2 Task 2, controller ruling P9a2-4):
+    the plan asserted n_grid_steps == 24; with F1 the jumping 24th interval is rejected, so 23
+    grid steps complete and the run ends inside the 24th interval (measured: t_final 11.8125 fs,
+    rejections {'energy': 4}, jump 0.9431 eV, both couplings)."""
+    coupling, ours = our_run_f1
+    result = ours["result"]
+    assert result["outcome"] == "electronic_discontinuity", (coupling, result)
+    assert result["n_grid_steps"] == CHANGE_STEP - 1, (coupling, result)
+    assert (CHANGE_STEP - 1) * harness.DT_FS < result["t_final_fs"] < CHANGE_STEP * harness.DT_FS
+    assert result["rejections_by_signal"].get("energy", 0) >= 1, (coupling, result)

@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from gqteashmd.config.loader import load_config
+from gqteashmd.core.units import HARTREE_IN_EV
 from gqteashmd.errors import StageFailedError, TaskError
 from gqteashmd.project.layout import ProjectLayout
 from gqteashmd.stages.base import StageContext
@@ -175,6 +176,7 @@ def test_run_settings_converts_units(tmp_path, write_input):
     settings = run_settings(ctx.config.dynamics)
     assert settings.n_grid_steps == 8 and settings.options.coupling == "overlap"
     assert settings.stop_after_s0_au == pytest.approx(1.0 / 0.024188843265857)
+    assert settings.energy_jump_limit_au == pytest.approx(0.1 / HARTREE_IN_EV)
 
 
 def test_finalize_reports_rejection_signals_and_resumes(tmp_path, write_input, caplog):
@@ -196,3 +198,7 @@ def test_finalize_reports_rejection_signals_and_resumes(tmp_path, write_input, c
     assert summary["totals"]["rejections_by_signal"] == {"overlap": 3, "rung": 1}
     assert "traj_00000 resumed from restart generation(s) gen_00000003" in caplog.text
     assert "rejections by signal" in (ctx.stage_dir / "dynamics_summary.md").read_text()
+
+
+def test_the_stage_version_is_two():
+    assert DynamicsStage.version == 2

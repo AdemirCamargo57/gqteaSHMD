@@ -286,6 +286,7 @@ class DynamicsStageSection(_Section):
     edc_convention: Literal["sharc", "granucci_persico"] = "sharc"
     substep_interpolation: Literal["midpoint", "endpoint"] = "midpoint"
     energy_drift_limit_eV: float = Field(default=0.5, gt=0, allow_inf_nan=False)
+    energy_jump_limit_eV: float = Field(default=0.1, gt=0, allow_inf_nan=False)
     stop_after_s0_fs: float | None = Field(default=None, gt=0, allow_inf_nan=False)
     overlap_threshold: float = Field(default=0.5, gt=0, lt=1, allow_inf_nan=False)
     max_step_halvings: int = Field(default=3, ge=0, le=6)

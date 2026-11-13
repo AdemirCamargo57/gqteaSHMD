@@ -54,6 +54,7 @@ class RunSettings:
     max_step_halvings: int = 3
     output_every: int = 1
     stop_after_s0_au: float | None = None
+    energy_jump_limit_au: float | None = None
 
     def __post_init__(self) -> None:
         ratio = float(self.tmax_au) / self.options.dt_au
@@ -76,6 +77,13 @@ class RunSettings:
             raise ValueError(f"output_every must be >= 1; got {self.output_every}")
         if self.stop_after_s0_au is not None and not self.stop_after_s0_au > 0:
             raise ValueError(f"stop_after_s0_au must be > 0; got {self.stop_after_s0_au}")
+        if self.energy_jump_limit_au is not None and not (
+            math.isfinite(self.energy_jump_limit_au) and self.energy_jump_limit_au > 0
+        ):
+            raise ValueError(
+                f"energy_jump_limit_au must be finite and > 0, or None; got "
+                f"{self.energy_jump_limit_au}"
+            )
 
     @property
     def n_grid_steps(self) -> int:
@@ -111,6 +119,7 @@ class Progress:
     message: str | None = None
     rejections_by_signal: dict[str, int] = field(default_factory=dict)
     resumes: list[str] = field(default_factory=list)
+    last_e_total_au: float | None = None
 
     def to_json(self) -> dict[str, Any]:
         data = dataclasses.asdict(self)
@@ -190,6 +199,7 @@ class TrajectoryRunner:
             progress.message = f"step 0: {exc}"
             return None, source, progress
         self._append(state, None, progress, depth=0, flagged=False)
+        progress.last_e_total_au = float(state.e_total_initial)
         self._save(state, source, progress)
         return state, source, progress
 
@@ -241,11 +251,19 @@ class TrajectoryRunner:
             signal, message = "electronic", str(exc)
         else:
             sv = self.model.min_singular_value
+            jump = self._energy_jump(state, record, progress)
             if sv is not None and not sv >= settings.overlap_threshold:
                 signal = "overlap"
                 message = (
                     f"smallest singular value of the state overlap matrix {sv:.3g} is below "
                     f"overlap_threshold = {settings.overlap_threshold}"
+                )
+            elif jump is not None:
+                assert settings.energy_jump_limit_au is not None
+                signal = "energy"
+                message = (
+                    f"|E_tot - E_tot(previous record)| = {jump * HARTREE_IN_EV:.4g} eV exceeds "
+                    f"energy_jump_limit_eV = {settings.energy_jump_limit_au * HARTREE_IN_EV:.4g}"
                 )
             elif self.model.rung_changed:
                 signal = "rung"
@@ -261,16 +279,30 @@ class TrajectoryRunner:
             if progress.depth < settings.max_step_halvings:
                 progress.depth += 1
                 return state, source
-            progress.outcome = (
-                TrajectoryOutcome.OVERLAP_FAILURE
-                if signal == "overlap"
-                else TrajectoryOutcome.ELECTRONIC_FAILURE
-            )
+            progress.outcome = {
+                "overlap": TrajectoryOutcome.OVERLAP_FAILURE,
+                "energy": TrajectoryOutcome.ELECTRONIC_DISCONTINUITY,
+            }.get(signal, TrajectoryOutcome.ELECTRONIC_FAILURE)
             when = self._time_au(progress) * AU_TIME_IN_FS
             progress.message = f"t = {when:.4f} fs, step dt/{1 << progress.depth}: {message}"
             self._save(state, source, progress)
             return state, source
         return self._accept(new_state, record, source, progress, dt, flagged), source
+
+    def _energy_jump(
+        self, state: TrajectoryState, record: StepRecord, progress: Progress
+    ) -> float | None:
+        """|E_tot - E_tot(previous record)| if it exceeds energy_jump_limit_au, else None."""
+        limit = self.settings.energy_jump_limit_au
+        if limit is None:
+            return None
+        previous = progress.last_e_total_au
+        if previous is None:  # a restart written before this field existed
+            previous = float(
+                state.snapshot.energies[state.active] + kinetic_energy(state.v, self.model.masses)
+            )
+        jump = abs(float(record.e_total) - previous)
+        return None if jump <= limit else jump
 
     def _rollback(self, saved: dict[str, Any]) -> RandomSource:
         generation = self.restarts.current()
@@ -308,6 +340,7 @@ class TrajectoryRunner:
         progress.max_drift_au = max(progress.max_drift_au, drift)
         progress.s0_time_au = progress.s0_time_au + dt if state.active == 0 else 0.0
         self._append(state, record, progress, depth=depth_used, flagged=flagged)
+        progress.last_e_total_au = float(record.e_total)
         if not drift <= settings.options.energy_drift_limit_au:
             progress.outcome = TrajectoryOutcome.ENERGY_DRIFT
             progress.message = (
