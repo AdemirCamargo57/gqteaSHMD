@@ -52,7 +52,7 @@ class OptimizeStage(Stage):
     def run_task(self, ctx: StageContext, task: TaskSpec, task_dir: Path) -> dict[str, Any]:
         options = ctx.config.optimize
         molecule, start = prepared_molecule(ctx.upstream_dir("prepare"))
-        backend = stage_backend(ctx, self.name, molecule, task_dir)
+        backend = stage_backend(ctx, self.name, molecule, task_dir, reference_coords_bohr=start)
         s0 = backend.states[0]
 
         def energy_and_gradient(coords: np.ndarray) -> tuple[float, np.ndarray]:

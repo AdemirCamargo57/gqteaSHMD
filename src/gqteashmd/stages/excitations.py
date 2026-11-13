@@ -14,6 +14,7 @@ from gqteashmd.config.schema import ShmdConfig
 from gqteashmd.core.states import states_from_counts
 from gqteashmd.core.units import HARTREE_IN_EV
 from gqteashmd.electronic.base import Request
+from gqteashmd.electronic.factory import electronic_fingerprint
 from gqteashmd.electronic.properties import oscillator_strength
 from gqteashmd.errors import StageFailedError, TaskError
 from gqteashmd.excite.artifacts import format_spectrum_csv, write_excitations_h5
@@ -82,7 +83,7 @@ class ExcitationsStage(Stage):
         """Electronic settings (without `overlap_norm_kept`), the task-defining [excitations]
         keys and the number of samples. The broadening and the failure limit act in finalize."""
         electronic = ctx.config.electronic
-        electronic_dump = None if electronic is None else electronic.model_dump(mode="json")
+        electronic_dump = None if electronic is None else electronic_fingerprint(electronic)
         if electronic_dump is not None:
             electronic_dump.pop("overlap_norm_kept", None)
         options = ctx.config.excitations.model_dump(mode="json")
@@ -114,7 +115,14 @@ class ExcitationsStage(Stage):
                 f"({samples_path})",
                 retryable=False,
             )
-        backend = stage_backend(ctx, self.name, molecule, task_dir, settings=ctx.config.electronic)
+        backend = stage_backend(
+            ctx,
+            self.name,
+            molecule,
+            task_dir,
+            settings=ctx.config.electronic,
+            reference_coords_bohr=np.asarray(data["equilibrium_bohr"], dtype=float),
+        )
         if task.task_id == "ref":
             jobs = [(0, np.asarray(data["equilibrium_bohr"], dtype=float))]
         else:

@@ -72,7 +72,7 @@ class FrequenciesStage(Stage):
 
     def run_task(self, ctx: StageContext, task: TaskSpec, task_dir: Path) -> dict[str, Any]:
         molecule, coords, _ = working_geometry(ctx)
-        backend = stage_backend(ctx, self.name, molecule, task_dir)
+        backend = stage_backend(ctx, self.name, molecule, task_dir, reference_coords_bohr=coords)
         s0 = backend.states[0]
         if task.task_id in ("hessian", "reference"):
             result = backend.compute(Request(coords, gradients=frozenset({s0})))

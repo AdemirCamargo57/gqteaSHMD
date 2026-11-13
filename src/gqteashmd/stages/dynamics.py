@@ -17,6 +17,7 @@ from gqteashmd.core.units import AU_TIME_IN_FS, DALTON_IN_ME, HARTREE_IN_EV
 from gqteashmd.dynamics.options import DynamicsOptions
 from gqteashmd.dynamics.randomness import GeneratorSource
 from gqteashmd.electronic.base import ElectronicBackend, MoleculeSpec
+from gqteashmd.electronic.factory import electronic_fingerprint
 from gqteashmd.errors import ProjectError, StageFailedError, TaskError
 from gqteashmd.excite.artifacts import read_trajectories_json
 from gqteashmd.stages.base import Stage, StageContext, TaskSpec
@@ -39,7 +40,19 @@ BackendFactory = Callable[[StageContext, MoleculeSpec, Path], ElectronicBackend]
 
 
 def _pyscf_backend(ctx: StageContext, molecule: MoleculeSpec, task_dir: Path) -> ElectronicBackend:
-    return stage_backend(ctx, "dynamics", molecule, task_dir, settings=ctx.config.electronic)
+    """The PySCF backend of one trajectory; the CASSCF reference is the sampling equilibrium."""
+    try:
+        samples = read_samples_h5(ctx.upstream_dir("sampling") / "samples.h5")
+    except ValueError as exc:
+        raise TaskError(str(exc), retryable=False) from exc
+    return stage_backend(
+        ctx,
+        "dynamics",
+        molecule,
+        task_dir,
+        settings=ctx.config.electronic,
+        reference_coords_bohr=np.asarray(samples["equilibrium_bohr"], dtype=float),
+    )
 
 
 def run_settings(section: DynamicsStageSection) -> RunSettings:
@@ -112,7 +125,7 @@ class DynamicsStage(Stage):
         dynamics.pop("tmax_fs")  # O16: raising it extends finished trajectories
         dynamics.pop("max_failed_fraction")  # finalize-only
         return {
-            "electronic": ctx.config.electronic.model_dump(mode="json"),
+            "electronic": electronic_fingerprint(ctx.config.electronic),
             "dynamics": dynamics,
             "project_seed": ctx.config.project.seed,
         }

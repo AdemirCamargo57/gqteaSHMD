@@ -7,6 +7,7 @@ import pytest
 
 from gqteashmd.config.loader import load_config
 from gqteashmd.core.units import HARTREE_IN_EV
+from gqteashmd.electronic.factory import electronic_fingerprint
 from gqteashmd.errors import StageFailedError, TaskError
 from gqteashmd.project.layout import ProjectLayout
 from gqteashmd.stages.base import StageContext
@@ -202,3 +203,30 @@ def test_finalize_reports_rejection_signals_and_resumes(tmp_path, write_input, c
 
 def test_the_stage_version_is_two():
     assert DynamicsStage.version == 2
+
+
+def test_fingerprint_carries_the_electronic_fingerprint(tmp_path, write_input):
+    ctx = _context(tmp_path, write_input)
+    fp = _stage().fingerprint_inputs(ctx)["electronic"]
+    assert fp == electronic_fingerprint(ctx.config.electronic)
+
+
+def test_pyscf_backend_reference_is_the_sampling_equilibrium(tmp_path, write_input, monkeypatch):
+    import numpy as np
+
+    from gqteashmd.stages import dynamics as dynamics_module
+    from gqteashmd.vib.artifacts import read_samples_h5
+
+    ctx = _context(tmp_path, write_input)
+    seen = {}
+
+    def spy(ctx, stage_name, molecule, task_dir, *, reference_coords_bohr, settings=None):
+        seen["reference"] = np.asarray(reference_coords_bohr)
+        return "backend"
+
+    monkeypatch.setattr(dynamics_module, "stage_backend", spy)
+    task_dir = tmp_path / "task"
+    task_dir.mkdir()
+    assert dynamics_module._pyscf_backend(ctx, None, task_dir) == "backend"
+    expected = read_samples_h5(ctx.upstream_dir("sampling") / "samples.h5")["equilibrium_bohr"]
+    np.testing.assert_array_equal(seen["reference"], expected)
