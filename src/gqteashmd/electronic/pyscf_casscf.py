@@ -5,7 +5,8 @@ PySCF is imported inside the functions only. All quantities are in atomic units.
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+import itertools
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -19,13 +20,48 @@ from gqteashmd.overlaps.determinants import DeterminantExpansion
 
 SPIN_TOLERANCE = 1e-3  # |<S^2>| above this means a root is not a singlet
 
+REFERENCE_RUNG = "reference orbitals"
+REFERENCE_TIE_EH = 1e-8  # SA energies within this of the lowest are ties: the first guess wins
+REFERENCE_OVERLAP_WARNING = 0.9  # warn below this active-orbital singular value (no effect)
+
+Orbitals = tuple[np.ndarray, Any]  # (MO coefficients, the Mole they belong to)
+
+
+def guess_active_sets(n_occupied: int, n_mo: int, ncas: int, nelecas: int) -> list[tuple[int, ...]]:
+    """0-based active-orbital choices around the Fermi level, PySCF's default first.
+
+    The occupied window is the nelecas/2 + 1 highest doubly occupied orbitals, the virtual
+    window the ncas - nelecas/2 + 1 lowest virtual ones, both clipped to the orbitals that
+    exist. The other choices follow in lexicographic order of their sorted indices.
+    """
+    n_occ_act = nelecas // 2
+    n_virt_act = ncas - n_occ_act
+    occ_window = range(max(0, n_occupied - n_occ_act - 1), n_occupied)
+    virt_window = range(n_occupied, min(n_mo, n_occupied + n_virt_act + 1))
+    default = tuple(range(n_occupied - n_occ_act, n_occupied + n_virt_act))
+    choices = {
+        tuple(sorted((*o, *v)))
+        for o in itertools.combinations(occ_window, n_occ_act)
+        for v in itertools.combinations(virt_window, n_virt_act)
+    }
+    choices.discard(default)
+    return [default, *sorted(choices)]
+
+
+def pick_lowest(sa_energies: Sequence[float]) -> int:
+    """Index of the first SA energy within REFERENCE_TIE_EH of the lowest."""
+    if not sa_energies:
+        raise ValueError("no candidate SA energies")
+    lowest = min(sa_energies)
+    return next(i for i, e in enumerate(sa_energies) if e <= lowest + REFERENCE_TIE_EH)
+
 
 @dataclass(frozen=True)
 class Rung:
     """One attempt of the SA-CASSCF ladder.
 
-    start: "previous" (the previous geometry's orbitals, skipped without them) or "scf" (the SCF
-    orbitals).
+    start: "previous" (the previous geometry's orbitals), "reference" (the backend's reference
+    orbitals), both skipped when absent, or "scf" (the SCF orbitals).
     """
 
     name: str
@@ -36,9 +72,30 @@ class Rung:
 
 LADDER: tuple[Rung, ...] = (
     Rung("previous orbitals", "previous", 0.0, 1),
+    Rung(REFERENCE_RUNG, "reference", 0.0, 1),
     Rung("SCF orbitals", "scf", 0.0, 1),
     Rung("SCF orbitals + spin penalty", "scf", 0.5, 3),
 )
+
+
+@dataclass(frozen=True, eq=False)
+class Reference:
+    """The reference solution: the lowest-SA guess at the reference geometry."""
+
+    mo_coeff: np.ndarray
+    mol: Any
+    guess: tuple[int, ...]
+    sa_energy: float
+    n_guesses: int
+    n_counted: int
+
+    def meta(self) -> dict[str, Any]:
+        return {
+            "guess": list(self.guess),
+            "sa_energy_Eh": self.sa_energy,
+            "n_guesses": self.n_guesses,
+            "n_counted": self.n_counted,
+        }
 
 
 @dataclass(eq=False)
@@ -47,6 +104,7 @@ class CasscfOutcome:
     rung: str
     energies: dict[StateLabel, float]
     spin_squares: dict[StateLabel, float]
+    reference_active_min_sv: float | None = None
 
 
 def _converged(mc: Any) -> bool:
@@ -70,46 +128,126 @@ def check_active_space(mol: Any, settings: ElectronicSection) -> None:
         )
 
 
+def _solver(mol: Any, mf: Any, settings: ElectronicSection, n_states: int, rung: Rung) -> Any:
+    from pyscf import fci, mcscf
+
+    cas = settings.casscf
+    assert cas is not None
+    mc = mcscf.CASSCF(mf, cas.ncas, cas.nelecas)
+    mc.fcisolver = fci.solver(mol, singlet=True)  # singlet-only CI (excludes triplets)
+    mc = mc.state_average_([1.0 / n_states] * n_states)
+    if rung.spin_shift:
+        mc.fix_spin_(ss=0, shift=rung.spin_shift)  # also penalise quintets and higher spins
+    mc.conv_tol = cas.conv_tol
+    mc.conv_tol_grad = cas.conv_tol_grad
+    mc.max_cycle_macro = mc.max_cycle_macro * rung.macro_factor
+    return mc
+
+
+def _spins(mc: Any, states: tuple[StateLabel, ...]) -> tuple[dict[StateLabel, float], list[str]]:
+    from pyscf import fci
+
+    spins = {
+        label: float(fci.spin_op.spin_square0(ci, mc.ncas, mc.nelecas)[0])
+        for label, ci in zip(states, mc.ci, strict=True)
+    }
+    wrong = [f"{label} <S^2> = {s:.4f}" for label, s in spins.items() if abs(s) > SPIN_TOLERANCE]
+    return spins, wrong
+
+
+def active_min_singular_value(
+    mol: Any, mo_start: np.ndarray, mo_final: np.ndarray, ncore: int, ncas: int
+) -> float:
+    """Smallest singular value of C_start^T S C_final over the active orbitals."""
+    s_ao = mol.intor("int1e_ovlp")
+    a = np.asarray(mo_start)[:, ncore : ncore + ncas]
+    b = np.asarray(mo_final)[:, ncore : ncore + ncas]
+    return float(np.linalg.svd(a.T @ s_ao @ b, compute_uv=False).min())
+
+
+def find_reference(
+    mol: Any, mf: Any, settings: ElectronicSection, states: tuple[StateLabel, ...]
+) -> tuple[Reference | None, list[str]]:
+    """Solve every guess of guess_active_sets fresh; the lowest SA energy is the reference.
+
+    A guess counts if it converges and every root is a singlet. Returns (None, problems)
+    when none counts. An exception (not a non-convergence) propagates, wrapped.
+    """
+    from pyscf import mcscf
+
+    cas = settings.casscf
+    assert cas is not None
+    check_active_space(mol, settings)
+    guesses = guess_active_sets(
+        mol.nelectron // 2, int(np.asarray(mf.mo_coeff).shape[1]), cas.ncas, cas.nelecas
+    )
+    plain = Rung("reference guess", "scf", 0.0, 1)
+    problems: list[str] = []
+    counted: list[tuple[tuple[int, ...], float, np.ndarray]] = []
+    for guess in guesses:
+        mc = _solver(mol, mf, settings, len(states), plain)
+        try:
+            mo0 = mcscf.sort_mo(mc, mf.mo_coeff, [i + 1 for i in guess])  # 1-based
+            mc.kernel(mo_coeff=mo0)
+        except Exception as exc:
+            raise wrap_failure(f"CASSCF (reference guess {list(guess)})", exc) from exc
+        if not _converged(mc):
+            problems.append(f"guess {list(guess)}: not converged")
+            continue
+        _, wrong = _spins(mc, states)
+        if wrong:
+            problems.append(f"guess {list(guess)}: not all roots are singlets ({', '.join(wrong)})")
+            continue
+        counted.append((guess, float(np.mean(mc.e_states)), np.asarray(mc.mo_coeff)))
+    if not counted:
+        return None, problems
+    best = pick_lowest([sa for _, sa, _ in counted])
+    guess, sa, mo = counted[best]
+    return Reference(mo, mol, guess, sa, len(guesses), len(counted)), problems
+
+
 def run_casscf(
     mol: Any,
     mf: Any,
     settings: ElectronicSection,
     states: tuple[StateLabel, ...],
-    previous: tuple[np.ndarray, Any] | None,
+    previous: Orbitals | None,
+    *,
+    reference: Callable[[], Orbitals | None] | None = None,
 ) -> CasscfOutcome:
     """Equal-weight SA-CASSCF over `states` (singlets): the rungs of LADDER.
 
-    `previous` = (MO coefficients, Mole) of the previous geometry, projected onto this geometry
-    for the first rung.
+    `previous` = (MO coefficients, Mole) of the previous geometry; `reference` is called (at
+    most once) when the reference rung is reached and returns the reference orbitals or None.
+    Both are projected onto this geometry.
     """
-    from pyscf import fci, mcscf
+    from pyscf import mcscf
 
     cas = settings.casscf
     assert cas is not None
     check_active_space(mol, settings)
-    n_states = len(states)
     problems: list[str] = []
     for rung in LADDER:
         name = rung.name
-        if rung.start == "previous" and previous is None:
-            continue
-        mc = mcscf.CASSCF(mf, cas.ncas, cas.nelecas)
-        mc.fcisolver = fci.solver(mol, singlet=True)  # singlet-only CI (excludes triplets)
-        mc = mc.state_average_([1.0 / n_states] * n_states)
-        if rung.spin_shift:
-            mc.fix_spin_(ss=0, shift=rung.spin_shift)  # also penalise quintets and higher spins
-        mc.conv_tol = cas.conv_tol
-        mc.conv_tol_grad = cas.conv_tol_grad
-        mc.max_cycle_macro = mc.max_cycle_macro * rung.macro_factor
-        mo0 = mf.mo_coeff
+        start: Orbitals | None = None
         if rung.start == "previous":
-            assert previous is not None
-            previous_mo, previous_mol = previous
+            if previous is None:
+                continue
+            start = previous
+        elif rung.start == "reference":
+            start = None if reference is None else reference()
+            if start is None:
+                continue
+        mc = _solver(mol, mf, settings, len(states), rung)
+        mo0 = mf.mo_coeff
+        if start is not None:
+            start_mo, start_mol = start
+            what = "previous" if rung.start == "previous" else "reference"
             try:
                 # orbitals of another geometry are not orthonormal here: project them first
-                mo0 = mcscf.project_init_guess(mc, previous_mo, previous_mol)
+                mo0 = mcscf.project_init_guess(mc, start_mo, start_mol)
             except Exception as exc:
-                raise wrap_failure("Projecting the previous orbitals", exc) from exc
+                raise wrap_failure(f"Projecting the {what} orbitals", exc) from exc
         try:
             mc.kernel(mo_coeff=mo0)
         except Exception as exc:
@@ -118,18 +256,15 @@ def run_casscf(
         if not _converged(mc):
             problems.append(f"{name}: not converged")
             continue
-        spins = {
-            label: float(fci.spin_op.spin_square0(ci, mc.ncas, mc.nelecas)[0])
-            for label, ci in zip(states, mc.ci, strict=True)
-        }
-        wrong = [
-            f"{label} <S^2> = {s:.4f}" for label, s in spins.items() if abs(s) > SPIN_TOLERANCE
-        ]
+        spins, wrong = _spins(mc, states)
         if wrong:
             problems.append(f"{name}: not all roots are singlets ({', '.join(wrong)})")
             continue
         energies = {label: float(e) for label, e in zip(states, mc.e_states, strict=True)}
-        return CasscfOutcome(mc, name, energies, spins)
+        min_sv = None
+        if rung.start == "reference":
+            min_sv = active_min_singular_value(mol, mo0, mc.mo_coeff, mc.ncore, mc.ncas)
+        return CasscfOutcome(mc, name, energies, spins, min_sv)
     raise ElectronicStructureError(
         f"SA-CASSCF failed on every rung (conv_tol = {cas.conv_tol}, conv_tol_grad = "
         f"{cas.conv_tol_grad}): {'; '.join(problems)}."
