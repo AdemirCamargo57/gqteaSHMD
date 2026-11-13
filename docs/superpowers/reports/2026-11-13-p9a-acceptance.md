@@ -87,7 +87,7 @@ Steps 1, 3 and 5 of Task 7 ran together (at most 6 processes x 2 threads); Steps
   - rung 5, `"loose tolerances"`: the previous orbitals or else the SCF orbitals, 3 x the macro iterations, `conv_tol` 1e-8, `conv_tol_grad` 1e-4 (each `max(user, rung)`, never tighter than the input).
 
   They are tried after the three standard rungs only when a caller passes `PySCFBackend(casscf_extra_rungs=...)` (also through `make_backend` and `stage_backend`). Tests: RED 4 failed; GREEN `tests/electronic` (not slow) 79 passed; fast tier 1182 passed, 20 skipped, 195 deselected in 801.19 s (`task-3-report.md`).
-- **What does not exist.** The probe (section 3.1) did not meet the conditions of Task 4, so **Task 8 made no change: no stage passes the option**, the dynamics runs of Tasks 10 and 11 used the three standard rungs, and the code comment in `pyscf_casscf.py` that names "the dynamics stage, Task 8" as the caller describes a path that was not taken.
+- **What does not exist.** The probe (section 3.1) did not meet the conditions of Task 4, so **Task 8 made no change: no stage passes the option**, the dynamics runs of Tasks 10 and 11 used the three standard rungs.
 
 ### 2.4 "Ours" fixes
 

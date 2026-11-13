@@ -301,6 +301,8 @@ class TrajectoryRunner:
             previous = float(
                 state.snapshot.energies[state.active] + kinetic_energy(state.v, self.model.masses)
             )
+        # A non-finite E_tot gives a NaN jump, rejected here as an energy jump (practically
+        # unreachable: BackendModel already rejects non-finite energies as electronic failures).
         jump = abs(float(record.e_total) - previous)
         return None if jump <= limit else jump
 

@@ -323,6 +323,20 @@ def test_one_energy_jump_halves_one_interval(tmp_path):
     assert (rows[5]["grid_step"], rows[5]["ticks"], rows[5]["depth"]) == (4, 4, 1)
 
 
+@pytest.mark.parametrize("crash_call", [5, 6, 8])
+def test_a_crash_and_resume_with_an_energy_jump_is_bit_identical(tmp_path, crash_call):
+    settings = _settings(energy_jump_limit_au=F1)
+    jump = {6: "energy_jump"}
+    _, reference = _run(tmp_path, name="ref", settings=settings, faults=jump)
+    crashing = {**jump, crash_call: "crash"}
+    with pytest.raises(SimulatedCrash):
+        _run(tmp_path, name="b", settings=settings, faults=crashing)
+    result, d = _run(tmp_path, name="b", settings=settings, faults=jump, calls=crash_call - 1)
+    assert result["outcome"] == "finished"
+    assert result["rejections_by_signal"] == {"energy": 1}
+    assert _log(d).tobytes() == _log(reference).tobytes()
+
+
 def test_a_persistent_energy_jump_ends_the_trajectory(tmp_path):
     result, _ = _run(
         tmp_path,

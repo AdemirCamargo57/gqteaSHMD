@@ -42,7 +42,8 @@ LADDER: tuple[Rung, ...] = (
     Rung("SCF orbitals", "scf", 0.0, 1),
     Rung("SCF orbitals + spin penalty", "scf", 0.5, 3),
 )
-# P9a plan 2, owner decision 5: off unless a caller enables them (the dynamics stage, Task 8)
+# P9a plan 2: off unless a caller enables them; no stage does (ruling P9a2-7: the probe's
+# accuracy conditions were not met)
 EXTRA_RUNGS: tuple[Rung, ...] = (
     Rung("previous orbitals, more iterations", "previous", 0.0, 4),
     Rung("loose tolerances", "previous_or_scf", 0.0, 3, 1e-8, 1e-4),
