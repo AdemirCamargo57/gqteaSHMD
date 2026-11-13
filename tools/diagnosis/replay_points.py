@@ -28,9 +28,9 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from forensics import (  # noqa: E402
     failed_geometry,
-    find_stage_dir,
     jsonable,
     read_rows,
+    trajectory_dirs,
     trajectory_report,
 )
 from project_inputs import load_project_inputs  # noqa: E402
@@ -114,6 +114,16 @@ def segments(
         merged: list[int | str] = list(range(first[0], max(first[-1], tail[-1]) + 1))
         return [[*merged, "failed_step"]]
     return [list(first), [*tail, "failed_step"]]
+
+
+def hop_to_end_segment(n_records: int, hop_record: int, with_failed_step: bool) -> list[int | str]:
+    """One run from the first hop record to the last record, plus "failed_step" if asked."""
+    if not 0 <= hop_record < n_records:
+        raise ValueError(f"hop record {hop_record} is outside 0..{n_records - 1}")
+    run: list[int | str] = list(range(hop_record, n_records))
+    if with_failed_step:
+        run.append("failed_step")
+    return run
 
 
 def _failed(
@@ -328,11 +338,22 @@ def replay_trajectory(
     threads: int,
     memory_mb: int,
     scratch: Path,
+    trajectories: Path | None = None,
+    base_variant: str = "base",
+    from_first_hop: bool = False,
 ) -> dict[str, Any]:
     inputs = load_project_inputs(project_dir)
     assert inputs.config.electronic is not None and inputs.config.dynamics is not None
-    base = inputs.config.electronic
-    traj = find_stage_dir(project_dir, "dynamics") / "tasks" / task_id
+    project_electronic = inputs.config.electronic.model_dump(mode="json")
+    by_name = {v.name: v for v in REPLAY_VARIANTS}
+    if base_variant not in by_name:
+        raise ValueError(f"base variant {base_variant!r} is not one of {sorted(by_name)}")
+    base = ElectronicSection.model_validate(
+        deep_merge(project_electronic, by_name[base_variant].electronic)
+    )
+    traj = next((d for d in trajectory_dirs(project_dir, trajectories) if d.name == task_id), None)
+    if traj is None:
+        raise ValueError(f"{task_id}: no such trajectory directory")
     report = trajectory_report(traj)
     rows, labels, _ = read_rows(traj)
     end = failure_record(report)
@@ -340,7 +361,14 @@ def replay_trajectory(
     outcome = report["outcome"]
     last = int(rows.size) - 1
     failing = outcome in ("overlap_failure", "electronic_failure")
-    runs = segments(int(rows.size), end, last, window, failing)
+    if from_first_hop:
+        if not report["hops"]:
+            raise ValueError(f"{task_id}: the trajectory has no hop")
+        hop = report["hops"][0]
+        hop_record = int(hop["record"] if isinstance(hop, dict) else hop.record)
+        runs = [hop_to_end_segment(int(rows.size), hop_record, failing)]
+    else:
+        runs = segments(int(rows.size), end, last, window, failing)
     gradient_error = None
     q_failed = None
     if failing:
@@ -388,7 +416,9 @@ def replay_trajectory(
     for variant in REPLAY_VARIANTS:
         try:
             section = ElectronicSection.model_validate(
-                deep_merge(base.model_dump(mode="json"), variant.electronic)
+                base.model_dump(mode="json")
+                if variant.name == "base"
+                else deep_merge(project_electronic, variant.electronic)
             )
         except ValueError as exc:
             points[variant.name] = {"error": str(exc)}
@@ -449,21 +479,28 @@ def replay_trajectory(
 
 
 def _replay_one(args: tuple) -> tuple[str, dict[str, Any]]:
-    project, task, window, threads, memory_mb, scratch = args
-    return task, replay_trajectory(
-        Path(project),
-        task,
-        window=window,
-        threads=threads,
-        memory_mb=memory_mb,
-        scratch=Path(scratch),
-    )
+    project, task, window, threads, memory_mb, scratch, trajectories, base_variant, hop = args
+    try:
+        return task, replay_trajectory(
+            Path(project),
+            task,
+            window=window,
+            threads=threads,
+            memory_mb=memory_mb,
+            scratch=Path(scratch),
+            trajectories=None if trajectories is None else Path(trajectories),
+            base_variant=base_variant,
+            from_first_hop=hop,
+        )
+    except ValueError as exc:
+        if not hop:
+            raise
+        return task, {"task": task, "error": str(exc)}  # e.g. no hop in the trajectory
 
 
-def _lost_tasks(project: Path) -> list[str]:
-    tasks = find_stage_dir(project, "dynamics") / "tasks"
+def _lost_tasks(project: Path, trajectories: Path | None = None) -> list[str]:
     out = []
-    for d in sorted(tasks.glob("traj_*")):
+    for d in trajectory_dirs(project, trajectories):
         if (d / "output.h5").is_file() and trajectory_report(d)["outcome"] not in LOST_EXCLUDED:
             out.append(d.name)
     return out
@@ -480,16 +517,44 @@ def main(argv: Sequence[str] | None = None) -> int:
     ap.add_argument("--memory-mb", type=int, default=800)
     ap.add_argument("--scratch", type=Path, default=None)
     ap.add_argument("--workers", type=int, default=1)
+    ap.add_argument(
+        "--trajectories",
+        type=Path,
+        default=None,
+        help="trajectory directories of a run_variants output, in place of the project's tasks",
+    )
+    ap.add_argument(
+        "--base-variant",
+        default="base",
+        help="the REPLAY_VARIANTS entry whose [electronic] is the run's own (default: base)",
+    )
+    ap.add_argument(
+        "--from-first-hop",
+        action="store_true",
+        help="replay one segment from the first hop record to the end (and the failed step)",
+    )
     args = ap.parse_args(argv)
     project = args.project.expanduser()
-    tasks = list(args.tasks) + (_lost_tasks(project) if args.all_lost else [])
+    trajectories = args.trajectories.expanduser() if args.trajectories else None
+    tasks = list(args.tasks) + (_lost_tasks(project, trajectories) if args.all_lost else [])
     if not tasks:
         ap.error("give task ids or --all-lost")
     out = args.out.expanduser()
     out.mkdir(parents=True, exist_ok=True)
     scratch = (args.scratch or out / "scratch").expanduser()
     jobs = [
-        (str(project), t, args.window, args.threads, args.memory_mb, str(scratch)) for t in tasks
+        (
+            str(project),
+            t,
+            args.window,
+            args.threads,
+            args.memory_mb,
+            str(scratch),
+            None if trajectories is None else str(trajectories),
+            args.base_variant,
+            args.from_first_hop,
+        )
+        for t in tasks
     ]
 
     def write(task: str, result: dict[str, Any]) -> None:

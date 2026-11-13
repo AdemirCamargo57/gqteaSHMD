@@ -226,11 +226,25 @@ def trajectory_report(traj_dir: Path, *, threshold_eV: float = JUMP_THRESHOLD_EV
     }
 
 
-def project_report(project_dir: Path, *, threshold_eV: float = JUMP_THRESHOLD_EV) -> dict[str, Any]:
-    tasks = find_stage_dir(project_dir, "dynamics") / "tasks"
+def trajectory_dirs(project_dir: Path, trajectories: Path | None = None) -> list[Path]:
+    """Sorted traj_* directories of `trajectories`, else of the project's dynamics tasks."""
+    root = (
+        Path(trajectories)
+        if trajectories is not None
+        else find_stage_dir(project_dir, "dynamics") / "tasks"
+    )
+    return sorted(d for d in root.glob("traj_*") if d.is_dir())
+
+
+def project_report(
+    project_dir: Path,
+    *,
+    threshold_eV: float = JUMP_THRESHOLD_EV,
+    trajectories: Path | None = None,
+) -> dict[str, Any]:
     reports = [
         trajectory_report(d, threshold_eV=threshold_eV)
-        for d in sorted(tasks.glob("traj_*"))
+        for d in trajectory_dirs(project_dir, trajectories)
         if (d / "output.h5").is_file()
     ]
     onsets = Counter(r["onset"] for r in reports)

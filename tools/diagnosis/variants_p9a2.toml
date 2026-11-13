@@ -1,0 +1,14 @@
+# Setup variants of P9a plan 2 (Task 6). Each overrides the project's [electronic] and
+# [dynamics] sections, as in variants_p9a.toml.
+
+[[variant]]
+name = "base_no_f1"
+description = "M4's behaviour with the energy-jump check (F1) effectively off"
+[variant.dynamics]
+energy_jump_limit_eV = 1.0e6
+
+[[variant]]
+name = "sa3_cas22_final"
+description = "three states, same active space, every [dynamics] key at its plan-2 default"
+[variant.electronic]
+singlets = 3

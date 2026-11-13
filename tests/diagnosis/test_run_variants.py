@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -156,3 +157,12 @@ def test_rerun_with_other_settings_is_refused(tmp_path):
     rv.run_variant(inputs, rv.Variant("base", {}, {}), tmp_path / "out", **kwargs)
     with pytest.raises(ValueError, match="variant.json"):
         rv.run_variant(inputs, rv.Variant("base", {}, {"dt_fs": 0.25}), tmp_path / "out", **kwargs)
+
+
+def test_variants_p9a2_file(tmp_path):
+    path = Path(__file__).resolve().parents[2] / "tools" / "diagnosis" / "variants_p9a2.toml"
+    variants = rv.read_variants(path)
+    assert [v.name for v in variants] == ["base_no_f1", "sa3_cas22_final"]
+    inputs = pi.load_project_inputs(make_project(tmp_path))
+    for variant in variants:
+        rv.variant_sections(inputs.config, variant)

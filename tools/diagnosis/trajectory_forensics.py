@@ -18,10 +18,20 @@ from forensics import JUMP_THRESHOLD_EV, jsonable, project_report  # noqa: E402
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("project", type=Path, help="the project directory (holds 06_dynamics)")
+    parser.add_argument(
+        "--trajectories",
+        type=Path,
+        default=None,
+        help="a directory of traj_* (e.g. a run_variants output) instead of the project's tasks",
+    )
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--threshold-eV", type=float, default=JUMP_THRESHOLD_EV)
     args = parser.parse_args(argv)
-    report = project_report(args.project.expanduser(), threshold_eV=args.threshold_eV)
+    report = project_report(
+        args.project.expanduser(),
+        threshold_eV=args.threshold_eV,
+        trajectories=args.trajectories.expanduser() if args.trajectories else None,
+    )
     out = args.out.expanduser()
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(jsonable(report), indent=1, allow_nan=False) + "\n")

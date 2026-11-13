@@ -117,3 +117,11 @@ def test_cli_writes_strict_json(tmp_path):
     out = tmp_path / "f.json"
     assert cli.main([str(project), "--out", str(out)]) == 0
     assert json.loads(out.read_text())["n_trajectories"] == 1
+
+
+def test_trajectory_dirs_of_an_explicit_directory(tmp_path):
+    for name in ("traj_00002", "traj_00000", "scratch"):
+        (tmp_path / name).mkdir()
+    (tmp_path / "summary.json").write_text("{}")
+    dirs = fx.trajectory_dirs(tmp_path / "no_project", trajectories=tmp_path)
+    assert [d.name for d in dirs] == ["traj_00000", "traj_00002"]

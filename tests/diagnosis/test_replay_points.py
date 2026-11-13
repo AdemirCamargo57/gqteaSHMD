@@ -95,3 +95,19 @@ def test_continued_path_reproduces_the_backend(tmp_path):
     assert cont[0].active_overlap is None and min(cont[1].active_overlap) > 0.99
     assert cont[1].state_overlap_min_sv > 0.95  # brief 0.99; measured 0.9863 (see report)
     assert len(cont[1].occupations) == 2 and abs(sum(cont[1].occupations[0]) - 2.0) < 1e-8
+
+
+def test_hop_to_end_segment():
+    assert rp.hop_to_end_segment(10, 6, True) == [6, 7, 8, 9, "failed_step"]
+    assert rp.hop_to_end_segment(10, 9, False) == [9]
+    with pytest.raises(ValueError):
+        rp.hop_to_end_segment(10, 10, False)
+
+
+def test_replay_cli_accepts_the_new_options(capsys):
+    with pytest.raises(SystemExit) as info:  # parse only: --help exits 0
+        rp.main(["--help"])
+    assert info.value.code == 0
+    text = capsys.readouterr().out
+    for option in ("--trajectories", "--base-variant", "--from-first-hop"):
+        assert option in text
