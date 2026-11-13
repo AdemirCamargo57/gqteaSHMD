@@ -97,13 +97,14 @@ def test_a_killed_controller_resumes_the_dynamics(tmp_path, write_input):
     layout = _layout(path)
     marker = layout.task_dir(layout.stage_dir(6, "dynamics"), "traj_00000") / "restart" / "current"
     start = time.perf_counter()
-    proc = subprocess.Popen(
-        [sys.executable, "-m", "gqteashmd", "run", str(path)],
-        env=dict(os.environ),
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        start_new_session=True,
-    )
+    with open(tmp_path / "first_run.log", "wb") as first_log:
+        proc = subprocess.Popen(
+            [sys.executable, "-m", "gqteashmd", "run", str(path)],
+            env=dict(os.environ),
+            stdout=first_log,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
     try:
         deadline = time.monotonic() + 900
         while not marker.exists():
@@ -120,6 +121,11 @@ def test_a_killed_controller_resumes_the_dynamics(tmp_path, write_input):
     start = time.perf_counter()
     assert main(["run", str(path)]) == 0
     print(f"second run: {time.perf_counter() - start:.1f} s")
-    _check_rows(layout)
+    rows = _check_rows(layout)
+    resumed = [r["task"] for r in rows if r["n_resumes"] > 0]
+    if resumed:
+        print(f"recovery path: resumed from a restart generation in {resumed}")
+    else:
+        print("recovery path: reconciled from result.json (the orphaned workers finished)")
     analysis = json.loads((layout.stage_dir(7, "analysis") / "analysis.json").read_text())
     assert analysis["stage_failed"] is False

@@ -66,7 +66,80 @@ def test_sharc_input_overlap_with_interface_phases():
     with pytest.raises(ValueError, match="coupling"):
         dyn.sharc_input(10, coupling="ddr")
     with pytest.raises(ValueError, match="n_steps"):
-        dyn.sharc_input(0)
+        dyn.sharc_input(0, coupling="nacdr")
+
+
+def test_sharc_input_requires_the_coupling():
+    with pytest.raises(TypeError):
+        dyn.sharc_input(10)
+
+
+def test_sharc_input_hopping_and_edc():
+    lines = dyn.sharc_input(
+        10,
+        coupling="nacdr",
+        hopping="sharc",
+        decoherence="edc",
+        decoherence_param_Eh=0.1,
+        seed=7,
+    ).splitlines()
+    assert "hopping_procedure sharc" in lines
+    assert "decoherence_scheme edc" in lines
+    assert "decoherence_param 0.1" in lines
+    assert "rngseed 7" in lines
+    default = dyn.sharc_input(10, coupling="nacdr").splitlines()
+    assert "hopping_procedure off" in default and "decoherence_scheme none" in default
+    assert not any(line.startswith("decoherence_param") for line in default)
+    with pytest.raises(ValueError, match="hopping"):
+        dyn.sharc_input(10, coupling="nacdr", hopping="fssh")
+    with pytest.raises(ValueError, match="decoherence"):
+        dyn.sharc_input(10, coupling="nacdr", decoherence="afssh")
+
+
+def test_pyscf_template_active_space():
+    text = dyn.pyscf_template(ncas=3, nelecas=2, roots=3).splitlines()
+    assert "ncas 3" in text and "nelecas 2" in text and "roots 3" in text
+    assert dyn.pyscf_template() == dyn.PYSCF_TEMPLATE
+
+
+def test_timeout_scales_with_the_run():
+    assert dyn.timeout_for(1) == dyn.MIN_TIMEOUT_S
+    assert dyn.timeout_for(200) == 200 * dyn.TIMEOUT_PER_STEP_S
+
+
+def test_step_differences_needs_sorted_unique_steps():
+    a = {"steps": np.array([0, 1, 1]), **{k: np.zeros((3, 2)) for k in dyn.QUANTITIES}}
+    b = {"steps": np.array([0, 1, 2]), **{k: np.zeros((3, 2)) for k in dyn.QUANTITIES}}
+    with pytest.raises(ValueError, match="first"):
+        dyn.step_differences(a, b)
+    with pytest.raises(ValueError, match="second"):
+        dyn.step_differences(b, a)
+
+
+def test_failing_sharc_x_with_check_false(tmp_path):
+    home = tmp_path / "home"
+    (home / "bin").mkdir(parents=True)
+    (home / "bin" / "sharcvars.sh").write_text("")
+    sharc_x = home / "bin" / "sharc.x"
+    sharc_x.write_text("#!/bin/sh\necho boom >&2\nexit 3\n")
+    sharc_x.chmod(0o755)
+    initial = dyn.ethylene_initial_conditions()
+    kwargs = dict(
+        n_steps=2,
+        symbols=initial.symbols,
+        masses_amu=initial.masses_amu,
+        sharc_home=home,
+        sharc_python="python",
+        provider="sharc_pyscf",
+        coupling="nacdr",
+    )
+    out = dyn.run_sharc_trajectory(
+        initial.q_bohr, initial.v_au, workdir=tmp_path / "a", check=False, **kwargs
+    )
+    assert out["returncode"] == 3 and out["data"] is None
+    assert "boom" in out["stderr_tail"] and out["wall_time_s"] >= 0
+    with pytest.raises(RuntimeError, match="sharc.x failed"):
+        dyn.run_sharc_trajectory(initial.q_bohr, initial.v_au, workdir=tmp_path / "b", **kwargs)
 
 
 def test_initial_conditions_lie_on_the_seven_decimal_grid():
@@ -315,3 +388,70 @@ def test_swap_model_requests_everything_and_orthonormalises():
     assert overlap_model.backend.requests[0].nacs == frozenset()
     with pytest.raises(ValueError, match="coupling"):
         dyn.SwapModel(_FakeBackend(), coupling="ddr")
+
+
+@pytest.mark.parametrize(
+    ("coupling", "damage", "match"),
+    [
+        ("overlap", "energies", "energies"),
+        ("overlap", "gradients", "gradients"),
+        ("nacdr", "nacs", "NACs"),
+        ("overlap", "overlaps", "overlaps"),
+    ],
+)
+def test_swap_model_refuses_non_finite_data(coupling, damage, match):
+    backend = _FakeBackend()
+    model = dyn.SwapModel(backend, coupling=coupling)
+    model.evaluate(np.zeros(3), None)
+    backend.overlaps = np.eye(2)
+    original = backend.compute
+
+    def damaged(request):
+        result = original(request)
+        s0, s1 = backend.states
+        if damage == "energies":
+            result.energies[s0] = float("nan")
+        elif damage == "gradients":
+            result.gradients[s1] = np.full((1, 3), np.nan)
+        elif damage == "nacs":
+            result.nacs[(s0, s1)] = np.full((1, 3), np.nan)
+        else:
+            result.overlaps = np.array([[1.0, np.nan], [0.0, 1.0]])
+        return result
+
+    backend.compute = damaged
+    with pytest.raises(ValueError, match=f"non-finite {match}"):
+        model.evaluate(np.full(3, 0.01), None if damage == "energies" else object())
+
+
+def test_main_single_trajectory_passes_provider_and_coupling(monkeypatch, tmp_path, capsys):
+    calls = []
+    steps = np.array([0, 1])
+
+    def stub(*args, **kwargs):
+        calls.append(kwargs)
+        return {
+            "steps": steps,
+            "energies": np.zeros((2, 2)),
+            "populations": np.zeros((2, 2)),
+            "wall_time_s": 1.0,
+        }
+
+    monkeypatch.setattr(dyn, "run_sharc_trajectory", stub)
+    dyn.main(
+        [
+            "--sharc-home",
+            str(tmp_path),
+            "--python",
+            "python",
+            "--steps",
+            "2",
+            "--work-dir",
+            str(tmp_path / "w"),
+            "--coupling",
+            "nacdr",
+        ]
+    )
+    assert len(calls) == 1
+    assert calls[0]["provider"] == "sharc_pyscf" and calls[0]["coupling"] == "nacdr"
+    assert "2 printed steps" in capsys.readouterr().out

@@ -43,6 +43,7 @@ def test_defaults(tmp_path, write_input):
     )
     assert (d.stop_after_s0_fs, d.overlap_threshold, d.max_step_halvings) == (None, 0.5, 3)
     assert (d.output_every, d.max_failed_fraction) == (1, 0.1)
+    assert d.energy_jump_limit_eV == 0.1
 
 
 def test_tmax_is_required(tmp_path, write_input):
@@ -60,6 +61,8 @@ def test_tmax_is_required(tmp_path, write_input):
         ("tmax_fs = 10.0\nmax_step_halvings = 7\n", "max_step_halvings"),
         ("tmax_fs = 10.0\noverlap_threshold = 1.0\n", "overlap_threshold"),
         ("tmax_fs = 10.0\nstop_after_s0_fs = 0.0\n", "stop_after_s0_fs"),
+        ("tmax_fs = 10.0\nenergy_jump_limit_eV = 0.0\n", "energy_jump_limit_eV"),
+        ("tmax_fs = 10.0\nenergy_jump_limit_eV = inf\n", "energy_jump_limit_eV"),
         ("tmax_fs = 10.0\neselect_Eh = 0.1\n", "eselect_Eh"),
         ('tmax_fs = 10.0\ncoupling = "nacdr"\n', "nacdr"),
     ],

@@ -11,8 +11,10 @@ Fault kinds: ``error`` / ``retryable`` (compute raises), ``low_overlap`` (min si
 (os._exit, needs ``marker_dir``), ``nan_energy`` (every returned energy is NaN), ``nan_gradient``
 (every returned gradient is NaN), ``nan_nac`` (every returned NAC is NaN) and ``more_error``
 (the next ``compute_more`` after this compute call raises a non-retryable
-ElectronicStructureError). Only the returned result is faulty; the backend's own state stays
-clean.
+ElectronicStructureError), ``energy_jump`` (every returned energy is shifted by
+``ENERGY_JUMP_SHIFT_EH``, a stand-in for a CASSCF solution change) and ``energy_jump_rung`` (that
+shift together with the ``rung`` fault, to test the order of the rejection signals). Only the
+returned result is faulty; the backend's own state stays clean.
 """
 
 from __future__ import annotations
@@ -45,7 +47,10 @@ FAULTS = (
     "nan_gradient",
     "nan_nac",
     "more_error",
+    "energy_jump",
+    "energy_jump_rung",
 )
+ENERGY_JUMP_SHIFT_EH = 0.01  # Eh (0.272 eV), above the 0.1 eV F1 default
 _ARRAYS = ("energies", "gradients", "nacs", "hamiltonian", "vectors", "overlaps")
 
 
@@ -118,7 +123,7 @@ class ModelBackend(ElectronicBackend):
                 overlaps = np.array(snap.overlaps, dtype=float)
         if fault == "low_overlap":
             meta["overlap_min_singular_value"] = 0.1
-        if fault == "rung":
+        if fault in ("rung", "energy_jump_rung"):
             meta["casscf"] = "SCF orbitals"
         self._previous = snap
         self._live = snap
@@ -136,6 +141,11 @@ class ModelBackend(ElectronicBackend):
         if fault == "nan_nac":
             result = dataclasses.replace(
                 result, nacs={pair: np.full_like(d, np.nan) for pair, d in result.nacs.items()}
+            )
+        if fault in ("energy_jump", "energy_jump_rung"):
+            result = dataclasses.replace(
+                result,
+                energies={label: e + ENERGY_JUMP_SHIFT_EH for label, e in result.energies.items()},
             )
         return result
 

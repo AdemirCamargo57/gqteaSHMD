@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from gqteashmd.config.loader import load_config
+from gqteashmd.core.units import HARTREE_IN_EV
 from gqteashmd.errors import StageFailedError, TaskError
 from gqteashmd.project.layout import ProjectLayout
 from gqteashmd.stages.base import StageContext
@@ -175,3 +176,29 @@ def test_run_settings_converts_units(tmp_path, write_input):
     settings = run_settings(ctx.config.dynamics)
     assert settings.n_grid_steps == 8 and settings.options.coupling == "overlap"
     assert settings.stop_after_s0_au == pytest.approx(1.0 / 0.024188843265857)
+    assert settings.energy_jump_limit_au == pytest.approx(0.1 / HARTREE_IN_EV)
+
+
+def test_finalize_reports_rejection_signals_and_resumes(tmp_path, write_input, caplog):
+    ctx = _context(tmp_path, write_input)
+    stage = _stage()
+    results = _run_all(ctx, stage)
+    results["traj_00000"] = {
+        **results["traj_00000"],
+        "rejections_by_signal": {"overlap": 2, "rung": 1},
+        "resumes": ["gen_00000003"],
+    }
+    results["traj_00001"] = {**results["traj_00001"], "rejections_by_signal": {"overlap": 1}}
+    with caplog.at_level("INFO", logger="gqteashmd.stages.dynamics"):
+        stage.finalize(ctx, results)
+    summary = json.loads((ctx.stage_dir / "dynamics_summary.json").read_text())
+    rows = {r["task"]: r for r in summary["trajectories"]}
+    assert rows["traj_00000"]["rejections_by_signal"] == {"overlap": 2, "rung": 1}
+    assert rows["traj_00000"]["n_resumes"] == 1 and rows["traj_00001"]["n_resumes"] == 0
+    assert summary["totals"]["rejections_by_signal"] == {"overlap": 3, "rung": 1}
+    assert "traj_00000 resumed from restart generation(s) gen_00000003" in caplog.text
+    assert "rejections by signal" in (ctx.stage_dir / "dynamics_summary.md").read_text()
+
+
+def test_the_stage_version_is_two():
+    assert DynamicsStage.version == 2

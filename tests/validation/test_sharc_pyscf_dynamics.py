@@ -57,6 +57,7 @@ Run with ``-s`` to see the per-step differences.
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 import sys
 from pathlib import Path
@@ -175,6 +176,8 @@ def test_casscf_solution_change_at_step_24(sharc_run, our_run):
     40 finished steps, both programs must show the CASSCF solution change at step 24 (measured:
     E_tot +0.976 eV in both) and our runs must end there with ``energy_drift``."""
     # changed after the measured numbers were seen (P7b Task 10, controller ruling)
+    # brittle across processes and PySCF versions (see CLAUDE.md Known limitation 3a);
+    # re-checked in P9a plan 2
     coupling, ours = our_run
     result = ours["result"]
     assert result["outcome"] == "energy_drift", result
@@ -227,6 +230,9 @@ def test_positions_before_the_solution_change(harness, sharc_run, our_run):
     1e-10 / 1e-7: all stop at step 0; see the module docstring)."""
     # changed after the measured numbers were seen (P7b Task 10, controller ruling): report only
     coupling, ours = our_run
+    diffs = harness.step_differences(
+        _window(ours, LAST_COMPARED), _window(sharc_run, LAST_COMPARED)
+    )
     _compare(
         harness,
         ours,
@@ -235,6 +241,19 @@ def test_positions_before_the_solution_change(harness, sharc_run, our_run):
         last=LAST_COMPARED,
         label=f"REPORT ONLY: ours ({coupling}) vs SHARC (nacdr)",
     )
+    report_dir = os.environ.get("GQTEASHMD_REPORT_DIR")
+    if report_dir:
+        path = Path(report_dir) / "sharc_pyscf_positions.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            report = json.loads(path.read_text())
+        except (OSError, ValueError):
+            report = {}
+        report[coupling] = {
+            "steps": [int(s) for s in diffs["steps"]],
+            "max_abs_q_bohr": [float(x) for x in diffs["q"]],
+        }
+        path.write_text(json.dumps(report, indent=1) + "\n")
 
 
 def test_relative_s0_population_report(harness, sharc_run, our_run):
@@ -292,3 +311,35 @@ def test_swap_matches_our_trajectory(harness, swap_runs, quantity):
         harness, swap, ours, quantity, last=N_STEPS, label="sharc.x + our PySCFBackend vs ours"
     )
     assert above.size == 0, numbers
+
+
+F1_EV = 0.1  # the [dynamics] default of energy_jump_limit_eV (P9a plan 2, Task 2)
+
+
+@pytest.fixture(scope="module", params=["overlap", "nacdr"])
+def our_run_f1(request, harness, initial, tmp_path_factory):
+    data = harness.run_our_trajectory(
+        initial,
+        n_steps=N_STEPS,
+        workdir=tmp_path_factory.mktemp(f"ours_f1_{request.param}"),
+        coupling=request.param,
+        energy_jump_limit_eV=F1_EV,
+    )
+    print(f"ours with F1 ({request.param}): {data['result']}")
+    return request.param, data
+
+
+def test_the_energy_check_ends_the_run_at_the_step_24_solution_change(harness, our_run_f1):
+    """P9a plan 2: with the F1 default, the CASSCF solution change at step 24 (E_tot +0.976 eV)
+    ends our run as electronic_discontinuity inside the 24th interval.
+
+    changed after the measured numbers were seen (P9a plan 2 Task 2, controller ruling P9a2-4):
+    the plan asserted n_grid_steps == 24; with F1 the jumping 24th interval is rejected, so 23
+    grid steps complete and the run ends inside the 24th interval (measured: t_final 11.8125 fs,
+    rejections {'energy': 4}, jump 0.9431 eV, both couplings)."""
+    coupling, ours = our_run_f1
+    result = ours["result"]
+    assert result["outcome"] == "electronic_discontinuity", (coupling, result)
+    assert result["n_grid_steps"] == CHANGE_STEP - 1, (coupling, result)
+    assert (CHANGE_STEP - 1) * harness.DT_FS < result["t_final_fs"] < CHANGE_STEP * harness.DT_FS
+    assert result["rejections_by_signal"].get("energy", 0) >= 1, (coupling, result)

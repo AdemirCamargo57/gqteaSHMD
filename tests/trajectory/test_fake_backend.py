@@ -121,3 +121,14 @@ def test_nan_and_more_error_faults():
     assert info.value.retryable is False
     backend.compute(Request(_coords(model, 0.03)))  # no fault: compute_more works again
     backend.compute_more(gradients=frozenset({S1}))
+
+
+def test_energy_jump_fault_shifts_every_energy():
+    from gqteashmd.testing.fake_backend import ENERGY_JUMP_SHIFT_EH
+
+    model = _model()
+    q = _coords(model)
+    plain = ModelBackend(model).compute(Request(q))
+    shifted = ModelBackend(model, faults={1: "energy_jump"}).compute(Request(q))
+    for label, e in plain.energies.items():
+        assert shifted.energies[label] == pytest.approx(e + ENERGY_JUMP_SHIFT_EH, abs=1e-15)

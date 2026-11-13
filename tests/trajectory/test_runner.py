@@ -6,7 +6,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from gqteashmd.core.units import AU_TIME_IN_FS
+from gqteashmd.core.units import AU_TIME_IN_FS, HARTREE_IN_EV
 from gqteashmd.dynamics.driver import initial_state, step
 from gqteashmd.dynamics.lvc import LVCModel, lvc_wigner_samples
 from gqteashmd.dynamics.options import DynamicsOptions
@@ -142,7 +142,10 @@ def test_energy_drift_outcome(tmp_path):
     result, d = _run(tmp_path, settings=_settings(options={"energy_drift_limit_au": 1e-14}))
     assert result["outcome"] == "energy_drift" and result["n_grid_steps"] == 1
     again, _ = _run(tmp_path, settings=_settings(options={"energy_drift_limit_au": 1e-14}))
-    assert again == {**result, "wall_time_s": again["wall_time_s"]}  # a final outcome stays
+    # a final outcome stays; the second call resumed from the final generation, and says so
+    assert again["resumes"] == ["gen_00000001"]
+    same = {"wall_time_s": again["wall_time_s"], "resumes": again["resumes"]}
+    assert again == {**result, **same}
 
 
 def test_stopped_in_s0_outcome(tmp_path):
@@ -279,3 +282,85 @@ def test_a_failed_gradient_refresh_after_a_hop_rejects_the_step(tmp_path):
     assert result["outcome"] in {"finished", "electronic_failure", "energy_drift"}
     rows = _log(d)
     assert np.all(np.isfinite(rows["e_total"])) and np.all(np.isfinite(rows["q"]))
+
+
+def test_rejections_are_counted_by_signal(tmp_path):
+    result, _ = _run(tmp_path, faults={6: "low_overlap", 12: "rung", 18: "error"})
+    assert result["outcome"] == "finished" and result["n_rejections"] == 3
+    assert result["rejections_by_signal"] == {"overlap": 1, "rung": 1, "electronic": 1}
+
+
+def test_a_persistent_signal_counts_every_rejected_attempt(tmp_path):
+    result, _ = _run(tmp_path, faults={c: "low_overlap" for c in (6, 7, 8, 9)})
+    assert result["rejections_by_signal"] == {"overlap": 4}
+
+
+def test_a_resume_is_recorded_with_its_generation(tmp_path):
+    with pytest.raises(SimulatedCrash):
+        _run(tmp_path, name="b", faults={8: "crash"})
+    result, d = _run(tmp_path, name="b", calls=7)
+    assert result["outcome"] == "finished"
+    assert len(result["resumes"]) == 1 and result["resumes"][0].startswith("gen_")
+    fresh, _ = _run(tmp_path, name="c")
+    assert fresh["resumes"] == [] and fresh["rejections_by_signal"] == {}
+
+
+F1 = 0.1 / HARTREE_IN_EV  # the stage default, in Eh
+
+
+def test_without_faults_the_energy_check_rejects_nothing(tmp_path):
+    result, _ = _run(tmp_path, settings=_settings(energy_jump_limit_au=F1))
+    assert result["outcome"] == "finished" and result["n_rejections"] == 0
+
+
+def test_one_energy_jump_halves_one_interval(tmp_path):
+    result, d = _run(
+        tmp_path, settings=_settings(energy_jump_limit_au=F1), faults={6: "energy_jump"}
+    )
+    assert result["outcome"] == "finished" and result["rejections_by_signal"] == {"energy": 1}
+    rows = _log(d)
+    assert len(rows) == N + 2
+    assert (rows[5]["grid_step"], rows[5]["ticks"], rows[5]["depth"]) == (4, 4, 1)
+
+
+@pytest.mark.parametrize("crash_call", [5, 6, 8])
+def test_a_crash_and_resume_with_an_energy_jump_is_bit_identical(tmp_path, crash_call):
+    settings = _settings(energy_jump_limit_au=F1)
+    jump = {6: "energy_jump"}
+    _, reference = _run(tmp_path, name="ref", settings=settings, faults=jump)
+    crashing = {**jump, crash_call: "crash"}
+    with pytest.raises(SimulatedCrash):
+        _run(tmp_path, name="b", settings=settings, faults=crashing)
+    result, d = _run(tmp_path, name="b", settings=settings, faults=jump, calls=crash_call - 1)
+    assert result["outcome"] == "finished"
+    assert result["rejections_by_signal"] == {"energy": 1}
+    assert _log(d).tobytes() == _log(reference).tobytes()
+
+
+def test_a_persistent_energy_jump_ends_the_trajectory(tmp_path):
+    result, _ = _run(
+        tmp_path,
+        settings=_settings(energy_jump_limit_au=F1),
+        faults={c: "energy_jump" for c in range(6, 200)},
+    )
+    assert result["outcome"] == "electronic_discontinuity"
+    assert result["n_rejections"] == 4 and result["n_grid_steps"] == 4
+    assert "energy_jump_limit_eV" in result["message"] and "fs" in result["message"]
+
+
+def test_an_energy_jump_with_a_rung_change_at_the_smallest_step_is_not_accepted(tmp_path):
+    faults = {c: "energy_jump_rung" for c in range(6, 200)}
+    result, _ = _run(tmp_path, settings=_settings(energy_jump_limit_au=F1), faults=faults)
+    assert result["outcome"] == "electronic_discontinuity" and result["n_flagged"] == 0
+
+
+def test_the_energy_check_is_off_by_default_in_run_settings(tmp_path):
+    result, _ = _run(tmp_path, faults={6: "energy_jump"})
+    assert result["outcome"] == "finished" and result["n_rejections"] == 0
+
+
+def test_energy_jump_limit_validation():
+    options = DynamicsOptions(dt_au=DT)
+    for bad in (0.0, -1.0, float("nan"), float("inf")):
+        with pytest.raises(ValueError, match="energy_jump_limit_au"):
+            RunSettings(options, tmax_au=10 * DT, energy_jump_limit_au=bad)

@@ -130,6 +130,7 @@ allow_fewer = false           # accept fewer trajectories if too few pass the se
 # hopping = "sharc"
 # decoherence = "edc"
 # energy_drift_limit_eV = 0.5
+# energy_jump_limit_eV = 0.1         # reject a step whose E_tot jumps by more
 
 # [analysis]                         # optional; runs after dynamics by default
 # fit_states = ["S1", "S2"]          # fitted population (default: every excited state)

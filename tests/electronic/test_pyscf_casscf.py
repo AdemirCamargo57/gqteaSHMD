@@ -351,3 +351,78 @@ def test_casscf_previous_orbitals_rung_falls_through_to_scf_orbitals(
     second = backend.compute(Request(ethylene_bohr))
     assert second.meta["casscf"] == "SCF orbitals" and len(calls) == 2
     assert abs(second.energies[S1] - first.energies[S1]) < 1e-6
+
+
+def test_extra_rungs_run_after_the_ladder_in_order(
+    ethylene_symbols, ethylene_bohr, make_settings, monkeypatch
+):
+    seen = []
+
+    def only_the_last(mc):
+        seen.append((mc.max_cycle_macro, mc.conv_tol, mc.conv_tol_grad))
+        return len(seen) == 3 and bool(mc.converged)  # no previous: SCF, SCF+penalty, loose
+
+    monkeypatch.setattr(pyscf_casscf, "_converged", only_the_last)
+    backend = _backend(
+        ethylene_symbols,
+        make_settings(basis="sto-3g"),
+        casscf_extra_rungs=pyscf_casscf.EXTRA_RUNG_NAMES,
+    )
+    result = backend.compute(Request(ethylene_bohr))
+    # no previous orbitals: "previous orbitals" and its extra rung are skipped
+    assert result.meta["casscf"] == "loose tolerances"
+    assert seen[-1][1:] == (1e-8, 1e-4)
+
+
+def test_the_more_iterations_rung_uses_the_previous_orbitals(
+    ethylene_symbols, ethylene_bohr, make_settings, monkeypatch
+):
+    backend = _backend(
+        ethylene_symbols,
+        make_settings(basis="sto-3g"),
+        casscf_extra_rungs=("previous orbitals, more iterations",),
+    )
+    backend.compute(Request(ethylene_bohr))  # a converged first point gives previous orbitals
+    calls = []
+
+    def fifth_only(mc):
+        calls.append(mc.max_cycle_macro)
+        return len(calls) == 4 and bool(mc.converged)  # the 3 rungs fail, the extra converges
+
+    monkeypatch.setattr(pyscf_casscf, "_converged", fifth_only)
+    result = backend.compute(Request(ethylene_bohr + 0.001))
+    assert result.meta["casscf"] == "previous orbitals, more iterations"
+    assert calls[3] == 4 * calls[0]
+
+
+def test_extra_rungs_are_off_by_default(
+    ethylene_symbols, ethylene_bohr, make_settings, monkeypatch
+):
+    monkeypatch.setattr(pyscf_casscf, "_converged", lambda mc: False)
+    with pytest.raises(ElectronicStructureError, match="SA-CASSCF failed on every rung"):
+        _backend(ethylene_symbols, make_settings(basis="sto-3g")).compute(Request(ethylene_bohr))
+
+
+def test_unknown_extra_rung_names_are_refused(ethylene_symbols, make_settings):
+    with pytest.raises(ValueError, match="unknown CASSCF extra rung"):
+        _backend(ethylene_symbols, make_settings(basis="sto-3g"), casscf_extra_rungs=("x",))
+
+
+def test_loose_rung_never_tightens_the_user_tolerances(
+    ethylene_symbols, ethylene_bohr, make_settings, monkeypatch
+):
+    seen = []
+
+    def last(mc):
+        seen.append((mc.conv_tol, mc.conv_tol_grad))
+        return len(seen) == 3 and bool(mc.converged)
+
+    monkeypatch.setattr(pyscf_casscf, "_converged", last)
+    settings = make_settings(
+        basis="sto-3g",
+        casscf={"ncas": 2, "nelecas": 2, "conv_tol": 1e-6, "conv_tol_grad": 1e-3},
+    )
+    _backend(ethylene_symbols, settings, casscf_extra_rungs=("loose tolerances",)).compute(
+        Request(ethylene_bohr)
+    )
+    assert seen[-1] == (1e-6, 1e-3)

@@ -40,6 +40,7 @@ def make_backend(
     threads: int | None = None,
     memory_mb: int | None = None,
     scratch_dir: Path | None = None,
+    casscf_extra_rungs: tuple[str, ...] = (),
 ) -> ElectronicBackend:
     chosen = settings if settings is not None else config.electronic
     if chosen is None:
@@ -56,4 +57,5 @@ def make_backend(
         threads=threads,
         memory_mb=memory_mb,
         scratch_dir=scratch_dir,
+        casscf_extra_rungs=casscf_extra_rungs,
     )
