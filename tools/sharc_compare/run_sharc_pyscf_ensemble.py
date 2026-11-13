@@ -78,12 +78,31 @@ def parse_veloc(text: str) -> np.ndarray:
     return np.array(rows).reshape(-1, 3)
 
 
+# [dynamics] keys the SHARC input does not carry: SHARC runs with its own settings, which equal
+# these defaults, so a variant that changes one would be compared against a different method.
+UNTRANSLATED_DEFAULTS: dict[str, Any] = {
+    "nsubsteps": 25,
+    "decoherence_param_Eh": 0.1,
+    "ekin_correction": "parallel_vel",
+    "frustrated": "keep",
+    "edc_convention": "sharc",
+}
+
+
 def sharc_settings(electronic, dynamics) -> dict[str, Any]:
     """Keyword arguments of ``run_sharc_trajectory`` for one variant (CASSCF only)."""
     if electronic.method != "casscf" or electronic.casscf is None:
         raise ValueError(
             f"SHARC_PYSCF.py runs casscf only; the variant has method = {electronic.method!r}"
         )
+    for key, default in UNTRANSLATED_DEFAULTS.items():
+        if getattr(dynamics, key) != default:
+            raise ValueError(
+                f"[dynamics] {key} = {getattr(dynamics, key)!r} is not translated to SHARC "
+                f"(only the default {default!r} is)"
+            )
+    if dynamics.hopping == "fssh":
+        raise ValueError("[dynamics] hopping = 'fssh' is not translated to SHARC")
     c = electronic.casscf
     return {
         "n_states": electronic.singlets,
@@ -252,6 +271,10 @@ def run_ensemble(
                 error = f"{type(exc).__name__}: {exc}"
                 out = {"returncode": None, "stderr_tail": None, "data": None}
             _write_status(workdir, out, error, time.perf_counter() - t0)
+            if error is not None:
+                # after a timeout or crash, the row comes from the partial output.dat exactly as
+                # a rerun builds it (P9a plan 1 final review, minor 2)
+                out = _read_existing(workdir)
             out = {**out, "error": error}
         s = trajectory_summary(start.task_id, out, dt_fs=dynamics.dt_fs, tmax_fs=tmax)
         s["reused"] = reused

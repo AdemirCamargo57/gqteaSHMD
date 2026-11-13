@@ -1,22 +1,15 @@
 import json
 from pathlib import Path
 
-import numpy as np
 import pytest
 from tests.diagnosis.conftest import TOOLS, load_tool
 from tests.diagnosis.test_project_inputs import LVC, make_project
 
-from gqteashmd.config.schema import DynamicsStageSection
-from gqteashmd.core.states import StateLabel
-from gqteashmd.core.units import DALTON_IN_ME
-from gqteashmd.dynamics.lvc import LVCModel
-from gqteashmd.dynamics.randomness import GeneratorSource
-from gqteashmd.stages.dynamics import run_settings
-from gqteashmd.testing.fake_backend import ModelBackend
-from gqteashmd.trajectory.model import BackendModel
-from gqteashmd.trajectory.runner import InitialConditions, TrajectoryRunner
+from gqteashmd.project.layout import ProjectLayout
+from gqteashmd.stages.base import StageContext
+from gqteashmd.stages.dynamics import DynamicsStage
+from gqteashmd.testing import canned_lvc
 from gqteashmd.trajectory.store import StepLog
-from gqteashmd.util.seeds import task_rng
 
 rv = load_tool("diagnosis", "run_variants")
 pi = load_tool("diagnosis", "project_inputs")
@@ -83,9 +76,9 @@ def test_the_kept_rule():
     assert not rv.is_kept("energy_drift", 0.0)
 
 
-def test_run_variant_reproduces_the_stage_stream(tmp_path):
-    """The variant runner gives, bit for bit, the steps.log of a direct runner with the
-    stage's random stream task_rng(seed, "dynamics", index)."""
+def test_run_variant_reproduces_the_stage_stream(tmp_path, monkeypatch):
+    """The variant runner gives, bit for bit, the steps.log of DynamicsStage.run_task on the
+    canned LVC pipeline (P9a plan 1 final review, minor 3: not a second copy of the recipe)."""
     project = make_project(tmp_path)
     inputs = pi.load_project_inputs(project)
     out = tmp_path / "out"
@@ -106,20 +99,29 @@ def test_run_variant_reproduces_the_stage_stream(tmp_path):
     row = summary["trajectories"][0]
     assert row["task"] == "traj_00000" and row["onset"] in rv.ONSETS
 
-    # direct runner with the same stream
-    model = LVCModel.from_template(LVC, spin_orbit=False)
-    start = inputs.starts[0]
-    masses = np.repeat(inputs.masses_amu * DALTON_IN_ME, 3)
-    section = DynamicsStageSection.model_validate(inputs.config.dynamics.model_dump())
-    bm = BackendModel(ModelBackend(model), masses, coupling=section.coupling)
-    direct = tmp_path / "direct"
-    TrajectoryRunner(bm, run_settings(section), direct).run(
-        InitialConditions(start.q, start.v, bm.labels.index(StateLabel.parse("S1"))),
-        GeneratorSource(task_rng(inputs.config.project.seed, "dynamics", start.index)),
+    # the stage itself on the canned LVC pipeline, same project, same stream
+    monkeypatch.setenv(canned_lvc.LVC_TEMPLATE_ENV, str(LVC))
+    ctx = StageContext(
+        inputs.config,
+        ProjectLayout(project),
+        tmp_path / "stage",
+        {
+            "prepare": project / "00_prepare",
+            "sampling": project / "03_sampling",
+            "selection": project / "05_selection",
+        },
     )
-    n, f = bm.n_states, bm.n_dof
-    a = StepLog(out / "base" / "traj_00000" / "steps.log", n, f).read()
-    b = StepLog(direct / "steps.log", n, f).read()
+    stage = DynamicsStage(
+        backend_factory=canned_lvc.lvc_backend_factory, required_modules=("h5py>=3.9",)
+    )
+    task = stage.plan(ctx)[0]
+    task_dir = ctx.stage_dir / "tasks" / task.task_id
+    task_dir.mkdir(parents=True)
+    stage.run_task(ctx, task, task_dir)
+    model = canned_lvc.canned_model()
+    a = StepLog(out / "base" / "traj_00000" / "steps.log", model.n_states, model.n_dof).read()
+    b = StepLog(task_dir / "steps.log", model.n_states, model.n_dof).read()
+    assert a.size > 1
     assert a.tobytes() == b.tobytes()
 
 

@@ -137,6 +137,7 @@ class System:
 
 
 def _ethylene(directory: Path) -> System:
+    directory.mkdir(parents=True, exist_ok=True)
     return System(directory, ETHYLENE, (DATA / "ethylene.xyz").read_text())
 
 
@@ -235,6 +236,42 @@ def test_ethylene_casscf_drift_scales_as_dt_squared(ethylene_run, tmp_path):
     if drifts[0.5] < 1e-6:
         pytest.skip(f"drift(0.5 fs) below 1e-6 Eh, convergence noise dominates: {numbers}")
     assert 2.5 <= ratio <= 6.0, numbers
+
+
+ETHYLENE_DRIFT_GUARD_EH = 1e-3
+
+
+def test_ethylene_casscf_energy_stays_consistent(ethylene_run):
+    """A regression guard in the non-slow pyscf tier (P9a plan 2, spec 5): the bound 1e-3 Eh was
+    set after the measured 2.68e-4 Eh of (a) (P7b Task 9), a factor 3.7 above it; the strict
+    1e-4 xfail and the dt^2 ratio of (b) stay the validation."""
+    _, rows, numbers = ethylene_run
+    assert _drift(rows) <= ETHYLENE_DRIFT_GUARD_EH, numbers
+
+
+@pytest.mark.slow
+def test_ethylene_casscf_drift_ratio_at_the_finer_dt_pair(tmp_path):
+    """(b) at dt 0.25 / 0.125 fs over 5 fs (P9a plan 2, spec 5; P7b measured the ratio 4.07 as a
+    probe before this test existed; the bounds [3, 5] around the exact 4 are fixed in the plan)."""
+    drifts = {}
+    for dt in (0.25, 0.125):
+        result, rows = _timed(
+            f"(b') ethylene 6-31G* 5 fs at dt {dt} fs",
+            lambda dt=dt: _ethylene(tmp_path / str(dt)).run(
+                "b", dt_fs=dt, n_steps=int(round(5.0 / dt)), **CONSERVING
+            ),
+        )
+        assert result["outcome"] == "finished" and result["n_rejections"] == 0, _brief(result)
+        drifts[dt] = _drift(rows)
+    ratio = drifts[0.25] / drifts[0.125]
+    numbers = (
+        f"drift(0.25) = {drifts[0.25]:.3e} Eh, drift(0.125) = {drifts[0.125]:.3e} Eh, "
+        f"ratio {ratio:.3f}"
+    )
+    print("(b')", numbers)
+    if drifts[0.25] < 1e-6:
+        pytest.skip(f"drift(0.25 fs) below 1e-6 Eh, convergence noise dominates: {numbers}")
+    assert 3.0 <= ratio <= 5.0, numbers
 
 
 def test_ethylene_resume_from_a_restart_matches_one_run(tmp_path):

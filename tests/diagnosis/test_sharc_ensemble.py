@@ -116,7 +116,13 @@ def _fake_world(monkeypatch, behaviour):
     from types import SimpleNamespace
 
     starts = [
-        SimpleNamespace(task_id=f"traj_{k:05d}", index=k, state="S1", q=np.zeros(6), v=np.zeros(6))
+        SimpleNamespace(
+            task_id=f"traj_{k:05d}",
+            index=k,
+            state="S1",
+            q=np.arange(6.0) + 10 * k,
+            v=1e-3 * (np.arange(6.0) + 1 + k),
+        )
         for k in range(2)
     ]
     inputs = SimpleNamespace(
@@ -132,7 +138,7 @@ def _fake_world(monkeypatch, behaviour):
     calls = []
 
     def stub(*args, workdir, **kwargs):
-        calls.append((workdir.name, kwargs))
+        calls.append((workdir.name, kwargs, args))
         workdir.mkdir(parents=True, exist_ok=False)
         (workdir / "output.dat").write_text("garbage")
         return behaviour(workdir.name, kwargs)
@@ -215,3 +221,70 @@ def test_thread_variables_reach_sharc(tmp_path, monkeypatch):
     _run(tmp_path)
     for name in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS"):
         assert seen[0][name] == "1"
+
+
+def test_each_job_gets_its_own_start_state_masses_and_seed(tmp_path, monkeypatch):
+    calls = _fake_world(
+        monkeypatch, lambda t, k: {"returncode": 0, "data": None, "stderr_tail": ""}
+    )
+    _run(tmp_path)
+    for k, (task, kwargs, args) in enumerate(calls):
+        q = (np.arange(6.0) + 10 * k).reshape(-1, 3)
+        v = (1e-3 * (np.arange(6.0) + 1 + k)).reshape(-1, 3)
+        assert task == f"traj_{k:05d}"
+        np.testing.assert_array_equal(args[0], ens.interface_geometry(q))
+        np.testing.assert_array_equal(args[1], v)
+        assert kwargs["state_mch"] == 1 and kwargs["seed"] == k + 1
+        np.testing.assert_array_equal(kwargs["masses_amu"], np.ones(2))
+        assert tuple(kwargs["symbols"]) == ("H", "H")
+
+
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        ("nsubsteps", 10),
+        ("decoherence_param_Eh", 0.2),
+        ("ekin_correction", "parallel_nac"),
+        ("frustrated", "reflect"),
+        ("edc_convention", "granucci_persico"),
+    ],
+)
+def test_an_untranslated_dynamics_value_is_refused(key, value):
+    extra = {"coupling": "nacdr"} if key == "ekin_correction" else {}
+    with pytest.raises(ValueError, match=key):
+        ens.sharc_settings(*_sections(**{key: value}, **extra))
+
+
+def test_hopping_fssh_is_refused():
+    with pytest.raises(ValueError, match="fssh"):
+        ens.sharc_settings(*_sections(hopping="fssh", coupling="nacdr"))
+
+
+def test_the_m4_defaults_are_translated():
+    assert ens.sharc_settings(*_sections())["hopping"] == "sharc"
+
+
+def test_a_timed_out_run_builds_its_row_from_the_partial_output_dat(tmp_path, monkeypatch):
+    """The row of the run that timed out equals the row a rerun builds from the same files."""
+    data = {
+        "steps": np.arange(4),
+        "e_total": np.zeros(4),
+        "energies": np.zeros((4, 3)),
+        "active": np.ones(4, dtype=int),
+    }
+    monkeypatch.setattr(ens, "parse_lvc_output_dat", lambda path: "parsed")
+    monkeypatch.setattr(ens, "trajectory_data", lambda parsed: dict(data))
+
+    def behaviour(task, kwargs):
+        raise TimeoutError("sharc.x timed out")
+
+    _fake_world(monkeypatch, behaviour)
+    first = _run(tmp_path)["trajectories"][0]
+    assert first["error"] and "timed out" in first["error"] and first["reused"] is False
+    assert first["n_steps"] == 3 and first["t_final_fs"] == pytest.approx(1.5)
+    assert first["ended"] == "stopped"
+    again = _run(tmp_path)["trajectories"][0]
+    assert again["reused"] is True
+    assert {k: v for k, v in again.items() if k != "reused"} == {
+        k: v for k, v in first.items() if k != "reused"
+    }
