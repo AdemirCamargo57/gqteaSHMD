@@ -39,16 +39,17 @@ Each statement names its source. A number that was estimated, or a reading that 
 
   Source: `~/p9a/variants/*/summary.json` `n_kept`, and Task 7 for SHARC.
 - **One mechanism dominates.** The SA2-CASSCF(2,2)/6-31G\* problem has more than one solution along these paths, and the run moves from one to another. The two rows below give the reproduction; section 2 gives the label of each class.
-  - The `energy_drift` class is this switch in all 7 trajectories. Task 6 reproduced it by replay. SHARC_PYSCF makes the same jump at the same step in 6 of 7 (Task 7).
+  - The `energy_drift` class is this switch in 6 of 7 trajectories: Task 6 reproduced it by replay, and SHARC_PYSCF makes the same jump at the same step (Task 7). In the seventh, 00014, the terminal jump was not replayed and SHARC differs.
   - The `overlap_failure` class is the same switch after the hop in 3 of 8 (reproduced). The other 5 have indirect evidence only.
 - **No intruder state was seen.** In SA3-CAS(2,2), S2 lies at least 0.589 eV above S1 in every overlap-failure window and at least 1.973 eV above it in the drift windows (Task 6 sections 4.1 and 4.2). The working hypothesis of spec section 1, "a state outside the computed set", is therefore not supported.
 - **The overlap failures do not come "right after" the hop.** They come 5.8-42.9 fs after it (Task 6 table 2.4).
 - **The `electronic_failure` class:**
   - In 2 of 3 trajectories, CASSCF stops at the 150-macro-iteration limit with a stationary energy. A fresh solve converges there when `conv_tol_grad` is looser.
-  - In the third (00016), SHARC_PYSCF also fails at the same place.
-- **No defect of our program has been shown in the sense of "ours".** Three findings come closest:
-  - two trajectories formally meet the definition: 00007 (SHARC converges where we fail) and 00014 (the two programs take different solution branches at 1.5-1.75 fs);
-  - **a detection gap in our design**: none of our rejection signals sees a solution switch of 0.64-0.93 eV.
+  - In the third (00016), SHARC_PYSCF also fails at the same place. But our run had converged at its last geometry, and every fresh solve fails there. This is unexplained.
+- **No defect of our program has been shown in the sense of "ours".** Three cases come closest:
+  - **00014:** the two programs take different solution branches at 1.5-1.75 fs;
+  - **00016:** our run converged at a geometry where every fresh solve fails, so convergence that depends on the run's history is not excluded;
+  - **a detection gap in our design:** none of our rejection signals sees a solution switch of 0.64-0.93 eV.
 
 ## 1. What was run
 
@@ -112,7 +113,7 @@ Task 7 took 6 h 05 min in total (16:17:41-22:22:14). The probes ran first, with 
 
   The path before any hop is deterministic in both programs. At t = 0 both programs agree to 7.0e-6 eV in every state energy, over the 20 trajectories.
 
-  SHARC has no drift limit and runs on. It then hops S1 -> S0 3.5-7 fs after the jump, with S1-S0 gaps of 0.10-1.97 eV at its later jumps.
+  SHARC has no drift limit and runs on. It then hops S1 -> S0 3.5-6 fs after the jump, with S1-S0 gaps of 0.10-1.97 eV at its later jumps.
 - *Variants* (Task 7):
   - `dt_quarter` drifts in the same 6 trajectories at nearly the same times (6.5-11 fs, 0.67-0.91 eV), so a smaller step does not help;
   - `sa3_cas22` and `sa2_cas43` remove all 7 early drifts;
@@ -222,20 +223,31 @@ The measured remedy is a setting: SA3-CAS(2,2) keeps 5 of the 8.
   - *Forensics:* the first full step from t = 0 was rejected (`n_rejections` 4), and the trajectory went on at dt/8 (records at 0.0625-0.25 fs, depth 3). The CASSCF rung changed at 0.25 fs (flagged), and the next dt/8 step failed on every rung. The reason for the first rejection is not recorded (rejections that end a trajectory appear in no log record).
   - *Replay:* reproduced; a single solution in the window (singular values 1.0000).
   - *Convergence trials:* converged at `conv_tol_grad` 1e-5 and 1e-4 (the two agree to 1e-4 eV).
-  - *SHARC:* converges at 0.5 fs and runs on to a drift-type jump of +0.988 eV at 11.5 fs. Our `dt_quarter` variant also passes 0.25 fs, and then drifts at 11.5 fs (0.9491 eV).
+  - *SHARC:* passes our failure time; Task 7 says "SHARC converges at 0.25 fs". It runs on to a drift-type jump of +0.988 eV at 11.5 fs. It steps on its 0.5 fs grid, so it never evaluates our failed geometry: the dt/8 step from 0.25 to 0.3125 fs. Our base run never reached 0.5 fs either. **The geometries differ, so this is a comparison of paths only.** Our `dt_quarter` variant also passes 0.25 fs, and then drifts at 11.5 fs (0.9491 eV).
 - *00016* (17.0 fs, no hop):
   - *SHARC:* `SHARC_PYSCF.py` also fails at **17.0 fs** on the same deterministic path (no hop in either program). That the failure has the same convergence cause is an inference from the place; SHARC's error text is not in the stderr tail the harness keeps.
-  - *Replay:* fails at r37, which the run had converged. The gradient backend and the determinism pair fail there too, so no convergence trial ran. This is unexplained (Task 6 "does not fit" item 3).
+  - *Our run against the replay.*
+    - What the run did: it converged r37 (the last record, 17.0 fs) and then failed at the next dt/8 step.
+    - What the replay did: every replay mode fails at r37, and so do the gradient backend and both fresh determinism solves; no convergence trial could run there. The continued mode started from SCF orbitals at r32 and reproduced r32-r36 to at most 8.9e-6 eV before failing at r37.
+    - So **our run's result at r37 differs from a fresh solve at the same geometry**, in the direction that the run converged. This is unexplained (Task 6 "does not fit" item 3).
+    - History-dependent convergence is not excluded: the run's orbitals carry a history from t = 0 that the replay lacks. It would be the same kind of effect as known limitation 3a (CLAUDE.md; the intermittent water CAS(4,4) test of USER_MANUAL §10).
 - *Variants:*
   - `sa3_cas22` has **no electronic failure** in any of the 20;
   - `dt_quarter` has 4;
   - `sa2_cas43` has 7, two of them at step 0.
 
-**Label: settings for 00000 and 00007; method or settings for 00016.**
+**Label: settings for 00000 and 00007; for 00016, method or settings by inference, with a run convergence that could not be reproduced.**
 
-- *00000 and 00007:* a fresh solve at the failed-step geometry converges with a looser `conv_tol_grad` (1e-4 and 1e-5). The solver sits at a stationary energy at the iteration limit.
-- *00007 formally meets the "ours" definition:* SHARC converges at the 0.5 fs geometry, which is reached identically in both programs before any hop. Why our ladder fails there was not identified. Possibly SHARC's interface uses a different CI solver: per USER_MANUAL 8.16.8 C, SHARC runs with `fix-spin-shift`, while ours is singlet-only. That has not been tested, and the interface source is not read under the clean-room rule.
-- *00016:* SHARC fails at the same place, so it is not ours.
+- *00000 and 00007:* the valid test of spec 2 is a fresh solve at the failed-step geometry.
+  - At the run's settings (`conv_tol_grad` 1e-6) the fresh solve fails, as the run did.
+  - With a looser `conv_tol_grad` (1e-4 and 1e-5) it converges.
+  - The solver sits at a stationary energy at the iteration limit.
+
+  So neither is ours by that test.
+- *00007 and SHARC:* the comparison is of paths only (see above), so it does not meet the "same geometry" test. Why our full step from t = 0 was rejected is not recorded.
+- *00016, two things:*
+  - SHARC also fails at 17.0 fs. That supports "method or settings", but only by inference, because SHARC's error text is not recorded.
+  - It does not explain why our run converged at r37 where every fresh solve fails. That difference formally meets the fresh-solve test of spec 2, and its cause, possibly history-dependent convergence, is not identified (decision 6).
 
 **Candidate fixes.**
 
@@ -254,7 +266,9 @@ The measured remedy for the seed-2026 set is SA3-CAS(2,2), which has no electron
   - 00006 and 00013 give exactly 0;
   - in 00016 both solves fail at r37.
 - **Whole runs.** The `base` variant of Task 7 reproduces M4 run A in all 20 trajectories, in outcome and `t_final_fs` to 4 decimals. The run is from another process and another day, with the same program code. M4 run B had already reproduced run A in outcome, hops and rejections (USER_MANUAL 5.9).
-- **What was not seen:** the process-dependent solution of known limitation 3a (water CAS(4,4)/STO-3G).
+- **What this does and does not show.** The fresh-start pairs show no dependence on the process (at most 4.55e-12 eV). They do **not** exclude convergence that depends on the history of the path.
+  - In 00016, our run converged at r37, where every replay mode and both fresh solves fail (section 2.3). This is unexplained.
+  - It is the same kind of effect as known limitation 3a (water CAS(4,4)/STO-3G, a solution that depends on the run). That limitation itself was not reproduced here.
 - **Coverage:**
   - the fresh-start check covers one geometry per trajectory, the base variant and fresh starts only;
   - SA3 determinism was not checked.
@@ -335,6 +349,12 @@ The other variants are ruled out by their kept counts (0, 0, 1, 0, 0), in partic
 
 None of these 9 was replayed, so **their causes are not diagnosed**.
 
+SA3-CAS(2,2) is not free of switches, so an SA3 solution switch is a candidate cause of at least some of them. This is not measured:
+
+- the two late drifts have jumps of 1.101 and 0.3768 eV after a hop;
+- in the replay, SA3-CAS(2,2) has two solutions, 1.05 eV apart, at the failed step of base 00018 (Task 6 section 4.2);
+- its "one solution in all 7 drift windows" (section 2.1) holds inside those windows only.
+
 **Caveats that plan 2 must carry.**
 
 1. **The SA3 yield depends on the starting solution.** SA3-CAS(2,2) also has two solutions at the initial geometries: our run and SHARC's start on different SA3 solutions in 13 of 20 (0.176-0.372 eV in some state). In those 13, SHARC switches within 0.5-3.5 fs, by 0.17-0.40 eV. **6 of our 11 kept trajectories start on the solution that SHARC did not use** (Task 7). The 11 is therefore partly a property of our initial guess, and neither solution has been shown to be the right one (the SA-average differences have both signs).
@@ -376,7 +396,7 @@ None of these 9 was replayed, so **their causes are not diagnosed**.
 7. **SHARC also stops runs.** It stopped 4 base runs and 2 SA3 runs with `QM call was not successful` (error code 256); the cause is not recorded by the harness. It applies no drift or overlap check: 18 of its 20 base runs carry a jump above 0.1 eV, including the S0 drops of 1.9-2.5 eV (00013, 00001).
 8. **traj_00008's first jump (r45) is not a switch:** continued equals the stored energies while fresh differs by 0.642 eV. The larger jump at r46 lies outside the window.
 9. **The jump is measured on different records.** Task 6 measured it on `steps.log` (every (sub)step); the variant runs and the kept rule use `output.h5`. Base 00001, 00002, 00013, 00016, 00017 and 00018 are below 0.1 eV on `output.h5`; they are lost by outcome anyway.
-10. **Minor tool findings.** `replay.log` has an `END` timestamp equal to its `START`. The SHARC `sa3_cas22` run took 2 h 56 min against an estimate of 2.1 h (the probe ran with 1 thread, alone on the machine).
+10. **A minor tool finding.** The SHARC `sa3_cas22` run took 2 h 56 min against an estimate of 2.1 h (the probe ran with 1 thread, alone on the machine).
 
 ## 7. Honest summary: what was decided after the numbers were seen
 
@@ -395,6 +415,10 @@ None of these 9 was replayed, so **their causes are not diagnosed**.
 3. **An initial-solution rule for SA3.** Whether to add one, given that SA3 has two solutions at the start geometries in 13 of 20, and if so with which criterion. It would be measured on seed 2026 first.
 4. **F1, and F2 as detection.** Whether they enter plan 2 under spec 4.1 rule 1, although their class is labelled "method". The case for them is a detection gap in our design, not a wrong result.
 5. **F4.** Whether it enters: it converts 2 of 3 SA2 failures, but `sa3_cas22` had none.
-6. **The formal "ours" cases.** Whether 00007 (SHARC converges where we fail) and 00014 (different solution branches) count as "ours" under spec 2, rule 2, which would require a fix with a failing test. Their causes are not identified.
+6. **The candidate "ours" cases.** Spec 2, rule 2, would require a fix with a failing test for each one counted as "ours"; neither cause is identified. The question is whether these two count:
+   - **00014:** the two programs take different solution branches at 1.5-1.75 fs, on the same path before any hop;
+   - **00016:** our run converged at r37, where every replay mode and both fresh solves fail, so history-dependent convergence is not excluded (section 2.3).
+
+   00007 is **not** a candidate. The fresh solve at the failed-step geometry fails at the run's settings, as the run did, and the SHARC comparison is of paths only.
 7. **The `sa3_cas22` losses.** Whether plan 2 replays the 9, including the jumps at hop records, before the acceptance run.
 8. **`[selection] states = ["S1"]`.** Whether the acceptance run uses it, as measured, or the default selection with `singlets = 3`.

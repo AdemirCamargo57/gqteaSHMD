@@ -275,7 +275,8 @@ tools/sharc_compare/   executes SHARC 4.1 as a black box (never imported by gqte
   - **Root causes** (report section 2):
     - `energy_drift`: an SA2-CAS(2,2) solution switch (method). SHARC_PYSCF jumps at the same step in 6 of 7, and none of our rejection signals sees it, a detection gap (F1).
     - `overlap_failure`: the same switch after the hop (3 of 8 reproduced, 5 with indirect evidence). It comes 5.8-42.9 fs after the hop, and no intruder state was found.
-    - `electronic_failure`: CASSCF stops at its 150-macro-iteration limit. 2 of 3 converge fresh at a looser `conv_tol_grad`; SHARC fails at the same place in the third.
+    - `electronic_failure`: CASSCF stops at its 150-macro-iteration limit. 2 of 3 converge fresh at a looser `conv_tol_grad`. In the third (00016), SHARC fails at the same place, but our run's own convergence at its last geometry is not reproduced by fresh solves: unexplained, and history-dependent convergence (cf. limitation 3a) is not excluded.
+    - Candidate "ours" cases for the owner: 00014 and 00016.
   - **SA3-CAS(2,2) also has two solutions at the start** in 13 of 20 (ours against SHARC).
   - **Documents.** USER_MANUAL 8.16.9 and section 10 carry the findings; no behaviour changed.
 - **Implemented features:**
