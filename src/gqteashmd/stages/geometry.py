@@ -37,6 +37,7 @@ def stage_backend(
     task_dir: Path,
     *,
     settings: ElectronicSection | None = None,
+    casscf_extra_rungs: tuple[str, ...] = (),
 ) -> ElectronicBackend:
     """One backend for a stage task, using the stage's effective resources."""
     electronic = ctx.config.electronic
@@ -50,4 +51,5 @@ def stage_backend(
         threads=res.threads_per_task,
         memory_mb=res.memory_mb_per_task,
         scratch_dir=task_dir / "scratch",
+        casscf_extra_rungs=casscf_extra_rungs,
     )
