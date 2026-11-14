@@ -1,0 +1,36 @@
+[project]
+name = "ethylene_p9b"
+directory = "run"
+seed = 2028
+
+[molecule]
+geometry = "ethylene.xyz"
+charge = 0
+multiplicity = 1
+
+[resources]
+total_cores = 16
+total_memory_mb = 7000
+max_parallel_tasks = 8
+threads_per_task = 2
+memory_mb_per_task = 800
+
+[electronic]
+method = "casscf"
+basis = "6-31g*"
+singlets = 3
+
+[electronic.casscf]
+ncas = 2
+nelecas = 2
+
+[sampling]
+n_samples = 300
+
+[selection]
+n_trajectories = 100
+states = ["S1"]
+
+[dynamics]
+tmax_fs = 100.0
+dt_fs = 0.5
