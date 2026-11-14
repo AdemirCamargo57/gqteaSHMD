@@ -12,6 +12,7 @@ from gqteashmd.config.schema import ENERGY_JUMP_DEFAULT_EV
 from gqteashmd.core.units import AU_TIME_IN_FS, HARTREE_IN_EV
 from gqteashmd.errors import StageFailedError, TaskError
 from gqteashmd.project.layout import ProjectLayout
+from gqteashmd.stages import analysis as analysis_module
 from gqteashmd.stages.analysis import AnalysisStage
 from gqteashmd.stages.base import StageContext
 from gqteashmd.testing import canned_lvc
@@ -344,8 +345,10 @@ JUMP_WARNING = (
     "(see energy.flagged); consider exclude_energy_jumps = true"
 )
 SMALL_WARNING = (
-    "only {n} trajectories are included (fewer than 20): populations, intervals and the fit "
-    "are not statistically reliable"
+    "only {n} trajectories are included (fewer than "
+    + str(analysis_module.SMALL_ENSEMBLE)
+    + "): populations, intervals and the fit are not statistically reliable (measured 95 % "
+    "tau interval " + analysis_module.SMALL_ENSEMBLE_COVERAGE + ")"
 )
 
 
@@ -362,12 +365,13 @@ def test_one_trajectory_is_a_small_ensemble_without_fit_uncertainties(tmp_path, 
     assert "- small_ensemble: True\n" in (ctx.stage_dir / "report.md").read_text()
 
 
-def test_twenty_trajectories_are_not_a_small_ensemble(tmp_path, write_input):
-    ctx = _context(tmp_path, write_input, _varied_trajectories(5) * 4)
+def test_n_min_trajectories_are_not_a_small_ensemble(tmp_path, write_input):
+    n = analysis_module.SMALL_ENSEMBLE
+    ctx = _context(tmp_path, write_input, _varied_trajectories(5) * (n // 5))
     run_stage(ctx)
     data = _analysis(ctx)
-    assert data["n_included"] == 20 and data["small_ensemble"] is False
-    assert not any("fewer than 20" in w for w in data["warnings"])
+    assert data["n_included"] == n and data["small_ensemble"] is False
+    assert not any("trajectories are included (fewer than" in w for w in data["warnings"])
     assert "- small_ensemble: False\n" in (ctx.stage_dir / "report.md").read_text()
 
 
@@ -460,7 +464,7 @@ def test_enabled_needs_a_dynamics_table(tmp_path, write_input):
 
 def test_stage_attributes():
     stage = AnalysisStage()
-    assert stage.name == "analysis" and stage.version == 1
+    assert stage.name == "analysis" and stage.version == 2
     assert stage.depends_on == ("selection", "dynamics")
     assert stage.config_sections == ("analysis",)
     assert stage.required_modules == ("h5py>=3.9", "scipy>=1.11")
@@ -532,3 +536,9 @@ def test_an_electronic_discontinuity_is_excluded_and_counted(tmp_path, write_inp
     summary = json.loads((stage_dir / "analysis.json").read_text())
     assert summary["outcomes"]["electronic_discontinuity"] == 1
     assert any(e["reason"] == "electronic_discontinuity" for e in summary["excluded"])
+
+
+def test_the_small_ensemble_threshold_is_the_measured_n_min():
+    # P9b Task 6 measurement, ~/p9b/tau_coverage.json: 0.895 / 0.9275 / 0.935 at N = 20 / 50 / 100
+    assert analysis_module.SMALL_ENSEMBLE == 50
+    assert "coverage" in analysis_module.SMALL_ENSEMBLE_COVERAGE
