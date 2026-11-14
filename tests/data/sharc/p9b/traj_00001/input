@@ -1,0 +1,28 @@
+printlevel 2
+geomfile "geom"
+veloc external
+velocfile "veloc"
+nstates 3
+charge 0
+state 2 mch
+coeff auto
+stepsize 0.5
+tmax 5.125
+nsubsteps 25
+method tsh
+surf sharc
+nospinorbit
+coupling overlap
+eeom ld
+nogradcorrect
+ekincorrect parallel_vel
+reflect_frustrated none
+decoherence_scheme edc
+decoherence_param 0.1
+hopping_procedure sharc
+grad_all
+rngseed 2
+output_format ascii
+nowrite_restart_files
+write_grad
+write_overlap

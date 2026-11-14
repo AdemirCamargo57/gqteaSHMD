@@ -1,0 +1,14 @@
++ S0 S1
+end
++ S1 S0 k10
+end
++ S1
+end
+
+../../ens/keep/pop_2.out
+S1 = 3 4
+end
+end
+
+
+
