@@ -374,38 +374,62 @@ def _scf(symbols, coords, settings):
     return backend, mol, mf
 
 
-def test_find_reference_is_the_lowest_sa_guess(ethylene_symbols, ethylene_bohr, make_settings):
+def _independent_sa(mol, mf, guesses, n_states):
+    """SA energies of the guesses that converge, solved here without the module."""
     from pyscf import fci, mcscf
 
+    out = {}
+    for guess in guesses:
+        mc = mcscf.CASSCF(mf, 2, 2)
+        mc.fcisolver = fci.solver(mol, singlet=True)
+        mc = mc.state_average_([1 / n_states] * n_states)
+        mc.kernel(mo_coeff=mcscf.sort_mo(mc, mf.mo_coeff, [i + 1 for i in guess]))
+        if mc.converged:
+            out[guess] = float(np.mean(mc.e_states))
+    return out
+
+
+def test_find_reference_takes_the_default_guess_when_it_counts(
+    ethylene_symbols, ethylene_bohr, make_settings
+):
     settings = make_settings(singlets=3)  # SA3-CAS(2,2)/6-31G*, the P9a acceptance setup
     backend, mol, mf = _scf(ethylene_symbols, ethylene_bohr, settings)
     reference, problems = pyscf_casscf.find_reference(mol, mf, settings, backend.states)
-    assert reference is not None and reference.n_guesses == 4
-    independent = {}
-    for guess in pyscf_casscf.guess_active_sets(mol.nelectron // 2, mf.mo_coeff.shape[1], 2, 2):
-        mc = mcscf.CASSCF(mf, 2, 2)
-        mc.fcisolver = fci.solver(mol, singlet=True)
-        mc = mc.state_average_([1 / 3] * 3)
-        mc.kernel(mo_coeff=mcscf.sort_mo(mc, mf.mo_coeff, [i + 1 for i in guess]))
-        if mc.converged:  # not asserted: the conftest geometry is not the optimized one
-            independent[guess] = float(np.mean(mc.e_states))
-    assert reference.n_counted == len(independent) == 4 - len(problems)
-    best = min(independent, key=independent.get)
-    assert reference.guess == best
-    assert abs(reference.sa_energy - independent[best]) < 1e-8
+    assert reference is not None and problems == []
+    default = pyscf_casscf.guess_active_sets(mol.nelectron // 2, mf.mo_coeff.shape[1], 2, 2)[0]
+    independent = _independent_sa(mol, mf, [default], 3)
+    assert reference.guess == default == (7, 8)
+    assert abs(reference.sa_energy - independent[default]) < 1e-8
     assert reference.meta() == {
-        "guess": list(best),
+        "guess": [7, 8],
         "sa_energy_Eh": reference.sa_energy,
         "n_guesses": 4,
-        "n_counted": len(independent),
+        "n_solved": 1,
+        "n_counted": 1,
     }
 
 
-def test_find_reference_skips_unconverged_guesses(
+def test_the_default_guess_wins_over_a_lower_sa_guess(
+    ethylene_symbols, ethylene_bohr, make_settings
+):
+    # SA2-CAS(2,2)/STO-3G: guess [6, 8] has the lower SA energy (-76.861346 vs -76.855342 Eh)
+    # but an S0 1.27 eV higher; under the lowest-SA rule the FD frequencies split between
+    # solutions (full suite 2026-11-13). The default must be the reference.
+    settings = make_settings(basis="sto-3g")
+    backend, mol, mf = _scf(ethylene_symbols, ethylene_bohr, settings)
+    independent = _independent_sa(mol, mf, [(7, 8), (6, 8)], 2)
+    assert independent[(6, 8)] < independent[(7, 8)]  # the premise of this test
+    reference, _ = pyscf_casscf.find_reference(mol, mf, settings, backend.states)
+    assert reference is not None and reference.guess == (7, 8) and reference.n_solved == 1
+
+
+def test_find_reference_without_the_default_takes_the_lowest_sa_other_guess(
     ethylene_symbols, ethylene_bohr, make_settings, monkeypatch
 ):
     settings = make_settings(basis="sto-3g")
     backend, mol, mf = _scf(ethylene_symbols, ethylene_bohr, settings)
+    guesses = pyscf_casscf.guess_active_sets(mol.nelectron // 2, mf.mo_coeff.shape[1], 2, 2)
+    independent = _independent_sa(mol, mf, guesses[1:], 2)
     calls = []
 
     def reject_first(mc):
@@ -416,7 +440,11 @@ def test_find_reference_skips_unconverged_guesses(
     reference, problems = pyscf_casscf.find_reference(mol, mf, settings, backend.states)
     assert reference is not None
     assert problems[0] == "guess [7, 8]: not converged"  # the default guess is tried first
-    assert reference.n_counted == 4 - len(problems)
+    assert reference.n_solved == 4
+    assert reference.n_counted == 4 - len(problems) == len(independent)
+    best = min(independent, key=independent.get)
+    assert reference.guess == best
+    assert abs(reference.sa_energy - independent[best]) < 1e-8
 
 
 def test_find_reference_without_a_converged_guess(
@@ -438,7 +466,9 @@ def test_the_reference_rung_comes_after_previous_and_before_scf(
         "SCF orbitals",
         "SCF orbitals + spin penalty",
     ]
-    settings = make_settings(basis="sto-3g")
+    # 6-31G*: the default solution persists at the 0.02 bohr distortion (STO-3G loses it at
+    # 0.01 bohr whatever the start, see the warning test below)
+    settings = make_settings()
     backend, mol, mf = _scf(ethylene_symbols, ethylene_bohr, settings)
     reference, _ = pyscf_casscf.find_reference(mol, mf, settings, backend.states)
     assert reference is not None
@@ -473,13 +503,29 @@ def _ref_backend(symbols, coords, settings):
 
 
 def test_a_fresh_solve_starts_from_the_reference(ethylene_symbols, ethylene_bohr, make_settings):
-    backend = _ref_backend(ethylene_symbols, ethylene_bohr, make_settings(basis="sto-3g"))
+    backend = _ref_backend(ethylene_symbols, ethylene_bohr, make_settings())  # 6-31G*
     result = backend.compute(Request(_displaced(ethylene_bohr)))
     assert result.meta["casscf"] == "reference orbitals"
     ref = result.meta["casscf_reference"]
-    assert ref["n_guesses"] == 4 and ref["n_counted"] >= 1
-    assert ref["guess"] in ([7, 8], [6, 8], [6, 9], [7, 9])
+    assert ref["n_guesses"] == 4 and ref["n_solved"] == 1 and ref["n_counted"] == 1
+    assert ref["guess"] == [7, 8]
     assert result.meta["reference_active_min_sv"] >= 0.9
+
+
+def test_a_lost_default_solution_is_warned(ethylene_symbols, ethylene_bohr, make_settings, caplog):
+    # SA2-CAS(2,2)/STO-3G loses the default solution at a 0.02 bohr distortion: the SCF start
+    # lands on the same other solution (S0 about -77.0699 Eh, measured 2026-11-14), so the
+    # rule accepts it and warns (owner decision 7)
+    backend = _ref_backend(ethylene_symbols, ethylene_bohr, make_settings(basis="sto-3g"))
+    with caplog.at_level(logging.WARNING, logger="gqteashmd.electronic.pyscf_backend"):
+        result = backend.compute(Request(_displaced(ethylene_bohr)))
+    assert result.meta["casscf"] == "reference orbitals"
+    assert result.meta["casscf_reference"]["guess"] == [7, 8]
+    assert result.meta["reference_active_min_sv"] < pyscf_casscf.REFERENCE_OVERLAP_WARNING
+    assert "different active-orbital character" in caplog.text
+    plain = _backend(ethylene_symbols, make_settings(basis="sto-3g"))
+    other = plain.compute(Request(_displaced(ethylene_bohr)))
+    assert abs(other.energies[S0] - result.energies[S0]) < 1e-6
 
 
 def test_without_a_reference_geometry_the_ladder_is_unchanged(

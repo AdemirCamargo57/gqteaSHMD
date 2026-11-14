@@ -80,20 +80,22 @@ LADDER: tuple[Rung, ...] = (
 
 @dataclass(frozen=True, eq=False)
 class Reference:
-    """The reference solution: the lowest-SA guess at the reference geometry."""
+    """The reference solution at the reference geometry (see find_reference)."""
 
     mo_coeff: np.ndarray
     mol: Any
     guess: tuple[int, ...]
     sa_energy: float
-    n_guesses: int
-    n_counted: int
+    n_guesses: int  # size of the guess set
+    n_solved: int  # guesses actually solved (1 when the default counts)
+    n_counted: int  # solved guesses that converged with all-singlet roots
 
     def meta(self) -> dict[str, Any]:
         return {
             "guess": list(self.guess),
             "sa_energy_Eh": self.sa_energy,
             "n_guesses": self.n_guesses,
+            "n_solved": self.n_solved,
             "n_counted": self.n_counted,
         }
 
@@ -168,10 +170,16 @@ def active_min_singular_value(
 def find_reference(
     mol: Any, mf: Any, settings: ElectronicSection, states: tuple[StateLabel, ...]
 ) -> tuple[Reference | None, list[str]]:
-    """Solve every guess of guess_active_sets fresh; the lowest SA energy is the reference.
+    """The reference: PySCF's default active space if it counts, else the lowest-SA other guess.
 
-    A guess counts if it converges and every root is a singlet. Returns (None, problems)
-    when none counts. An exception (not a non-convergence) propagates, wrapped.
+    The guesses of guess_active_sets are solved fresh, the default first. A guess counts if it
+    converges and every root is a singlet. When the default counts it is the reference and no
+    other guess is solved (owner decision 2026-11-14: a lower-SA non-default solution can have
+    a different character, e.g. ethylene SA2-CAS(2,2)/STO-3G guess [6, 8], S0 1.27 eV higher,
+    whose projected starts split between solutions at displaced geometries). Otherwise the
+    other guesses are solved and the lowest SA energy among those that count wins (pick_lowest).
+    Returns (None, problems) when none counts. An exception (not a non-convergence) propagates,
+    wrapped.
     """
     from pyscf import mcscf
 
@@ -184,7 +192,11 @@ def find_reference(
     plain = Rung("reference guess", "scf", 0.0, 1)
     problems: list[str] = []
     counted: list[tuple[tuple[int, ...], float, np.ndarray]] = []
+    n_solved = 0
     for guess in guesses:
+        if n_solved == 1 and counted:  # the default (first) guess counts: it is the reference
+            break
+        n_solved += 1
         mc = _solver(mol, mf, settings, len(states), plain)
         try:
             mo0 = mcscf.sort_mo(mc, mf.mo_coeff, [i + 1 for i in guess])  # 1-based
@@ -203,7 +215,7 @@ def find_reference(
         return None, problems
     best = pick_lowest([sa for _, sa, _ in counted])
     guess, sa, mo = counted[best]
-    return Reference(mo, mol, guess, sa, len(guesses), len(counted)), problems
+    return Reference(mo, mol, guess, sa, len(guesses), n_solved, len(counted)), problems
 
 
 def run_casscf(
