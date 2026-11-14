@@ -1,3 +1,4 @@
+import json
 import os
 from pathlib import Path
 
@@ -373,15 +374,8 @@ dt_fs = 0.5
 """
 
 
-@pytest.mark.sharc
-@pytest.mark.pyscf
-@pytest.mark.slow
-@pytest.mark.skipif(
-    not (os.environ.get("SHARC_HOME") and os.environ.get("SHARC_PYTHON")),
-    reason="needs SHARC_HOME and SHARC_PYTHON",
-)
-def test_one_short_swap_trajectory(tmp_path):
-    """Two steps of sharc.x driving our backend over a tiny ethylene project's start."""
+def _ethylene_project(tmp_path, n_traj=1):
+    """A tiny ethylene SA2-CAS(2,2)/6-31G* project (no upstream run needed)."""
     import h5py
 
     from gqteashmd.config.loader import load_config, write_snapshot
@@ -419,7 +413,20 @@ def test_one_short_swap_trajectory(tmp_path):
             ("velocities", initial.v_au.reshape(1, natom, 3), "bohr/au_time"),
         ):
             f.create_dataset(name, data=data).attrs["units"] = units
-    write_canned_trajectories(project / "05_selection", [(1, "S1")], 3)
+    write_canned_trajectories(project / "05_selection", [(1, "S1")] * n_traj, 3)
+    return project
+
+
+@pytest.mark.sharc
+@pytest.mark.pyscf
+@pytest.mark.slow
+@pytest.mark.skipif(
+    not (os.environ.get("SHARC_HOME") and os.environ.get("SHARC_PYTHON")),
+    reason="needs SHARC_HOME and SHARC_PYTHON",
+)
+def test_one_short_swap_trajectory(tmp_path):
+    """Two steps of sharc.x driving our backend over a tiny ethylene project's start."""
+    project = _ethylene_project(tmp_path)
     summary = ens.run_ensemble(
         project,
         ens.Variant("base"),
@@ -433,3 +440,76 @@ def test_one_short_swap_trajectory(tmp_path):
     row = summary["trajectories"][0]
     assert row["error"] is None, row
     assert row["ended"] == "finished" and row["n_steps"] == 2
+
+
+def test_a_failing_swap_job_becomes_an_error_row(tmp_path):
+    job = {"dt_fs": 0.5, "tmax": 1.0}
+    row = ens._swap_job(
+        {
+            "project_dir": str(tmp_path / "missing"),
+            "variant": "base",
+            "variant_electronic": {},
+            "variant_dynamics": {},
+            "base": str(tmp_path),
+            "task_id": "traj_00003",
+            "job": job,
+        }
+    )
+    assert row["task"] == "traj_00003" and row["error"] and row["ended"] != "finished"
+
+
+def test_a_failed_future_becomes_an_error_row():
+    from concurrent.futures import Future
+    from concurrent.futures.process import BrokenProcessPool
+    from types import SimpleNamespace
+
+    good, bad = Future(), Future()
+    good.set_result({"task": "a", "error": None})
+    bad.set_exception(BrokenProcessPool("worker died"))
+    starts = [SimpleNamespace(task_id="a"), SimpleNamespace(task_id="b")]
+    rows = ens._collect([good, bad], starts, {"dt_fs": 0.5, "tmax": 1.0})
+    assert rows[0]["task"] == "a"
+    assert rows[1]["task"] == "b" and "BrokenProcessPool" in rows[1]["error"]
+    assert rows[1]["ended"] != "finished"
+
+
+@pytest.mark.pyscf
+def test_the_spawn_path_runs_end_to_end_without_sharc(tmp_path):
+    """The script as __main__ with workers=2 and the swap provider (real spawn): with no SHARC
+    every trajectory ends with a failed (non-zero) run, and the ensemble still ends with exit 0."""
+    import subprocess
+    import sys
+
+    project = _ethylene_project(tmp_path, n_traj=2)
+    variants = tmp_path / "variants.toml"
+    variants.write_text("[[variant]]\nname = 'base'\n")
+    script = Path(ens.__file__).resolve()
+    out = tmp_path / "out"
+    done = subprocess.run(
+        [
+            sys.executable,
+            str(script),
+            str(project),
+            str(variants),
+            "--variant",
+            "base",
+            "--provider",
+            "swap",
+            "--workers",
+            "2",
+            "--out",
+            str(out),
+            "--sharc-home",
+            str(tmp_path / "no_sharc"),
+            "--python",
+            "unused",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
+    assert done.returncode == 0, done.stderr
+    rows = json.loads((out / "base" / "sharc_summary.json").read_text())["trajectories"]
+    assert [r["task"] for r in rows] == ["traj_00000", "traj_00001"]
+    assert all(r["ended"] != "finished" and (r["error"] or r["returncode"]) for r in rows)
+    assert all("sharcvars" in (r["stderr_tail"] or "") for r in rows)  # sharc.x was attempted

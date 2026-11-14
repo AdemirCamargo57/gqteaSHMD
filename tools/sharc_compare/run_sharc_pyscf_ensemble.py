@@ -309,9 +309,30 @@ def _one_trajectory(start, inputs, electronic, settings, *, base: Path, job: dic
     return s
 
 
+def _error_row(task_id: str, exc: BaseException, job: dict[str, Any]) -> dict[str, Any]:
+    """The summary row of a trajectory whose job failed outside sharc.x (never finished)."""
+    out = {
+        "returncode": None,
+        "stderr_tail": None,
+        "error": f"{type(exc).__name__}: {exc}",
+        "data": None,
+    }
+    s = trajectory_summary(task_id, out, dt_fs=job["dt_fs"], tmax_fs=job["tmax"])
+    s["reused"] = False
+    return s
+
+
 def _swap_job(payload: dict[str, Any]) -> dict[str, Any]:
     """Process-pool entry of the swap provider: reloads the project and the variant (picklable
-    payload only), then runs the same per-trajectory function as every other path."""
+    payload only), then runs the same per-trajectory function as every other path. Any error
+    becomes that trajectory's error row; it never aborts the ensemble."""
+    try:
+        return _swap_job_body(payload)
+    except Exception as exc:  # noqa: BLE001 - recorded in the row
+        return _error_row(payload["task_id"], exc, payload["job"])
+
+
+def _swap_job_body(payload: dict[str, Any]) -> dict[str, Any]:
     inputs = load_project_inputs(Path(payload["project_dir"]))
     variant = Variant(
         payload["variant"], payload["variant_electronic"], payload["variant_dynamics"]
@@ -322,6 +343,18 @@ def _swap_job(payload: dict[str, Any]) -> dict[str, Any]:
     return _one_trajectory(
         start, inputs, electronic, settings, base=Path(payload["base"]), job=payload["job"]
     )
+
+
+def _collect(futures, starts, job_info: dict[str, Any]) -> list[dict[str, Any]]:
+    """Results in start order; a failed future (e.g. BrokenProcessPool after a worker was
+    killed) becomes that trajectory's error row, so one loss never discards the others."""
+    rows = []
+    for future, start in zip(futures, starts, strict=True):
+        try:
+            rows.append(future.result())
+        except Exception as exc:  # noqa: BLE001
+            rows.append(_error_row(start.task_id, exc, job_info))
+    return rows
 
 
 def run_ensemble(
@@ -383,10 +416,12 @@ def run_ensemble(
         with ProcessPoolExecutor(
             max_workers=workers, mp_context=multiprocessing.get_context("spawn")
         ) as pool:
-            trajectories = list(pool.map(_swap_job, payloads))
+            futures = [pool.submit(_swap_job, pl) for pl in payloads]
+            trajectories = _collect(futures, starts, job_info)
     else:
         with ThreadPoolExecutor(max_workers=workers) as pool:
-            trajectories = list(pool.map(job, starts))
+            futures = [pool.submit(job, start) for start in starts]
+            trajectories = _collect(futures, starts, job_info)
     ended: dict[str, int] = {}
     for s in trajectories:
         ended[s["ended"]] = ended.get(s["ended"], 0) + 1
