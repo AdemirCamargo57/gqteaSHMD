@@ -10,17 +10,25 @@ Example (WSL):
       tools/diagnosis/variants_p9a.toml --variant base --out ~/p9a/sharc \\
       --sharc-home /home/ajc/sharc4-4.1 \\
       --python /home/ajc/miniforge3/envs/sharc4.1/bin/python --workers 8
+
+Swap provider (P9b: sharc.x driving OUR PySCF backend, one process per trajectory):
+  python tools/sharc_compare/run_sharc_pyscf_ensemble.py ~/p9b/run \\
+      tools/diagnosis/variants_p9a.toml --variant base --out ~/p9b/swap \\
+      --sharc-home /home/ajc/sharc4-4.1 \\
+      --python /home/ajc/miniforge3/envs/sharc4.1/bin/python --workers 4 \\
+      --provider swap --threads 2 --memory-mb 800
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import multiprocessing
 import os
 import sys
 import time
 from collections.abc import Sequence
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
@@ -38,6 +46,7 @@ from project_inputs import load_project_inputs  # noqa: E402
 from run_sharc_lvc import parse_lvc_output_dat  # noqa: E402
 from run_sharc_pyscf_dynamics import (  # noqa: E402
     Convergence,
+    SwapModel,
     interface_geometry,
     pyscf_template,
     run_sharc_trajectory,
@@ -89,8 +98,12 @@ UNTRANSLATED_DEFAULTS: dict[str, Any] = {
 }
 
 
-def sharc_settings(electronic, dynamics) -> dict[str, Any]:
-    """Keyword arguments of ``run_sharc_trajectory`` for one variant (CASSCF only)."""
+PROVIDERS = {"sharc_pyscf": "sharc_pyscf", "swap": "ours"}  # our name -> run_sharc_trajectory's
+
+
+def sharc_settings(electronic, dynamics, *, provider: str = "sharc_pyscf") -> dict[str, Any]:
+    """Keyword arguments of ``run_sharc_trajectory`` for one variant (CASSCF only). ``swap``
+    runs sharc.x on our backend with the project's coupling (P9b spec 3.1, PR8)."""
     if electronic.method != "casscf" or electronic.casscf is None:
         raise ValueError(
             f"SHARC_PYSCF.py runs casscf only; the variant has method = {electronic.method!r}"
@@ -103,12 +116,17 @@ def sharc_settings(electronic, dynamics) -> dict[str, Any]:
             )
     if dynamics.hopping == "fssh":
         raise ValueError("[dynamics] hopping = 'fssh' is not translated to SHARC")
-    c = electronic.casscf
-    return {
+    common = {
         "n_states": electronic.singlets,
         "dt_fs": dynamics.dt_fs,
         "hopping": "off" if dynamics.hopping == "none" else "sharc",
         "decoherence": "edc" if dynamics.decoherence == "edc" else "none",
+    }
+    if provider == "swap":
+        return {**common, "coupling": dynamics.coupling, "phases_from_interface": True}
+    c = electronic.casscf
+    return {
+        **common,
         "coupling": "nacdr",
         "phases_from_interface": False,
         "template": pyscf_template(
@@ -119,6 +137,24 @@ def sharc_settings(electronic, dynamics) -> dict[str, Any]:
             basis=electronic.basis,
         ),
     }
+
+
+def swap_backend(inputs, electronic, directory: Path, *, threads: int, memory_mb: int):
+    """Our backend as the stage builds it, with the CASSCF start rule's reference geometry
+    (samples.h5 equilibrium coordinates, as `dynamics` passes it)."""
+    from gqteashmd.electronic.base import MoleculeSpec
+    from gqteashmd.electronic.pyscf_backend import PySCFBackend
+
+    directory.mkdir(parents=True, exist_ok=True)
+    return PySCFBackend(
+        MoleculeSpec(inputs.symbols, inputs.charge, inputs.multiplicity),
+        electronic,
+        log_file=directory / "electronic.log",
+        threads=threads,
+        memory_mb=memory_mb,
+        scratch_dir=directory / "scratch",
+        reference_coords_bohr=inputs.equilibrium_bohr,
+    )
 
 
 def trajectory_summary(
@@ -219,6 +255,75 @@ def _move_aside(workdir: Path) -> Path:
     return target
 
 
+def _one_trajectory(start, inputs, electronic, settings, *, base: Path, job: dict[str, Any]):
+    """Run (or reuse) one trajectory and return its summary row; shared by every execution path."""
+    provider = job["provider"]
+    workdir = base / start.task_id
+    if workdir.exists() and not (workdir / STATUS_FILE).is_file():
+        _move_aside(workdir)
+    reused = workdir.exists()
+    if reused:
+        out = _read_existing(workdir)
+    else:
+        t0 = time.perf_counter()
+        error = None
+        try:
+            extra: dict[str, Any] = {}
+            if provider == "swap":
+                backend = swap_backend(
+                    inputs,
+                    electronic,
+                    base / f"{start.task_id}.backend",
+                    threads=job["threads"],
+                    memory_mb=job["memory_mb"],
+                )
+                extra["model"] = SwapModel(backend, coupling=settings["coupling"])
+            out = run_sharc_trajectory(
+                interface_geometry(start.q.reshape(-1, 3)),
+                start.v.reshape(-1, 3),
+                n_steps=job["n_steps"],
+                workdir=workdir,
+                symbols=inputs.symbols,
+                masses_amu=inputs.masses_amu,
+                sharc_home=Path(job["sharc_home"]),
+                sharc_python=job["sharc_python"],
+                provider=PROVIDERS[provider],
+                seed=start.index + 1,
+                state_mch=StateLabel.parse(start.state).index,
+                check=False,
+                env_extra=dict(THREAD_VARIABLES),
+                **extra,
+                **settings,
+            )
+        except Exception as exc:  # noqa: BLE001 - recorded, never aborts the ensemble
+            error = f"{type(exc).__name__}: {exc}"
+            out = {"returncode": None, "stderr_tail": None, "data": None}
+        _write_status(workdir, out, error, time.perf_counter() - t0)
+        if error is not None:
+            # after a timeout or crash, the row comes from the partial output.dat exactly as
+            # a rerun builds it (P9a plan 1 final review, minor 2)
+            out = _read_existing(workdir)
+        out = {**out, "error": error}
+    s = trajectory_summary(start.task_id, out, dt_fs=job["dt_fs"], tmax_fs=job["tmax"])
+    s["reused"] = reused
+    return s
+
+
+def _swap_job(payload: dict[str, Any]) -> dict[str, Any]:
+    """Process-pool entry of the swap provider: reloads the project and the variant (picklable
+    payload only), then runs the same per-trajectory function as every other path."""
+    inputs = load_project_inputs(Path(payload["project_dir"]))
+    variant = Variant(
+        payload["variant"], payload["variant_electronic"], payload["variant_dynamics"]
+    )
+    electronic, dynamics = variant_sections(inputs.config, variant)
+    settings = sharc_settings(electronic, dynamics, provider="swap")
+    start = next(s for s in inputs.starts if s.task_id == payload["task_id"])
+    return _one_trajectory(
+        start, inputs, electronic, settings, base=Path(payload["base"]), job=payload["job"]
+    )
+
+
 def run_ensemble(
     project_dir: Path,
     variant: Variant,
@@ -229,60 +334,59 @@ def run_ensemble(
     workers: int,
     tmax_fs: float | None = None,
     only: Sequence[str] | None = None,
+    provider: str = "sharc_pyscf",
+    threads: int = 2,
+    memory_mb: int = 800,
 ) -> dict[str, Any]:
     """Run SHARC from every (or the ``only``) selected start of the project."""
+    if provider not in PROVIDERS:
+        raise ValueError(f"unknown provider {provider!r}; choose from {sorted(PROVIDERS)}")
     inputs = load_project_inputs(project_dir)
     electronic, dynamics = variant_sections(inputs.config, variant)
     tmax = dynamics.tmax_fs if tmax_fs is None else tmax_fs
-    n_steps = round(tmax / dynamics.dt_fs)
-    settings = sharc_settings(electronic, dynamics)
+    settings = sharc_settings(electronic, dynamics, provider=provider)
     base = Path(out_dir) / variant.name
     wanted = None if only is None else set(only)
     starts = [s for s in inputs.starts if wanted is None or s.task_id in wanted]
+    job_info: dict[str, Any] = {
+        "provider": provider,
+        "n_steps": round(tmax / dynamics.dt_fs),
+        "dt_fs": dynamics.dt_fs,
+        "tmax": tmax,
+        "sharc_home": str(sharc_home),
+        "sharc_python": sharc_python,
+        "threads": threads,
+        "memory_mb": memory_mb,
+    }
 
     def job(start) -> dict[str, Any]:
-        workdir = base / start.task_id
-        if workdir.exists() and not (workdir / STATUS_FILE).is_file():
-            _move_aside(workdir)
-        reused = workdir.exists()
-        if reused:
-            out = _read_existing(workdir)
-        else:
-            t0 = time.perf_counter()
-            error = None
-            try:
-                out = run_sharc_trajectory(
-                    interface_geometry(start.q.reshape(-1, 3)),
-                    start.v.reshape(-1, 3),
-                    n_steps=n_steps,
-                    workdir=workdir,
-                    symbols=inputs.symbols,
-                    masses_amu=inputs.masses_amu,
-                    sharc_home=Path(sharc_home),
-                    sharc_python=sharc_python,
-                    provider="sharc_pyscf",
-                    seed=start.index + 1,
-                    state_mch=StateLabel.parse(start.state).index,
-                    check=False,
-                    env_extra=dict(THREAD_VARIABLES),
-                    **settings,
-                )
-            except Exception as exc:  # noqa: BLE001 - recorded, never aborts the ensemble
-                error = f"{type(exc).__name__}: {exc}"
-                out = {"returncode": None, "stderr_tail": None, "data": None}
-            _write_status(workdir, out, error, time.perf_counter() - t0)
-            if error is not None:
-                # after a timeout or crash, the row comes from the partial output.dat exactly as
-                # a rerun builds it (P9a plan 1 final review, minor 2)
-                out = _read_existing(workdir)
-            out = {**out, "error": error}
-        s = trajectory_summary(start.task_id, out, dt_fs=dynamics.dt_fs, tmax_fs=tmax)
-        s["reused"] = reused
-        return s
+        return _one_trajectory(start, inputs, electronic, settings, base=base, job=job_info)
 
     started = time.perf_counter()
-    with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
-        trajectories = list(pool.map(job, starts))
+    if workers <= 1:
+        trajectories = [job(start) for start in starts]
+    elif provider == "swap":
+        # PySCF's thread count is process-global and our backend is Python-heavy: one process
+        # per trajectory (plan ruling PR8); spawn, so no state is inherited.
+        payloads = [
+            {
+                "project_dir": str(inputs.project_dir),
+                "variant": variant.name,
+                "variant_electronic": dict(variant.electronic),
+                "variant_dynamics": dict(variant.dynamics),
+                "base": str(base),
+                "task_id": start.task_id,
+                "job": job_info,
+            }
+            for start in starts
+        ]
+        with ProcessPoolExecutor(
+            max_workers=workers, mp_context=multiprocessing.get_context("spawn")
+        ) as pool:
+            trajectories = list(pool.map(_swap_job, payloads))
+    else:
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            trajectories = list(pool.map(job, starts))
     ended: dict[str, int] = {}
     for s in trajectories:
         ended[s["ended"]] = ended.get(s["ended"], 0) + 1
@@ -316,6 +420,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     p.add_argument("--workers", type=int, default=8)
     p.add_argument("--tmax-fs", type=float, default=None)
     p.add_argument("--task", action="append", default=None)
+    p.add_argument("--provider", choices=sorted(PROVIDERS), default="sharc_pyscf")
+    p.add_argument("--threads", type=int, default=2)
+    p.add_argument("--memory-mb", type=int, default=800)
     args = p.parse_args(argv)
     variants = {v.name: v for v in read_variants(args.variants)}
     if args.variant not in variants:
@@ -329,6 +436,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         workers=args.workers,
         tmax_fs=args.tmax_fs,
         only=args.task,
+        provider=args.provider,
+        threads=args.threads,
+        memory_mb=args.memory_mb,
     )
     print(json.dumps({k: v for k, v in jsonable(summary).items() if k != "trajectories"}))
     return 0

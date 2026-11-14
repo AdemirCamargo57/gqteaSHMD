@@ -41,6 +41,7 @@ class ProjectInputs:
     multiplicity: int
     masses_amu: np.ndarray
     starts: tuple[TrajectoryStart, ...]
+    equilibrium_bohr: np.ndarray | None = None
 
 
 def load_project_inputs(project_dir: Path) -> ProjectInputs:
@@ -77,4 +78,5 @@ def load_project_inputs(project_dir: Path) -> ProjectInputs:
         int(molecule.multiplicity),
         np.asarray(samples["masses_amu"], dtype=float),
         tuple(starts),
+        np.asarray(samples["equilibrium_bohr"], dtype=float).reshape(-1, 3),
     )

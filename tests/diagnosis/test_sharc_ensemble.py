@@ -288,3 +288,148 @@ def test_a_timed_out_run_builds_its_row_from_the_partial_output_dat(tmp_path, mo
     assert {k: v for k, v in again.items() if k != "reused"} == {
         k: v for k, v in first.items() if k != "reused"
     }
+
+
+# --- the swap provider (P9b Task 4) ------------------------------------------------------------
+
+
+def test_swap_settings_use_the_project_coupling_and_interface_phases():
+    electronic, dynamics = _sections()
+    s = ens.sharc_settings(electronic, dynamics, provider="swap")
+    assert s["coupling"] == dynamics.coupling and s["phases_from_interface"] is True
+    assert "template" not in s
+
+
+def test_direct_settings_stay_nacdr():
+    electronic, dynamics = _sections()
+    assert ens.sharc_settings(electronic, dynamics)["coupling"] == "nacdr"
+
+
+def test_a_swap_job_passes_our_model_and_provider(tmp_path, monkeypatch):
+    calls = _fake_world(
+        monkeypatch, lambda t, k: {"returncode": 0, "data": None, "stderr_tail": ""}
+    )
+    made = []
+    monkeypatch.setattr(ens, "swap_backend", lambda *a, **k: made.append(a[2]) or "backend")
+    monkeypatch.setattr(ens, "SwapModel", lambda backend, coupling: ("model", backend, coupling))
+    ens.run_ensemble(
+        Path("proj"),
+        ens.Variant("base"),
+        tmp_path,
+        sharc_home=Path("/x"),
+        sharc_python="py",
+        workers=1,
+        provider="swap",
+    )
+    for _task, kwargs, _ in calls:
+        assert kwargs["provider"] == "ours"
+        assert kwargs["model"][0] == "model" and kwargs["model"][2] == kwargs["coupling"]
+    assert [d.name for d in made] == ["traj_00000.backend", "traj_00001.backend"]
+
+
+def test_an_unknown_provider_is_refused(tmp_path):
+    with pytest.raises(ValueError, match="provider"):
+        ens.run_ensemble(
+            Path("proj"),
+            ens.Variant("base"),
+            tmp_path,
+            sharc_home=Path("/x"),
+            sharc_python="py",
+            workers=1,
+            provider="nope",
+        )
+
+
+LIVE_INPUT = """
+[project]
+name = "swap"
+directory = "run"
+seed = 3
+
+[molecule]
+geometry = "ethylene.xyz"
+charge = 0
+multiplicity = 1
+
+[resources]
+total_cores = 2
+total_memory_mb = 4000
+max_parallel_tasks = 1
+threads_per_task = 2
+memory_mb_per_task = 2000
+
+[electronic]
+method = "casscf"
+basis = "6-31g*"
+singlets = 2
+
+[electronic.casscf]
+ncas = 2
+nelecas = 2
+
+[dynamics]
+tmax_fs = 1.0
+dt_fs = 0.5
+"""
+
+
+@pytest.mark.sharc
+@pytest.mark.pyscf
+@pytest.mark.slow
+@pytest.mark.skipif(
+    not (os.environ.get("SHARC_HOME") and os.environ.get("SHARC_PYTHON")),
+    reason="needs SHARC_HOME and SHARC_PYTHON",
+)
+def test_one_short_swap_trajectory(tmp_path):
+    """Two steps of sharc.x driving our backend over a tiny ethylene project's start."""
+    import h5py
+
+    from gqteashmd.config.loader import load_config, write_snapshot
+    from gqteashmd.core.units import BOHR_IN_ANGSTROM
+    from gqteashmd.testing.canned_lvc import write_canned_trajectories
+    from gqteashmd.util.fileio import write_json_atomic
+
+    initial = dyn.ethylene_initial_conditions()
+    natom = len(initial.symbols)
+    (tmp_path / "ethylene.xyz").write_text(dyn.ETHYLENE_XYZ.read_text())
+    (tmp_path / "input.toml").write_text(LIVE_INPUT)
+    project = tmp_path / "run"
+    for d in ("00_prepare", "03_sampling", "05_selection", ".gqteashmd"):
+        (project / d).mkdir(parents=True)
+    write_snapshot(load_config(tmp_path / "input.toml"), project / ".gqteashmd" / "config.json")
+    write_json_atomic(
+        project / "00_prepare" / "molecule.json",
+        {
+            "schema_version": 1,
+            "symbols": list(initial.symbols),
+            "charge": 0,
+            "multiplicity": 1,
+            "coords_angstrom": (initial.q_bohr * BOHR_IN_ANGSTROM).tolist(),
+        },
+    )
+    with h5py.File(project / "03_sampling" / "samples.h5", "w") as f:
+        f.attrs["n_samples"] = 1
+        f.attrs["temperature_K"] = 0.0
+        f.create_dataset("symbols", data=np.array(list(initial.symbols), dtype=h5py.string_dtype()))
+        f["symbols"].attrs["units"] = "-"
+        for name, data, units in (
+            ("masses", initial.masses_amu, "amu"),
+            ("equilibrium_coordinates", initial.q_bohr.reshape(natom, 3), "bohr"),
+            ("positions", initial.q_bohr.reshape(1, natom, 3), "bohr"),
+            ("velocities", initial.v_au.reshape(1, natom, 3), "bohr/au_time"),
+        ):
+            f.create_dataset(name, data=data).attrs["units"] = units
+    write_canned_trajectories(project / "05_selection", [(1, "S1")], 3)
+    summary = ens.run_ensemble(
+        project,
+        ens.Variant("base"),
+        tmp_path / "out",
+        sharc_home=Path(os.environ["SHARC_HOME"]),
+        sharc_python=os.environ["SHARC_PYTHON"],
+        workers=1,
+        provider="swap",
+        tmax_fs=1.0,
+    )
+    row = summary["trajectories"][0]
+    assert row["error"] is None, row
+    assert row["ended"] == "finished" and row["n_steps"] == 2
