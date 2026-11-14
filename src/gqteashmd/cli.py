@@ -28,7 +28,12 @@ from gqteashmd.dynamics.ensemble import (
 from gqteashmd.electronic.base import MoleculeSpec, Request
 from gqteashmd.electronic.factory import make_backend
 from gqteashmd.errors import ConfigError, ProjectError, ShmdError
-from gqteashmd.logging_setup import FILE_ONLY, close_logging, configure_logging
+from gqteashmd.logging_setup import (
+    FILE_ONLY,
+    close_logging,
+    configure_logging,
+    configure_task_logging,
+)
 from gqteashmd.orchestrator import Orchestrator
 from gqteashmd.project.layout import ProjectLayout
 from gqteashmd.project.lock import locked_by
@@ -280,6 +285,7 @@ def _check_log_output(path: Path) -> None:
 
 
 def _cmd_single_point(args: argparse.Namespace) -> int:
+    configure_task_logging()
     cfg = load_config(args.input).config
     if args.json is not None:
         _check_json_output(args.json)
@@ -298,14 +304,15 @@ def _cmd_single_point(args: argparse.Namespace) -> int:
         raise ConfigError(f"Invalid geometry file {path}: {exc}") from exc
     # The backend validates charge/multiplicity against the elements in its constructor.
     molecule = MoleculeSpec(geometry.symbols, cfg.molecule.charge, cfg.molecule.multiplicity)
+    coords = np.array(geometry.coords_angstrom, dtype=float) * ANGSTROM_TO_BOHR
     backend = make_backend(
         cfg,
         molecule,
         log_file=args.log,
         threads=cfg.resources.threads_per_task,
         memory_mb=cfg.resources.memory_mb_per_task,
+        reference_coords_bohr=coords,
     )
-    coords = np.array(geometry.coords_angstrom, dtype=float) * ANGSTROM_TO_BOHR
     result = backend.compute(Request(coords, transition_dipoles=True))
     data = result.to_json()
     settings = cfg.electronic

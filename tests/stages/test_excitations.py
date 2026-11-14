@@ -110,10 +110,11 @@ def _context(tmp_path, write_input, extra="", singlets=3, n_samples=5, electroni
 def fake(monkeypatch):
     holder = {"backends": [], "fail_on": (), "retryable_on": (), "bad": {}}
 
-    def factory(ctx, stage_name, molecule, task_dir, *, settings=None):
+    def factory(ctx, stage_name, molecule, task_dir, *, reference_coords_bohr, settings=None):
         backend = FakeBackend(settings, holder["fail_on"], holder["retryable_on"], holder["bad"])
         holder["backends"].append(backend)
         holder["settings"] = settings
+        holder["reference"] = np.asarray(reference_coords_bohr)
         return backend
 
     monkeypatch.setattr(excitations_module, "stage_backend", factory)
@@ -134,6 +135,12 @@ def _run(ctx, stage=None, skip=()):
 
 def _samples(ctx):
     return read_samples_h5(ctx.upstream_dir("sampling") / "samples.h5")
+
+
+def test_backend_reference_is_the_sampling_equilibrium(tmp_path, write_input, fake):
+    ctx = _context(tmp_path, write_input)
+    _run(ctx)
+    np.testing.assert_array_equal(fake["reference"], _samples(ctx)["equilibrium_bohr"])
 
 
 def test_stage_attributes():

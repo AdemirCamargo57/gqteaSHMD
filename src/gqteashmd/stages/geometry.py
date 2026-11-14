@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import numpy as np
+from numpy.typing import ArrayLike
 
 from gqteashmd.config.schema import ElectronicSection
 from gqteashmd.core.units import ANGSTROM_TO_BOHR
@@ -36,10 +37,13 @@ def stage_backend(
     molecule: MoleculeSpec,
     task_dir: Path,
     *,
+    reference_coords_bohr: ArrayLike,
     settings: ElectronicSection | None = None,
-    casscf_extra_rungs: tuple[str, ...] = (),
 ) -> ElectronicBackend:
-    """One backend for a stage task, using the stage's effective resources."""
+    """One backend for a stage task, using the stage's effective resources.
+
+    `reference_coords_bohr` is the stage's reference geometry for the CASSCF start rule
+    (ignored by the other methods)."""
     electronic = ctx.config.electronic
     assert electronic is not None  # guaranteed by check_stage_inputs
     res = ctx.config.resources.for_stage(stage_name)
@@ -51,5 +55,5 @@ def stage_backend(
         threads=res.threads_per_task,
         memory_mb=res.memory_mb_per_task,
         scratch_dir=task_dir / "scratch",
-        casscf_extra_rungs=casscf_extra_rungs,
+        reference_coords_bohr=reference_coords_bohr,
     )

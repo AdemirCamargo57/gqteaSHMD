@@ -1,5 +1,6 @@
 import json
 
+import numpy as np
 import pytest
 
 from gqteashmd.config.loader import load_config
@@ -109,3 +110,27 @@ def test_single_atom_needs_no_optimizer(tmp_path, write_input, monkeypatch):
     assert result["converged"] is True and result["n_gradients"] == 1
     data = json.loads((task_dir / "optimize.json").read_text())
     assert data["symbols"] == ["He"] and data["coords_bohr"] == [[0.0, 0.0, 0.0]]
+
+
+class _Stop(Exception):
+    pass
+
+
+def test_optimize_passes_the_prepared_geometry_as_reference(tmp_path, write_input, monkeypatch):
+    from gqteashmd.stages import optimize as optimize_module
+    from gqteashmd.stages.geometry import prepared_molecule
+
+    cfg, octx = _contexts(tmp_path, write_input)
+    seen = {}
+
+    def spy(ctx, stage_name, molecule, task_dir, *, reference_coords_bohr, settings=None):
+        seen["reference"] = np.asarray(reference_coords_bohr)
+        raise _Stop
+
+    monkeypatch.setattr(optimize_module, "stage_backend", spy)
+    task_dir = octx.layout.task_dir(octx.stage_dir, "optimize")
+    task_dir.mkdir(parents=True)
+    with pytest.raises(_Stop):
+        OptimizeStage().run_task(octx, TaskSpec("optimize"), task_dir)
+    _, prepared = prepared_molecule(octx.upstream_dir("prepare"))
+    np.testing.assert_array_equal(seen["reference"], prepared)

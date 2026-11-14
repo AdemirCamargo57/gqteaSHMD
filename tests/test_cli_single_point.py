@@ -37,6 +37,15 @@ def test_single_point_prints_a_table_and_writes_json(tmp_path, capsys):
     assert not (tmp_path / "run").exists()  # a single point does not create a project
 
 
+def test_single_point_uses_its_own_geometry_as_the_reference(tmp_path):
+    out = tmp_path / "sp.json"
+    path = _input(tmp_path, extra=CAS.replace("6-31g", "sto-3g"))
+    assert main(["single-point", str(path), "--json", str(out)]) == 0
+    meta = json.loads(out.read_text())["meta"]
+    assert meta["casscf"] == "reference orbitals"
+    assert meta["casscf_reference"]["n_guesses"] == 4
+
+
 def test_missing_electronic_section_is_exit_2(tmp_path, capsys):
     assert main(["single-point", str(_input(tmp_path, extra=""))]) == 2
     assert "[electronic]" in capsys.readouterr().err

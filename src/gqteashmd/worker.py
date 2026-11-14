@@ -10,6 +10,7 @@ from typing import Any
 
 from gqteashmd.config.loader import load_snapshot
 from gqteashmd.errors import ProjectError, ShmdError, TaskError
+from gqteashmd.logging_setup import configure_task_logging
 from gqteashmd.project.layout import ProjectLayout
 from gqteashmd.stages.base import StageContext, TaskSpec
 from gqteashmd.stages.pipeline import import_pipeline
@@ -133,6 +134,7 @@ def main(argv: list[str] | None = None) -> int:
     if len(args) != 1:
         print("usage: python -m gqteashmd.worker TASK_FILE", file=sys.stderr)
         return 2
+    configure_task_logging()
     return run_task_file(Path(args[0]))
 
 

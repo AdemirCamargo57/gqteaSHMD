@@ -5,6 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from numpy.typing import ArrayLike
+
 from gqteashmd.config.schema import ElectronicSection, ShmdConfig
 from gqteashmd.electronic.base import ElectronicBackend, MoleculeSpec
 from gqteashmd.errors import ConfigError
@@ -18,12 +20,25 @@ def ground_state_settings(settings: ElectronicSection) -> ElectronicSection:
     return settings.model_copy(update={"singlets": 1})
 
 
+# The CASSCF start rule (fresh solves start from a reference solution). It is part of every
+# CASSCF stage fingerprint: changing the rule makes existing CASSCF projects stale.
+CASSCF_START_RULE = "reference-1"
+
+
+def electronic_fingerprint(settings: ElectronicSection) -> dict[str, Any]:
+    """The whole [electronic] section as JSON data, plus the start-rule marker for CASSCF."""
+    dumped = settings.model_dump(mode="json")
+    if settings.method == "casscf":
+        dumped["start_rule"] = CASSCF_START_RULE
+    return dumped
+
+
 def ground_state_fingerprint(settings: ElectronicSection) -> dict[str, Any]:
     """The settings that determine the S0 surface, as JSON-compatible data (for fingerprints).
 
     Response-only keys (`td_conv_tol`, `overlap_norm_kept`, and `singlets` for the non-CASSCF
-    methods) do not change S0 and are left out."""
-    dumped = ground_state_settings(settings).model_dump(mode="json")
+    methods) do not change S0 and are left out; CASSCF carries the start-rule marker."""
+    dumped = electronic_fingerprint(ground_state_settings(settings))
     for key in ("td_conv_tol", "overlap_norm_kept"):
         dumped.pop(key, None)
     if settings.method != "casscf":
@@ -40,7 +55,7 @@ def make_backend(
     threads: int | None = None,
     memory_mb: int | None = None,
     scratch_dir: Path | None = None,
-    casscf_extra_rungs: tuple[str, ...] = (),
+    reference_coords_bohr: ArrayLike | None = None,
 ) -> ElectronicBackend:
     chosen = settings if settings is not None else config.electronic
     if chosen is None:
@@ -57,5 +72,5 @@ def make_backend(
         threads=threads,
         memory_mb=memory_mb,
         scratch_dir=scratch_dir,
-        casscf_extra_rungs=casscf_extra_rungs,
+        reference_coords_bohr=reference_coords_bohr,
     )

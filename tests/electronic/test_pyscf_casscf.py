@@ -1,4 +1,5 @@
 import json
+import logging
 
 import numpy as np
 import pytest
@@ -353,76 +354,304 @@ def test_casscf_previous_orbitals_rung_falls_through_to_scf_orbitals(
     assert abs(second.energies[S1] - first.energies[S1]) < 1e-6
 
 
-def test_extra_rungs_run_after_the_ladder_in_order(
+def test_the_rescue_rungs_are_gone(ethylene_symbols, make_settings):
+    assert not hasattr(pyscf_casscf, "EXTRA_RUNGS")
+    assert not hasattr(pyscf_casscf, "check_extra_rungs")
+    with pytest.raises(TypeError):
+        _backend(ethylene_symbols, make_settings(basis="sto-3g"), casscf_extra_rungs=())
+
+
+def _displaced(coords, scale=0.02):
+    """A fixed non-uniform distortion (not a translation) of the geometry, in bohr."""
+    c = np.asarray(coords, dtype=float)
+    return c + scale * np.linspace(-1.0, 1.0, c.size).reshape(c.shape)
+
+
+def _scf(symbols, coords, settings):
+    backend = _backend(symbols, settings)
+    mol = backend._build_mol(np.asarray(coords), None)
+    mf, _ = backend._run_scf(mol, None)
+    return backend, mol, mf
+
+
+def _independent_sa(mol, mf, guesses, n_states):
+    """SA energies of the guesses that converge, solved here without the module."""
+    from pyscf import fci, mcscf
+
+    out = {}
+    for guess in guesses:
+        mc = mcscf.CASSCF(mf, 2, 2)
+        mc.fcisolver = fci.solver(mol, singlet=True)
+        mc = mc.state_average_([1 / n_states] * n_states)
+        mc.kernel(mo_coeff=mcscf.sort_mo(mc, mf.mo_coeff, [i + 1 for i in guess]))
+        if mc.converged:
+            out[guess] = float(np.mean(mc.e_states))
+    return out
+
+
+def test_find_reference_takes_the_default_guess_when_it_counts(
+    ethylene_symbols, ethylene_bohr, make_settings
+):
+    settings = make_settings(singlets=3)  # SA3-CAS(2,2)/6-31G*, the P9a acceptance setup
+    backend, mol, mf = _scf(ethylene_symbols, ethylene_bohr, settings)
+    reference, problems = pyscf_casscf.find_reference(mol, mf, settings, backend.states)
+    assert reference is not None and problems == []
+    default = pyscf_casscf.guess_active_sets(mol.nelectron // 2, mf.mo_coeff.shape[1], 2, 2)[0]
+    independent = _independent_sa(mol, mf, [default], 3)
+    assert reference.guess == default == (7, 8)
+    assert abs(reference.sa_energy - independent[default]) < 1e-8
+    assert reference.meta() == {
+        "guess": [7, 8],
+        "sa_energy_Eh": reference.sa_energy,
+        "n_guesses": 4,
+        "n_solved": 1,
+        "n_counted": 1,
+    }
+
+
+def test_the_default_guess_wins_over_a_lower_sa_guess(
+    ethylene_symbols, ethylene_bohr, make_settings
+):
+    # SA2-CAS(2,2)/STO-3G: guess [6, 8] has the lower SA energy (-76.861346 vs -76.855342 Eh)
+    # but an S0 1.27 eV higher; under the lowest-SA rule the FD frequencies split between
+    # solutions (full suite 2026-11-13). The default must be the reference.
+    settings = make_settings(basis="sto-3g")
+    backend, mol, mf = _scf(ethylene_symbols, ethylene_bohr, settings)
+    independent = _independent_sa(mol, mf, [(7, 8), (6, 8)], 2)
+    assert independent[(6, 8)] < independent[(7, 8)]  # the premise of this test
+    reference, _ = pyscf_casscf.find_reference(mol, mf, settings, backend.states)
+    assert reference is not None and reference.guess == (7, 8) and reference.n_solved == 1
+
+
+def test_find_reference_without_the_default_takes_the_lowest_sa_other_guess(
     ethylene_symbols, ethylene_bohr, make_settings, monkeypatch
 ):
-    seen = []
-
-    def only_the_last(mc):
-        seen.append((mc.max_cycle_macro, mc.conv_tol, mc.conv_tol_grad))
-        return len(seen) == 3 and bool(mc.converged)  # no previous: SCF, SCF+penalty, loose
-
-    monkeypatch.setattr(pyscf_casscf, "_converged", only_the_last)
-    backend = _backend(
-        ethylene_symbols,
-        make_settings(basis="sto-3g"),
-        casscf_extra_rungs=pyscf_casscf.EXTRA_RUNG_NAMES,
-    )
-    result = backend.compute(Request(ethylene_bohr))
-    # no previous orbitals: "previous orbitals" and its extra rung are skipped
-    assert result.meta["casscf"] == "loose tolerances"
-    assert seen[-1][1:] == (1e-8, 1e-4)
-
-
-def test_the_more_iterations_rung_uses_the_previous_orbitals(
-    ethylene_symbols, ethylene_bohr, make_settings, monkeypatch
-):
-    backend = _backend(
-        ethylene_symbols,
-        make_settings(basis="sto-3g"),
-        casscf_extra_rungs=("previous orbitals, more iterations",),
-    )
-    backend.compute(Request(ethylene_bohr))  # a converged first point gives previous orbitals
+    settings = make_settings(basis="sto-3g")
+    backend, mol, mf = _scf(ethylene_symbols, ethylene_bohr, settings)
+    guesses = pyscf_casscf.guess_active_sets(mol.nelectron // 2, mf.mo_coeff.shape[1], 2, 2)
+    independent = _independent_sa(mol, mf, guesses[1:], 2)
     calls = []
 
-    def fifth_only(mc):
-        calls.append(mc.max_cycle_macro)
-        return len(calls) == 4 and bool(mc.converged)  # the 3 rungs fail, the extra converges
+    def reject_first(mc):
+        calls.append(1)
+        return len(calls) > 1 and bool(mc.converged)
 
-    monkeypatch.setattr(pyscf_casscf, "_converged", fifth_only)
-    result = backend.compute(Request(ethylene_bohr + 0.001))
-    assert result.meta["casscf"] == "previous orbitals, more iterations"
-    assert calls[3] == 4 * calls[0]
+    monkeypatch.setattr(pyscf_casscf, "_converged", reject_first)
+    reference, problems = pyscf_casscf.find_reference(mol, mf, settings, backend.states)
+    assert reference is not None
+    assert problems[0] == "guess [7, 8]: not converged"  # the default guess is tried first
+    assert reference.n_solved == 4
+    assert reference.n_counted == 4 - len(problems) == len(independent)
+    best = min(independent, key=independent.get)
+    assert reference.guess == best
+    assert abs(reference.sa_energy - independent[best]) < 1e-8
 
 
-def test_extra_rungs_are_off_by_default(
+def test_find_reference_without_a_converged_guess(
     ethylene_symbols, ethylene_bohr, make_settings, monkeypatch
 ):
+    settings = make_settings(basis="sto-3g")
+    backend, mol, mf = _scf(ethylene_symbols, ethylene_bohr, settings)
     monkeypatch.setattr(pyscf_casscf, "_converged", lambda mc: False)
-    with pytest.raises(ElectronicStructureError, match="SA-CASSCF failed on every rung"):
-        _backend(ethylene_symbols, make_settings(basis="sto-3g")).compute(Request(ethylene_bohr))
+    reference, problems = pyscf_casscf.find_reference(mol, mf, settings, backend.states)
+    assert reference is None and len(problems) == 4
 
 
-def test_unknown_extra_rung_names_are_refused(ethylene_symbols, make_settings):
-    with pytest.raises(ValueError, match="unknown CASSCF extra rung"):
-        _backend(ethylene_symbols, make_settings(basis="sto-3g"), casscf_extra_rungs=("x",))
-
-
-def test_loose_rung_never_tightens_the_user_tolerances(
-    ethylene_symbols, ethylene_bohr, make_settings, monkeypatch
+def test_the_reference_rung_comes_after_previous_and_before_scf(
+    ethylene_symbols, ethylene_bohr, make_settings
 ):
-    seen = []
+    assert [r.name for r in pyscf_casscf.LADDER] == [
+        "previous orbitals",
+        "reference orbitals",
+        "SCF orbitals",
+        "SCF orbitals + spin penalty",
+    ]
+    # 6-31G*: the default solution persists at the 0.02 bohr distortion (STO-3G loses it at
+    # 0.01 bohr whatever the start, see the warning test below)
+    settings = make_settings()
+    backend, mol, mf = _scf(ethylene_symbols, ethylene_bohr, settings)
+    reference, _ = pyscf_casscf.find_reference(mol, mf, settings, backend.states)
+    assert reference is not None
+    asked = []
 
-    def last(mc):
-        seen.append((mc.conv_tol, mc.conv_tol_grad))
-        return len(seen) == 3 and bool(mc.converged)
+    def provider():
+        asked.append(1)
+        return reference.mo_coeff, reference.mol
 
-    monkeypatch.setattr(pyscf_casscf, "_converged", last)
-    settings = make_settings(
-        basis="sto-3g",
-        casscf={"ncas": 2, "nelecas": 2, "conv_tol": 1e-6, "conv_tol_grad": 1e-3},
+    _, mol2, mf2 = _scf(ethylene_symbols, _displaced(ethylene_bohr), settings)
+    outcome = pyscf_casscf.run_casscf(mol2, mf2, settings, backend.states, None, reference=provider)
+    assert outcome.rung == "reference orbitals" and asked == [1]
+    assert outcome.reference_active_min_sv is not None
+    assert outcome.reference_active_min_sv >= pyscf_casscf.REFERENCE_OVERLAP_WARNING
+    plain = pyscf_casscf.run_casscf(mol2, mf2, settings, backend.states, None)
+    assert plain.rung == "SCF orbitals" and plain.reference_active_min_sv is None
+
+
+def test_an_unavailable_reference_falls_through_to_scf(
+    ethylene_symbols, ethylene_bohr, make_settings
+):
+    settings = make_settings(basis="sto-3g")
+    backend, mol, mf = _scf(ethylene_symbols, ethylene_bohr, settings)
+    outcome = pyscf_casscf.run_casscf(
+        mol, mf, settings, backend.states, None, reference=lambda: None
     )
-    _backend(ethylene_symbols, settings, casscf_extra_rungs=("loose tolerances",)).compute(
+    assert outcome.rung == "SCF orbitals"
+
+
+def _ref_backend(symbols, coords, settings):
+    return _backend(symbols, settings, reference_coords_bohr=np.asarray(coords))
+
+
+def test_a_fresh_solve_starts_from_the_reference(ethylene_symbols, ethylene_bohr, make_settings):
+    backend = _ref_backend(ethylene_symbols, ethylene_bohr, make_settings())  # 6-31G*
+    result = backend.compute(Request(_displaced(ethylene_bohr)))
+    assert result.meta["casscf"] == "reference orbitals"
+    ref = result.meta["casscf_reference"]
+    assert ref["n_guesses"] == 4 and ref["n_solved"] == 1 and ref["n_counted"] == 1
+    assert ref["guess"] == [7, 8]
+    assert result.meta["reference_active_min_sv"] >= 0.9
+
+
+def test_a_lost_default_solution_is_warned(ethylene_symbols, ethylene_bohr, make_settings, caplog):
+    # SA2-CAS(2,2)/STO-3G loses the default solution at a 0.02 bohr distortion: the SCF start
+    # lands on the same other solution (S0 about -77.0699 Eh, measured 2026-11-14), so the
+    # rule accepts it and warns (owner decision 7)
+    backend = _ref_backend(ethylene_symbols, ethylene_bohr, make_settings(basis="sto-3g"))
+    with caplog.at_level(logging.WARNING, logger="gqteashmd.electronic.pyscf_backend"):
+        result = backend.compute(Request(_displaced(ethylene_bohr)))
+    assert result.meta["casscf"] == "reference orbitals"
+    assert result.meta["casscf_reference"]["guess"] == [7, 8]
+    assert result.meta["reference_active_min_sv"] < pyscf_casscf.REFERENCE_OVERLAP_WARNING
+    assert "different active-orbital character" in caplog.text
+    plain = _backend(ethylene_symbols, make_settings(basis="sto-3g"))
+    other = plain.compute(Request(_displaced(ethylene_bohr)))
+    assert abs(other.energies[S0] - result.energies[S0]) < 1e-6
+
+
+def test_without_a_reference_geometry_the_ladder_is_unchanged(
+    ethylene_symbols, ethylene_bohr, make_settings
+):
+    result = _backend(ethylene_symbols, make_settings(basis="sto-3g")).compute(
         Request(ethylene_bohr)
     )
-    assert seen[-1] == (1e-6, 1e-3)
+    assert result.meta["casscf"] == "SCF orbitals"
+    assert result.meta["casscf_reference"] == "none"
+    assert "reference_active_min_sv" not in result.meta
+
+
+def test_the_reference_is_computed_once_and_survives_reset(
+    ethylene_symbols, ethylene_bohr, make_settings, monkeypatch
+):
+    calls = []
+    real = pyscf_casscf.find_reference
+
+    def counting(*args, **kwargs):
+        calls.append(1)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(pyscf_casscf, "find_reference", counting)
+    backend = _ref_backend(ethylene_symbols, ethylene_bohr, make_settings(basis="sto-3g"))
+    first = backend.compute(Request(ethylene_bohr))
+    backend.reset()
+    second = backend.compute(Request(_displaced(ethylene_bohr, 0.01)))
+    assert calls == [1]
+    assert first.meta["casscf_reference"] == second.meta["casscf_reference"]
+    assert second.meta["casscf"] == "reference orbitals"
+
+
+def test_the_reference_is_not_computed_while_previous_orbitals_work(
+    tmp_path, ethylene_symbols, ethylene_bohr, make_settings, monkeypatch
+):
+    settings = make_settings(basis="sto-3g")
+    donor = _backend(ethylene_symbols, settings)
+    donor.compute(Request(ethylene_bohr))
+    donor.save_state(tmp_path / "state.npz")
+    monkeypatch.setattr(
+        pyscf_casscf, "find_reference", lambda *a, **k: pytest.fail("reference computed")
+    )
+    backend = _ref_backend(ethylene_symbols, ethylene_bohr, settings)
+    backend.load_state(tmp_path / "state.npz")
+    result = backend.compute(Request(_displaced(ethylene_bohr, 0.01)))
+    assert result.meta["casscf"] == "previous orbitals"
+    assert result.meta["casscf_reference"] == "not computed"
+
+
+def test_a_failed_previous_rung_tries_the_reference_next(
+    ethylene_symbols, ethylene_bohr, make_settings, monkeypatch
+):
+    backend = _ref_backend(ethylene_symbols, ethylene_bohr, make_settings(basis="sto-3g"))
+    backend.compute(Request(ethylene_bohr))
+    calls = []
+
+    def fail_first(mc):
+        calls.append(1)
+        return len(calls) > 1 and bool(mc.converged)
+
+    monkeypatch.setattr(pyscf_casscf, "_converged", fail_first)
+    result = backend.compute(Request(_displaced(ethylene_bohr, 0.01)))
+    assert result.meta["casscf"] == "reference orbitals" and len(calls) == 2
+
+
+def test_no_reference_solution_falls_back_once_with_a_warning(
+    ethylene_symbols, ethylene_bohr, make_settings, monkeypatch, caplog
+):
+    calls = []
+
+    def none_found(*args, **kwargs):
+        calls.append(1)
+        return None, ["guess [7, 8]: not converged"]
+
+    monkeypatch.setattr(pyscf_casscf, "find_reference", none_found)
+    backend = _ref_backend(ethylene_symbols, ethylene_bohr, make_settings(basis="sto-3g"))
+    with caplog.at_level(logging.WARNING, logger="gqteashmd.electronic.pyscf_backend"):
+        first = backend.compute(Request(ethylene_bohr))
+    backend.reset()
+    second = backend.compute(Request(ethylene_bohr))
+    assert calls == [1]
+    assert first.meta["casscf"] == second.meta["casscf"] == "SCF orbitals"
+    assert first.meta["casscf_reference"] == "unavailable"
+    assert "No CASSCF reference solution at the reference geometry" in caplog.text
+    assert "guess [7, 8]: not converged" in caplog.text
+
+
+def test_a_failed_reference_scf_falls_back(
+    ethylene_symbols, ethylene_bohr, make_settings, monkeypatch, caplog
+):
+    real = PySCFBackend._run_scf
+    calls = []
+
+    def second_fails(self, mol, dm):
+        calls.append(1)
+        if len(calls) == 2:  # 1 = the current geometry, 2 = the reference geometry
+            raise ElectronicStructureError("SCF did not converge on any rung")
+        return real(self, mol, dm)
+
+    monkeypatch.setattr(PySCFBackend, "_run_scf", second_fails)
+    backend = _ref_backend(ethylene_symbols, ethylene_bohr, make_settings(basis="sto-3g"))
+    with caplog.at_level(logging.WARNING, logger="gqteashmd.electronic.pyscf_backend"):
+        result = backend.compute(Request(ethylene_bohr))
+    assert result.meta["casscf_reference"] == "unavailable"
+    assert result.meta["casscf"] == "SCF orbitals"
+    assert "the SCF failed" in caplog.text
+
+
+def test_a_different_active_character_is_warned_and_recorded(
+    ethylene_symbols, ethylene_bohr, make_settings, monkeypatch, caplog
+):
+    monkeypatch.setattr(pyscf_casscf, "active_min_singular_value", lambda *a: 0.5)
+    backend = _ref_backend(ethylene_symbols, ethylene_bohr, make_settings(basis="sto-3g"))
+    with caplog.at_level(logging.WARNING, logger="gqteashmd.electronic.pyscf_backend"):
+        result = backend.compute(Request(ethylene_bohr))
+    assert result.meta["reference_active_min_sv"] == 0.5
+    assert "different active-orbital character" in caplog.text
+
+
+def test_reference_coordinates_are_validated(ethylene_symbols, make_settings):
+    with pytest.raises(ValueError, match="reference_coords_bohr"):
+        _backend(
+            ethylene_symbols, make_settings(basis="sto-3g"), reference_coords_bohr=np.zeros((2, 3))
+        )
+    bad = np.zeros((len(ethylene_symbols), 3))
+    bad[0, 0] = np.nan
+    with pytest.raises(ValueError, match="reference_coords_bohr"):
+        _backend(ethylene_symbols, make_settings(basis="sto-3g"), reference_coords_bohr=bad)

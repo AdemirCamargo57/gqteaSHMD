@@ -22,7 +22,7 @@ H    0.000000000  -0.7580805047  -0.4856341673
 """
 
 
-def _run_stage(tmp_path, write_input, extra, xyz=None):
+def _context(tmp_path, write_input, extra, xyz=None):
     tmp_path.mkdir(parents=True, exist_ok=True)
     path = write_input(tmp_path, extra=HF + extra)
     if xyz is not None:
@@ -36,6 +36,11 @@ def _run_stage(tmp_path, write_input, extra, xyz=None):
     prepare.finalize(pctx, {"molecule": prepare.run_task(pctx, TaskSpec("molecule"), prep_dir)})
     ctx = StageContext(cfg, layout, layout.stage_dir(2, "frequencies"), {"prepare": prep_dir})
     ctx.stage_dir.mkdir(parents=True)
+    return cfg, layout, ctx
+
+
+def _run_stage(tmp_path, write_input, extra, xyz=None):
+    cfg, layout, ctx = _context(tmp_path, write_input, extra, xyz)
     stage = FrequenciesStage()
     results = {}
     for task in stage.plan(ctx):
@@ -136,3 +141,26 @@ def test_single_atom_has_no_modes(tmp_path, write_input):
     stage.finalize(ctx, results)
     data = json.loads((ctx.stage_dir / "frequencies.json").read_text())
     assert data["frequencies_cm1"] == [] and data["n_external"] == 3
+
+
+class _Stop(Exception):
+    pass
+
+
+def test_frequencies_passes_the_working_geometry_as_reference(tmp_path, write_input, monkeypatch):
+    from gqteashmd.stages import frequencies as frequencies_module
+    from gqteashmd.stages.geometry import working_geometry
+
+    _, layout, ctx = _context(tmp_path, write_input, "", WATER_MIN)
+    seen = {}
+
+    def spy(ctx, stage_name, molecule, task_dir, *, reference_coords_bohr, settings=None):
+        seen["reference"] = np.asarray(reference_coords_bohr)
+        raise _Stop
+
+    monkeypatch.setattr(frequencies_module, "stage_backend", spy)
+    task_dir = layout.task_dir(ctx.stage_dir, "reference")
+    task_dir.mkdir(parents=True)
+    with pytest.raises(_Stop):
+        FrequenciesStage().run_task(ctx, TaskSpec("reference"), task_dir)
+    np.testing.assert_array_equal(seen["reference"], working_geometry(ctx)[1])

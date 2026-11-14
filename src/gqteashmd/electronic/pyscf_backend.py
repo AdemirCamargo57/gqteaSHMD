@@ -6,6 +6,7 @@ Coordinates are passed to PySCF in bohr; all results are in atomic units.
 
 from __future__ import annotations
 
+import dataclasses
 import io
 import json
 import logging
@@ -42,6 +43,10 @@ from gqteashmd.overlaps.tracking import track
 from gqteashmd.util.fileio import write_bytes_atomic
 
 _LOG = logging.getLogger(__name__)
+_NO_REFERENCE = (
+    "No CASSCF reference solution at the reference geometry (%s): fresh solves start from "
+    "the SCF orbitals."
+)
 
 MIN_PYSCF_VERSION = (2, 6, 0)
 _STATE_FORMAT = 1
@@ -101,9 +106,8 @@ class PySCFBackend(ElectronicBackend):
         threads: int | None = None,
         memory_mb: int | None = None,
         scratch_dir: Path | None = None,
-        casscf_extra_rungs: tuple[str, ...] = (),
+        reference_coords_bohr: ArrayLike | None = None,
     ) -> None:
-        self._casscf_extra_rungs = pyscf_casscf.check_extra_rungs(casscf_extra_rungs)
         self._version = require_pyscf()
         if molecule.multiplicity != 1:
             raise ConfigError(
@@ -116,6 +120,18 @@ class PySCFBackend(ElectronicBackend):
             )
         except ValueError as exc:
             raise ConfigError(f"{exc} Check [molecule] in the input file.") from exc
+        self._reference_coords: np.ndarray | None = None
+        if reference_coords_bohr is not None:
+            ref = np.array(reference_coords_bohr, dtype=float)
+            if ref.shape != (len(molecule.symbols), 3) or not np.all(np.isfinite(ref)):
+                raise ValueError(
+                    f"reference_coords_bohr must be a finite ({len(molecule.symbols)}, 3) "
+                    f"array; got shape {ref.shape}"
+                )
+            self._reference_coords = ref
+        self._reference: pyscf_casscf.Reference | None = None
+        # "none" (no geometry), "not computed", "unavailable" (searched, none found), "ok"
+        self._reference_status = "none" if self._reference_coords is None else "not computed"
         self._molecule = molecule
         self._settings = settings
         self._log_file = log_file
@@ -155,12 +171,29 @@ class PySCFBackend(ElectronicBackend):
                     self._settings,
                     self._states,
                     prev_orbitals,
-                    extra_rungs=self._casscf_extra_rungs,
+                    reference=(
+                        None
+                        if self._reference_coords is None
+                        else lambda: self._reference_orbitals(stdout)
+                    ),
                 )
                 solver, energies, spins = outcome.mc, outcome.energies, outcome.spin_squares
                 mo_coeff = np.asarray(solver.mo_coeff)
                 expansion = pyscf_casscf.casscf_expansion(solver)
-                rung_meta: dict[str, Any] = {"casscf": outcome.rung}
+                rung_meta: dict[str, Any] = {
+                    "casscf": outcome.rung,
+                    "casscf_reference": self._reference_meta(),
+                }
+                if outcome.reference_active_min_sv is not None:
+                    rung_meta["reference_active_min_sv"] = outcome.reference_active_min_sv
+                    if outcome.reference_active_min_sv < pyscf_casscf.REFERENCE_OVERLAP_WARNING:
+                        _LOG.warning(
+                            "The CASSCF solution started from the reference orbitals has a "
+                            "different active-orbital character (smallest singular value "
+                            "%.3f < %.1f).",
+                            outcome.reference_active_min_sv,
+                            pyscf_casscf.REFERENCE_OVERLAP_WARNING,
+                        )
             else:
                 outcome_r = pyscf_response.run_response(mf, self._settings, self._states)
                 solver, energies, spins = outcome_r.td, outcome_r.energies, {}
@@ -511,6 +544,38 @@ class PySCFBackend(ElectronicBackend):
             # deletes the file
             mf._chkfile = None
         return mf
+
+    def _reference_meta(self) -> str | dict[str, Any]:
+        if self._reference is not None:
+            return self._reference.meta()
+        return self._reference_status
+
+    def _reference_orbitals(self, stdout: IO[str] | None) -> pyscf_casscf.Orbitals | None:
+        """The reference orbitals, searched once per backend (kept across reset/load_state)."""
+        if self._reference_status == "not computed":
+            reference = self._find_reference(stdout)
+            self._reference = reference
+            self._reference_status = "unavailable" if reference is None else "ok"
+        if self._reference is None:
+            return None
+        return self._reference.mo_coeff, self._reference.mol
+
+    def _find_reference(self, stdout: IO[str] | None) -> pyscf_casscf.Reference | None:
+        assert self._reference_coords is not None
+        mol = self._build_mol(self._reference_coords, stdout)
+        try:
+            mf, _ = self._run_scf(mol, None)
+        except ElectronicStructureError as exc:
+            if exc.retryable:
+                raise  # transient: the task is retried and searches again
+            _LOG.warning(_NO_REFERENCE, f"the SCF failed: {exc}")
+            return None
+        reference, problems = pyscf_casscf.find_reference(mol, mf, self._settings, self._states)
+        if reference is None:
+            _LOG.warning(_NO_REFERENCE, "; ".join(problems))
+            return None
+        # a cached Mole must not hold the (closed) log stream: rebuild it without one
+        return dataclasses.replace(reference, mol=self._build_mol(self._reference_coords, None))
 
     def _run_scf(self, mol: Any, previous_dm: Any) -> tuple[Any, str]:
         if previous_dm is not None and getattr(previous_dm, "shape", None) != (mol.nao, mol.nao):
