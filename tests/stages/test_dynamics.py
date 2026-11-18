@@ -256,7 +256,8 @@ def test_hop_energy_reaches_the_options_and_the_fingerprint_only_when_set(tmp_pa
     default = _context(tmp_path / "a", write_input)
     assert run_settings(default.config.dynamics).options.hop_energy == "current"
     fp_default = _stage().fingerprint_inputs(default)["dynamics"]
-    # the default leaves the fingerprint as on main: projects made before the key stay up to date
+    # the default leaves the fingerprint as before the option existed (4e61daa), so projects
+    # made before the key stay up to date
     assert set(fp_default) == MAIN_DYNAMICS_FINGERPRINT_KEYS
     lines = 'tmax_fs = 2.0\ndt_fs = 0.25\nhop_energy = "previous"\n'
     previous = _context(tmp_path / "b", write_input, dynamics=lines)

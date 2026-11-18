@@ -233,6 +233,25 @@ def test_hops_leave_a_finite_active_gradient_in_the_restart(tmp_path):
     assert np.all(np.isfinite(state.snapshot.gradients[state.active]))
 
 
+@pytest.mark.parametrize("rule", ["previous", "current"])
+def test_hop_energy_previous_pins_every_hop_record_in_the_log(tmp_path, rule):
+    """With hop_energy = "previous" every accepted hop record of steps.log (a substep inside a
+    halved interval included) has the e_total of the record before it; "current" does not."""
+    settings = _settings(options={"hop_energy": rule})
+    faults = {6: "low_overlap", 12: "rung"}  # two halved intervals, hops around them
+    result, d = _run(tmp_path, settings=settings, faults=faults, source=ReplaySource([0.0] * 400))
+    assert result["n_hops"] > 0 and result["n_rejections"] >= 2
+    rows = _log(d)
+    assert rows["depth"].max() > 0  # substeps of a halved interval are in the log
+    hops = [i for i in range(1, len(rows)) if rows["hop_to"][i] >= 0]
+    assert hops
+    diffs = [abs(rows["e_total"][i] - rows["e_total"][i - 1]) for i in hops]
+    if rule == "previous":
+        assert max(diffs) <= 1e-10, max(diffs)
+    else:
+        assert max(diffs) > 1e-8, max(diffs)  # the test can tell the two rules apart
+
+
 @pytest.mark.parametrize("damage", ["current", "log", "meta"])
 def test_an_unusable_restart_is_a_restart_error(tmp_path, damage):
     _, d = _run(tmp_path, settings=_settings(n=5))

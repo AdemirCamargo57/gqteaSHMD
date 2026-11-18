@@ -746,3 +746,58 @@ def test_previous_hop_energy_frustrated_hop(frustrated):
     assert first.hop_from is None and first.hop_to is None and first.active == 0
     assert all(r.active == 0 for r in records)
     assert (first.v[0] < 0.0) if frustrated == "reflect" else (first.v[0] > 0.0)
+    # every hop is frustrated, so v' is kept or reflected whatever dE is: the two rules give
+    # identical records (this also pins the frustration criterion E_tot,prev < E_j(q'))
+    current = DynamicsOptions(dt_au=1.0, hopping="sharc", frustrated=frustrated)
+    _, _, records_current = _run(model, state, current, ReplaySource([0.0] * 3000), max_steps=200)
+    _assert_records_equal(records_current, records)
+
+
+def test_previous_hop_energy_passes_the_independent_delta_e(monkeypatch):
+    """Forced hop: the dE given to adjust_velocity is E_j(q') + K(v') - E_tot,prev, recomputed
+    here from the records (energies, velocity before the adjustment, previous record)."""
+    from gqteashmd.dynamics import driver as driver_module
+
+    model = TullySimpleAvoidedCrossing()
+    options = DynamicsOptions(dt_au=1.0, hopping="sharc", hop_energy="previous")
+    state = _start(model, x0=-4.0, k=20.0)
+    seen = []
+    original = driver_module.adjust_velocity
+
+    def spy(velocity, masses, delta_e, **kwargs):
+        seen.append((velocity.copy(), float(delta_e)))
+        return original(velocity, masses, delta_e, **kwargs)
+
+    monkeypatch.setattr(driver_module, "adjust_velocity", spy)
+    _, _, records = _run(model, state, options, ReplaySource([0.0] * 800), max_steps=800)
+    attempts = [i for i, r in enumerate(records) if r.hop_to is not None or r.frustrated]
+    assert len(attempts) == len(seen) >= 2
+    totals = [state.e_total_initial] + [r.e_total for r in records]
+    checked = 0
+    for i, (v_before, delta_e) in zip(attempts, seen, strict=True):
+        r = records[i]
+        if r.hop_to is None:
+            continue  # a frustrated attempt has no recorded target
+        kinetic = 0.5 * float(np.sum(model.masses * v_before * v_before))
+        expected = float(r.energies[r.hop_to]) + kinetic - totals[i]
+        assert delta_e == pytest.approx(expected, abs=1e-12)
+        checked += 1
+    assert checked >= 2
+
+
+@pytest.mark.parametrize("eselect", [None, 0.05])
+@pytest.mark.parametrize(("rule", "pinned"), [("previous", True), ("current", False)])
+def test_previous_hop_energy_with_spin_orbit_and_eselect(rule, pinned, eselect):
+    """U is not None (lvc_soc): at every accepted hop E_tot is that of the previous record
+    under "previous" (and is not under "current", so the test discriminates)."""
+    options = DynamicsOptions(dt_au=0.5, hop_energy=rule, eselect_Eh=eselect)
+    state, _, _, records = _lvc_run(options, 300, rng=_forced_stream(300))
+    assert all(r.u is not None for r in records)
+    totals = [state.e_total_initial] + [r.e_total for r in records]
+    hops = [i for i, r in enumerate(records) if r.hop_to is not None and not r.frustrated]
+    assert len(hops) >= 2
+    worst = max(abs(totals[i + 1] - totals[i]) for i in hops)
+    if pinned:
+        assert worst <= 1e-10, worst
+    else:
+        assert worst > 1e-10, worst
