@@ -3215,7 +3215,9 @@ The full record, with the file each number comes from, is `docs/superpowers/repo
 | ours | `gqteashmd run` | ours | `overlap` | 1 h 56 min | finished 67, `overlap_failure` 23, `electronic_discontinuity` 10 |
 | ours-nacdr | the same project copied, `--rerun-from dynamics` | ours | `nacdr` | about 7 h 34 min (three windows; a stop and a WSL VM shutdown, resumed twice) | finished 69, `overlap_failure` 25, `electronic_discontinuity` 6 |
 | swap | `sharc.x` | ours, behind SHARC's `QM.out` interface | `overlap` | 5 h 37 min | 99 reached 100 fs, 1 aborted (a failed QM call) |
-| direct | `sharc.x` | SHARC's `SHARC_PYSCF.py` | `nacdr` (its only option) | 15 h 35 min | 95 reached 100 fs, 5 aborted |
+| direct | `sharc.x` | SHARC's `SHARC_PYSCF.py` | `nacdr` (its only option) | 15 h 35 min wall clock (13 h 44 min of process time) | 95 reached 100 fs, 5 aborted |
+
+The two direct times differ by 1 h 51 min. The tool's monotonic timer does not advance while the WSL VM is suspended, so the Windows host most likely slept overnight; this is an inference, not established. The swap run's timer and clock span agree to 1.5 s. The times of ours and ours-nacdr are clock spans only.
 
 Our own analyses of these runs:
 
@@ -3430,7 +3432,7 @@ The test is therefore a **strict xfail**, with these numbers in its reason. The 
   - **What passed.** The swap comparison (SHARC's driver on our electronic structure) passes all its rules, but on 48 paired trajectories of one system (ethylene SA3-CASSCF(2,2), seed 2028). The lifetime and delay agree only within wide intervals: the estimates differ by 0.42 and 0.57 of the bound.
   - **What is inconclusive.** The comparison with SHARC's own interface `SHARC_PYSCF.py` has 13 pairs: SHARC starts on another CASSCF solution in 75 of 100 trajectories, and all of those jump.
   - **What failed.** A replayed single trajectory agrees before its first hop and **not after it** (a strict expected failure). At a hop SHARC keeps the previous step's total energy (measured at every SHARC hop), while ours keeps the current step's; nothing was changed (an owner decision).
-  - **Not compared.** SHARC's frustrated hops are not compared (not in its `output.dat`). `make_fit.py`'s uncertainty is not reproducible (no seed). The comparison is not automated: it needs SHARC and about 31 h of runs on the development machine (the four runs of §8.17.1).
+  - **Not compared.** SHARC's frustrated hops are not compared (not in its `output.dat`). `make_fit.py`'s uncertainty is not reproducible (no seed). The comparison is not automated: it needs SHARC and about 31 h of runs (wall clock) on the development machine (the four runs of §8.17.1).
 - **Ethylene SA-CASSCF trajectory losses** (P9a, §5.10, §8.16.9).
   - **Cause.** In SA2-CASSCF(2,2)/6-31G\* the active-space problem has several solutions along the paths. A trajectory can switch between them by 0.6-0.9 eV in one step (the M4 energy drifts), or later lose the overlap (`overlap_failure`, 5.8-42.9 fs after a hop). SHARC 4.1 makes the same switch at the same step in 6 of the 7 energy drifts. SA3-CASSCF(2,2) has the same post-hop mechanism (reproduced in 4 of 5 of its seed-2026 overlap failures).
   - **Detection: closed for jumps above 0.1 eV.** Since P9a plan 2 the `dynamics` stage rejects a step whose $E_{\text{tot}}$ jumps by more than `energy_jump_limit_eV` and ends a persistent jump as `electronic_discontinuity` (§8.16.3). A switch with a smaller jump and a good overlap is still not detected.

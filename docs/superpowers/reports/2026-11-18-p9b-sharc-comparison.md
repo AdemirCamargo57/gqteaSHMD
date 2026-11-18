@@ -9,7 +9,7 @@ Date: 2026-11-18. Branch `feat/p9b-sharc-comparison`. The spec is `docs/superpow
 - the task reports in the git-ignored ledger `.superpowers/sdd/2026-11-14-p9b-sharc-comparison/` (`task-1-facts.md`, `task-1-report.md` to `task-9-report.md`, `fix-p7-report.md`) and its `progress.md`, which holds the controller rulings P1-P7;
 - the JSON files on the WSL native filesystem of the development machine:
   - `~/p9b/compare/swap_fixed.json`, `direct_vs_ours_fixed.json` and `direct_vs_ours_nacdr_fixed.json`: the comparisons, rerun with the fixed tool (identical to the first runs except the path fields, ruling P7);
-  - `~/p9b/compare/tools.json`: section 4;
+  - `~/p9b/compare/tools.json`: section 4. It was produced from the symlink shadow project (`project: ~/p9b/task9/shadow_ours`) and was not rerun on the real project, because `run_sharc_analysis.py` uses our project only for its configuration and was not affected by the P7 defect;
   - `~/p9b/tau_coverage.json`: section 6;
   - `~/p9b/swap/project/sharc_summary.json`, `~/p9b/direct/project/sharc_summary.json`;
   - `~/p9b/ours/run/` and `~/p9b/ours_nacdr/run/`: our projects (`06_dynamics/dynamics_summary.json`, `07_analysis/analysis.json`, `.gqteashmd/provenance.json`).
@@ -96,7 +96,14 @@ The selection gave 100 of 100, so the `n_samples` 500 fallback did not fire.
 | ours (`overlap`) | `gqteashmd run input.toml` in `~/p9b/ours` | 1 h 56 min (dynamics 1 h 52 min 42 s) | finished 67, `overlap_failure` 23, `electronic_discontinuity` 10 |
 | ours-nacdr | copy of `ours`, `coupling = "nacdr"`, `gqteashmd run input.toml --rerun-from dynamics` (PR2), then two plain resumes (P4) | about 7 h 34 min, the sum of three windows | finished 69, `overlap_failure` 25, `electronic_discontinuity` 6 |
 | swap | `run_sharc_pyscf_ensemble.py ~/p9b/ours/run tools/sharc_compare/p9b/variants_p9b.toml --variant project --provider swap --out ~/p9b/swap --sharc-home ... --python ... --workers 8 --threads 2 --memory-mb 800` | 5 h 37 min (20240.5 s) | finished 99, stopped 1, no errors |
-| direct | the same with `--provider sharc_pyscf --out ~/p9b/direct` | 15 h 35 min (49423.3 s) | finished 95, stopped 5, no errors |
+| direct | the same with `--provider sharc_pyscf --out ~/p9b/direct` | 15 h 35 min wall clock; 13 h 44 min of process time (`wall_time_s` 49423.3 s) | finished 95, stopped 5, no errors |
+
+**The two direct times.** The clock span of the direct run, from the chain log, is 2026-11-17 20:15:30 to 2026-11-18 11:50:30, which is 15 h 35 min (56100 s). The tool's `wall_time_s` is 49423.3 s, which is 13 h 44 min.
+
+- The timer is `time.perf_counter()` (Linux `CLOCK_MONOTONIC`) around the whole ensemble (`run_sharc_pyscf_ensemble.py`, read by the controller), so set-up time is not the cause of the 1 h 51 min difference.
+- *Inference, not established:* `CLOCK_MONOTONIC` does not advance while the WSL VM is suspended, and the guest's wall clock jumps forward when it resyncs after a host sleep. So the Windows host most likely slept for about 1 h 51 min overnight. The file modification times show only the batch rhythm, with no distinguishing gap.
+- **The swap run is consistent:** `wall_time_s` 20240.5 s against a span of 20242 s (14:38:08 to 20:15:30).
+- **Ours and ours-nacdr have only clock times** (spans from their run logs; no second timer over the whole run), so the data cannot rule out a host sleep inside their windows either.
 
 Totals of our runs:
 
@@ -401,7 +408,7 @@ Diagnosis:
 Options:
 
 - (a) **Accept it as a report and close.** The drivers are compared by the swap test.
-- (b) **Pursue a direct comparison**, for example with more initial conditions so that the same-start subset reaches 30 pairs. At the measured rate of 13 pairs per 100 that is about 250 trajectories: about 39 h of `SHARC_PYSCF.py` (15 h 35 min per 100) plus about 5 h of ours. *Inference:* a pass would then compare only the trajectories that do not switch.
+- (b) **Pursue a direct comparison**, for example with more initial conditions so that the same-start subset reaches 30 pairs. At the measured rate of 13 pairs per 100 that is about 231 trajectories. *Estimate:* about **32-36 h** of `SHARC_PYSCF.py` on this machine. The lower end uses the process time (13.7 h per 100); the upper end uses the wall clock (15.6 h per 100). About 4.5 h of ours comes on top (1 h 56 min per 100). *Inference:* a pass would then compare only the trajectories that do not switch.
 - (c) A kept rule that accepts SHARC's jumps would need a new spec, because the kept rule is pre-registered, and it would compare trajectories on different solutions.
 - (d) Making SHARC's interface start on our solution would need inputs to `SHARC_PYSCF.py` not known from the public manual. It was not attempted.
 

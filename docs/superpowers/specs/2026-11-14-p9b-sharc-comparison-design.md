@@ -32,7 +32,7 @@
 > - **The SHARC print level is 2.**
 > - **The `n_samples` 500 fallback did not fire** (100 of 100 selected at 300).
 > - **A SHARC trajectory whose QM call failed** ("stopped": 1 swap, 5 direct) is not kept (3.2).
-> - **Costs (3.1):** ours took 1 h 56 min; ours-nacdr about 7 h 34 min over three windows, after a deliberate stop and a WSL VM stop (two resumes, 16 trajectories resumed); swap 5 h 37 min; direct 15 h 35 min. The coverage study took 979 s, not about 30 min.
+> - **Costs (3.1):** ours took 1 h 56 min; ours-nacdr about 7 h 34 min over three windows, after a deliberate stop and a WSL VM stop (two resumes, 16 trajectories resumed); swap 5 h 37 min; direct 15 h 35 min wall clock, but 13 h 44 min of process time (`wall_time_s` 49423.3 s; the gap is most likely a host sleep, not established). The coverage study took 979 s, not about 30 min.
 > - **Section 6:** the warning wording was adapted to contain the word "coverage". The coverage text is a constant, and the "none reaches 0.90 -> 100" fallback is not coded, because N_min = 50 was reached.
 > - **The replay (5) fails its bounds after the hop at step 23.** At every SHARC hop, SHARC's $E_{\text{tot}}$ equals the previous record's (measured over 221 swap hops); ours keeps the current step's Verlet-completed $E_{\text{tot}}$. That this is SHARC's rule is inferred. No `src/` change was made (8); this is decision 1 of the report.
 > - **The direct ensemble** has 13 paired, so it is `inconclusive`. 75 of 100 start on another solution, and all of those jump on SHARC's side.
