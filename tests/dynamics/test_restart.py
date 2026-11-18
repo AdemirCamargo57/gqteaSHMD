@@ -314,3 +314,27 @@ def test_restart_2_with_u_continues_bit_identically(tmp_path):
     save_state(tmp_path / "b.npz", a, rng)
     b, _ = load_state(tmp_path / "b.npz", model)
     assert np.array_equal(a.u, b.u)
+
+
+def test_restart_is_bit_identical_with_the_previous_hop_energy(tmp_path):
+    model = TullySimpleAvoidedCrossing()
+    options = DynamicsOptions(dt_au=2.0, hopping="sharc", decoherence="edc", hop_energy="previous")
+    start = _sac_state(model)
+    hops: list[int] = []
+    full, _ = run_trajectory(
+        model,
+        start,
+        options,
+        GeneratorSource(np.random.default_rng(5)),
+        max_steps=100,
+        on_step=lambda r: hops.extend([r.step] if r.hop_to is not None else []),
+    )
+    assert any(h <= 50 for h in hops) and any(h > 50 for h in hops), hops
+    rng = GeneratorSource(np.random.default_rng(5))
+    half, _ = run_trajectory(model, start, options, rng, max_steps=50)
+    path = tmp_path / "restart.npz"
+    save_state(path, half, rng)
+    loaded, rng2 = load_state(path, model)
+    resumed, _ = run_trajectory(model, loaded, options, rng2, max_steps=50)
+    _assert_same(resumed, full)
+    assert np.array_equal(resumed.snapshot.energies, full.snapshot.energies)

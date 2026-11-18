@@ -171,3 +171,13 @@ def test_new_record_fields_default_to_none():
         np.zeros(2), 0.5, None, None, False,
     )  # fmt: skip
     assert (rec.energies_diag, rec.c_mch, rec.active_mch, rec.u) == (None, None, None, None)
+
+
+def test_hop_energy_defaults_to_current_and_is_validated():
+    from gqteashmd.dynamics.options import HOP_ENERGIES
+
+    assert HOP_ENERGIES == ("current", "previous")
+    assert DynamicsOptions(dt_au=1.0).hop_energy == "current"
+    assert DynamicsOptions(dt_au=1.0, hop_energy="previous").hop_energy == "previous"
+    with pytest.raises(ValueError, match="hop_energy"):
+        DynamicsOptions(dt_au=1.0, hop_energy="sharc")
