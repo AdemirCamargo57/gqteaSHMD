@@ -188,7 +188,8 @@ def hop_delta_e(
     definition).
     """
     if hop_energy not in HOP_ENERGIES:
-        raise ValueError(f"hop_energy must be one of {', '.join(HOP_ENERGIES)}; got {hop_energy!r}")
+        allowed = ", ".join(HOP_ENERGIES)
+        raise ValueError(f"hop_energy must be one of {allowed}; got {hop_energy!r}")
     if hop_energy == "current":
         return float(e_new - e_old)
     return float(e_new + kinetic - e_total_previous)
@@ -266,9 +267,8 @@ def test_hop_energy_reaches_the_options_and_the_fingerprint_only_when_set(tmp_pa
     fp_default = _stage().fingerprint_inputs(default)["dynamics"]
     # the default leaves the fingerprint as on main: projects made before the key stay up to date
     assert set(fp_default) == MAIN_DYNAMICS_FINGERPRINT_KEYS
-    previous = _context(
-        tmp_path / "b", write_input, dynamics='tmax_fs = 2.0\ndt_fs = 0.25\nhop_energy = "previous"\n'
-    )
+    lines = 'tmax_fs = 2.0\ndt_fs = 0.25\nhop_energy = "previous"\n'
+    previous = _context(tmp_path / "b", write_input, dynamics=lines)
     assert run_settings(previous.config.dynamics).options.hop_energy == "previous"
     fp_previous = _stage().fingerprint_inputs(previous)["dynamics"]
     assert fp_previous["hop_energy"] == "previous"
@@ -516,7 +516,7 @@ def test_replayed_trajectory_with_the_previous_hop_energy(replay_previous):
     assert r["hop_energy_step_Eh"] <= HOP_ENERGY_STEP_BOUND_EH, r["hop_energy_step_Eh"]
     for key, bound in REPLAY_BOUNDS.items():
         value = r["diffs"][key]
-        assert value <= bound, f"{key} up to the hop + {HOP_WINDOW_AFTER}: {value:.3e} > {bound:.0e}"
+        assert value <= bound, f"{key} up to h + {HOP_WINDOW_AFTER}: {value:.3e} > {bound:.0e}"
 ```
 
 Add a sentence about the new test to the module docstring's P9b paragraph.
