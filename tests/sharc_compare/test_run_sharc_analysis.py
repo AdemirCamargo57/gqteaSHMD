@@ -48,6 +48,21 @@ def test_fit_undelayed_without_population_gives_no_tau():
     assert r["tau_fs"] is None and r["tau_std_fs"] is None
 
 
+def test_fit_verdict_without_a_bootstrap_std_is_inconclusive():
+    # PR5: a missing std is not taken as 0 (P9b final review, M4)
+    r = ra.fit_verdict(78.5, 6.5, 78.6, None)
+    assert r["verdict"] == "inconclusive" and "make_fit.py" in r["reason"]
+    r = ra.fit_verdict(78.5, None, 78.6, 6.6)
+    assert r["verdict"] == "inconclusive" and "our fit" in r["reason"]
+    assert ra.fit_verdict(None, None, 78.6, 6.6)["verdict"] == "inconclusive"
+
+
+def test_fit_verdict_compares_within_the_combined_uncertainty():
+    ok = ra.fit_verdict(78.5, 6.0, 78.6, 8.0)
+    assert ok["verdict"] == "pass" and abs(ok["bound"] - 40.0) < 1e-12
+    assert ra.fit_verdict(30.0, 1.0, 78.6, 1.0)["verdict"] == "fail"
+
+
 def test_classical_comparison_is_exact_to_the_print_precision():
     ours = np.array([[0.31, 0.69, 0.0]])
     theirs = np.array([[0.3100000000, 0.6900000000, 0.0]])

@@ -209,7 +209,7 @@ def _report(ours, theirs, tasks, paired, n_total, steps, n_states) -> dict[str, 
         "hop_pairs_ours": _hop_pairs(po),
         "hop_pairs_theirs": _hop_pairs(pt),
         "frustrated_ours": int(sum(int(t.frustrated.sum()) for t in po)),
-        "frustrated_theirs": None,  # PR4: set by main from output.lis when Task 1 F1 allows
+        "frustrated_theirs": None,  # PR4: output.dat does not record them, so always null
         "drift_eV_ours": summary_eV([max_drift_eV(t.e_total) for t in po]),
         "drift_eV_theirs": summary_eV([max_drift_eV(t.e_total) for t in pt]),
         "start_difference": {

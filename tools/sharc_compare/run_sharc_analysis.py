@@ -314,6 +314,28 @@ def _verdict(ok: bool, **numbers: Any) -> dict[str, Any]:
     return {"verdict": "pass" if ok else "fail", **numbers}
 
 
+def fit_verdict(
+    tau_ours: float | None,
+    s_ours: float | None,
+    tau_sharc: float | None,
+    s_sharc: float | None,
+) -> dict[str, Any]:
+    """`|tau_ours - tau_sharc| <= FIT_FACTOR * hypot(s_ours, s_sharc)` (spec 4); a missing
+    estimate or bootstrap std on either side is `inconclusive` with the reason (PR5)."""
+    if tau_ours is None:
+        return {"verdict": "inconclusive", "reason": "no excited population at t = 0 on our side"}
+    if tau_sharc is None:
+        return {"verdict": "inconclusive", "reason": "make_fit.py gave no tau (PR5)"}
+    if s_sharc is None:
+        return {"verdict": "inconclusive", "reason": "make_fit.py gave no bootstrap std (PR5)"}
+    if s_ours is None:
+        return {"verdict": "inconclusive", "reason": "our fit gave no bootstrap std (PR5)"}
+    bound = FIT_FACTOR * float(np.hypot(s_ours, s_sharc))
+    return _verdict(
+        abs(tau_ours - tau_sharc) <= bound, difference=tau_ours - tau_sharc, bound=bound
+    )
+
+
 def compare_tools(
     sharc_dir: Path,
     tasks: Sequence[str],
@@ -401,23 +423,12 @@ def compare_tools(
         )  # fmt: skip
         s_sharc = parse_fit(fit_dir / FIT_OUTPUT)["tau_std_fs"]
     except (RuntimeError, ValueError) as exc:
-        s_sharc, note = None, f"make_fit.py bootstrap failed, s_sharc taken as 0: {exc}"
-    if s_sharc is None:
-        s_sharc, note = 0.0, note or "no bootstrap std reported, s_sharc taken as 0"
+        s_sharc, note = None, f"make_fit.py bootstrap failed: {exc}"
     indicator = (active != 0).astype(float)
     idx = bootstrap_indices(task_rng(seed, COMPARE_STREAM, 0), len(used), n_bootstrap)
     ours_fit = fit_undelayed(steps * dt_fs, indicator, idx)
-    tau_o, s_o = ours_fit["tau_fs"], ours_fit["tau_std_fs"] or 0.0
-    fit: dict[str, Any]
-    if tau_o is None:
-        fit = {"verdict": "inconclusive", "reason": "no excited population at t = 0 on our side"}
-    else:
-        bound = FIT_FACTOR * float(np.hypot(s_o, s_sharc))
-        fit = _verdict(
-            abs(tau_o - sharc_fit["tau_fs"]) <= bound,
-            difference=tau_o - sharc_fit["tau_fs"],
-            bound=bound,
-        )
+    tau_o, s_o = ours_fit["tau_fs"], ours_fit["tau_std_fs"]
+    fit = fit_verdict(tau_o, s_o, sharc_fit["tau_fs"], s_sharc)
     fit.update(
         tau_ours_fs=tau_o,
         tau_std_ours_fs=s_o,

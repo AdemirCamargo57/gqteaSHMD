@@ -541,4 +541,6 @@ def test_an_electronic_discontinuity_is_excluded_and_counted(tmp_path, write_inp
 def test_the_small_ensemble_threshold_is_the_measured_n_min():
     # P9b Task 6 measurement, ~/p9b/tau_coverage.json: 0.895 / 0.9275 / 0.935 at N = 20 / 50 / 100
     assert analysis_module.SMALL_ENSEMBLE == 50
-    assert "coverage" in analysis_module.SMALL_ENSEMBLE_COVERAGE
+    assert analysis_module.SMALL_ENSEMBLE_COVERAGE == (
+        "coverage 0.895 at N = 20, 0.9275 at N = 50, 0.935 at N = 100"
+    )

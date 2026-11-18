@@ -46,7 +46,7 @@ TABLE_ROWS = 25
 # at least 90 % of 400 synthetic repetitions (tools/validation/tau_coverage.py); fewer included
 # trajectories: warn and `small_ensemble` (ruling P8-5)
 SMALL_ENSEMBLE = 50
-SMALL_ENSEMBLE_COVERAGE = "coverage 0.895 at N = 20, 0.927 at N = 50, 0.935 at N = 100"
+SMALL_ENSEMBLE_COVERAGE = "coverage 0.895 at N = 20, 0.9275 at N = 50, 0.935 at N = 100"
 _TIME_TOLERANCE_FS = 1e-9
 
 FIT_FLAG_MEANINGS = {

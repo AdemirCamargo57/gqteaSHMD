@@ -1,6 +1,6 @@
 # P9b report: the SHARC 4.1 ensemble comparison, the analysis tools, the replay and the minimum N
 
-Status: **the swap comparison passes all four of its rules on 48 paired trajectories; the comparison of our analysis with SHARC's `populations.py` and `make_fit.py` passes all three checks; the direct ensemble is inconclusive (13 paired, fewer than 30); the replayed hopping-on trajectory fails its bounds after the hop and is a strict xfail; the tau coverage study gives N_min = 50.** No bound was changed, no seed replaced and nothing re-run with other settings (spec 8). The only behaviour change is the analysis threshold of section 6.
+Status: **the swap comparison passes all four of its rules on 48 paired trajectories; the comparison of our analysis with SHARC's `populations.py` and `make_fit.py` passes all three checks (the lifetime check uses a tool-local fit and a bound that does not discriminate, section 4); the direct ensemble is inconclusive (13 paired, fewer than 30); the replayed hopping-on trajectory agrees within its bounds before the hop, fails them after it, and the full-window test is a strict xfail; the tau coverage study gives N_min = 50.** No bound was changed, no seed replaced and nothing re-run with other settings (spec 8). The only behaviour change is the analysis threshold of section 6.
 
 Date: 2026-11-18. Branch `feat/p9b-sharc-comparison`. The spec is `docs/superpowers/specs/2026-11-14-p9b-sharc-comparison-design.md` (owner-approved 2026-11-14; erratum at its top) and the plan is `docs/superpowers/plans/2026-11-14-p9b-sharc-comparison.md` (plan commit `563a9f4`; its "Plan rulings" PR1-PR9 are binding where they differ from the spec). The code tasks are the commits `9ffe8fe` to `e1ef1f8`, plus the tool fix `637a9f8` (ruling P7). Tasks 7 and 9 are measurements with no diff.
 
@@ -47,14 +47,17 @@ Date: 2026-11-18. Branch `feat/p9b-sharc-comparison`. The spec is `docs/superpow
 - **Our analysis against SHARC's tools** (all 100 swap SHARC trajectories; asserted): all three checks **pass**.
   - Classical populations: max |diff| 0.0.
   - Quantum populations: 4.998e-10 against 1e-9.
-  - Fit of the undelayed model: tau 78.491 against 78.629 fs, a difference of 0.138 fs against a bound of 36.93 fs.
-- **Replay** (asserted, pytest): it **fails its pre-registered bounds** after the hop at step 23. It is a strict xfail (ruling P5).
+  - Fit of the undelayed model: tau 78.491 against 78.629 fs, a difference of 0.138 fs against a bound of 36.93 fs. **Our side of this fit is the tool-local `fit_undelayed`, not the stage's fit code** (`analysis.kinetics`). So only our population functions are validated against SHARC's tools, not the stage's lifetime fit. The bound does not discriminate (section 4).
+- **Replay** (asserted, pytest): it **fails its pre-registered bounds** after the hop at step 23. Since the final review the test is split:
+  - one passing test checks the bounds on the records before the hop;
+  - the full-window test stays a strict xfail (ruling P5).
   - Measured at that hop: SHARC's total energy after the hop equals the previous step's total energy to 4e-13 Eh, while ours keeps the current step's Verlet-completed total energy.
   - Over all 221 SHARC swap hops: |dE_tot| <= 9.71e-12 Eh at the hop, against a non-hop median of 8.31e-5 Eh.
   - That SHARC targets the previous record's energy as a rule is an inference.
 - **Coverage** (report): the coverage of the 95 % tau interval is 0.895 at N = 20, 0.9275 at N = 50 and 0.935 at N = 100.
   - **N_min = 50**, so `SMALL_ENSEMBLE` = 50 and `AnalysisStage.version` = 2. Existing projects need `--rerun-from analysis`.
   - N = 20 misses 0.90 by 0.005, within one standard error (0.0153). This is the rule's result, not a sharp boundary.
+  - At every tested N the coverage is **below the nominal 0.95**: 3.6, 1.7 and 1.2 standard errors below.
 - **Found and fixed during the work:** a Task 3 tool defect, fixed in commit `637a9f8` (ruling P7). As first written, `ensemble_compare.py` paired 0 trajectories silently. The reruns are identical to the shadow-project results.
 
 ## 1. What was run
@@ -275,6 +278,10 @@ SHARC's tools ran as black boxes on **all 100 swap SHARC trajectories**. Our `an
 - `make_fit.py` has no seed prompt, so its bootstrap std is not reproducible (`sharc_bootstrap_reproducible` false). It was run once and recorded.
 - Our side used B = 1000 with seed 2028.
 - This undelayed tau is not the delayed tau of section 2: the comparison is between the two programs' fits of the same model. Our delayed fit (t0, tau) has no SHARC counterpart.
+- **What the fit check validates (final review).** Our side is `fit_undelayed` in `tools/sharc_compare/run_sharc_analysis.py`, a fit written for this comparison. It is not the stage's `gqteashmd.analysis.kinetics` (`fit_delayed_exponential`, `bootstrap_fit`). So the stage's fit code is **not** validated against `make_fit.py`; the populations (`classical_populations`, `quantum_populations`) are.
+- **The fit bound does not discriminate.** The bound, 4 × the combined bootstrap std = 36.93 fs, is a sampling bound applied to two fits of the *same* data. It would pass a difference of up to 47 % of tau (36.93 of 78.63 fs).
+- **The measured 0.138 fs (0.18 %) difference is unexplained.** `make_fit.py`'s fitting method, the columns it fits and its weighting are possible causes; none is established.
+- **The live tests of this comparison run on a fixture with no decay** (`tests/sharc_compare/test_run_sharc_analysis.py`; the two Task 1 fixture trajectories stay in S1, SHARC's tau 104172 fs). So no test exercises the fit path on decaying data; only the Task 9 measurement does.
 
 ## 5. The replayed hopping-on trajectory (asserted; strict xfail)
 
@@ -283,7 +290,10 @@ SHARC's tools ran as black boxes on **all 100 swap SHARC trajectories**. Our `an
 - `sharc.x` on our backend (swap provider) with hopping on. Its per-step random numbers (`output.dat` block 9) are replayed through our `TrajectoryRunner` with `ReplaySource`.
 - Both sides: SA3-CASSCF(2,2)/6-31G\*, `overlap` coupling, EDC, `parallel_vel`, `endpoint` interpolation (PR3), and `frustrated` keep (SHARC's `reflect_frustrated none`).
 - **Start, by the fixed rule:** the first swap trajectory in index order with an accepted hop within 20 fs, which is start 9 (`traj_00009`, `rngseed` 10, a hop S1 -> S0 at 11.5 fs). It met the "must be able to fail" conditions: a hop at step 23 inside the window, and max P(S0) 0.99999975 in the window. So no other start was tried. The start is in `tests/data/ethylene_hop_start.json`.
-- Test: `tests/validation/test_sharc_pyscf_dynamics.py::test_replayed_hopping_on_trajectory` (markers `sharc`, `pyscf`, `slow`).
+- Test: `tests/validation/test_sharc_pyscf_dynamics.py` (markers `sharc`, `pyscf`, `slow`). The Task 8 test was `test_replayed_hopping_on_trajectory`. Since the final review it is a module fixture `replay`, which runs both sides once, plus two tests:
+  - `test_replayed_trajectory_agrees_before_the_hop` (passing): the preconditions, the same active state over the window, and the four bounds over the records before the first hop;
+  - `test_replayed_trajectory_over_the_pre_registered_window` (strict xfail): the four bounds over the whole window, each assertion naming its key.
+- The window also ends at our first rejected step or substep record, a plan-level addition to spec 5 (a halving would shift the replayed stream). It did not fire.
 
 **Result.**
 
@@ -300,7 +310,7 @@ SHARC's tools ran as black boxes on **all 100 swap SHARC trajectories**. Our `an
 | hopping probabilities | $10^{-5}$ | **$5.19\times10^{-4}$** |
 | active state | identical | identical |
 
-The first run failed in 379.45 s. Ruling P5 then made the test `xfail(strict=True, raises=AssertionError)`, with these numbers in its reason. The rerun gave 1 xfailed in 372.05 s with identical numbers. The bounds, the window and the start were not touched.
+The first run failed in 379.45 s. Ruling P5 then made the test `xfail(strict=True, raises=AssertionError)`, with these numbers in its reason. The rerun gave 1 xfailed in 372.05 s with identical numbers. The bounds, the window and the start were not touched. The split of the final review is recorded in section 8, with its run.
 
 **Diagnosis (ruling P6, decided after the numbers were seen; report only, nothing changed).**
 
@@ -371,11 +381,21 @@ Coverage is the fraction of repetitions whose 95 % tau interval contains 40 fs. 
 
 **N_min = 50**, by the rule "the smallest N with coverage >= 0.90". N = 20 at 0.895 misses 0.90 by 0.005, within one standard error. N_min = 50 is the rule's result, not a sharp boundary: the coverage at N = 20 is statistically indistinguishable from 0.90.
 
-**What changed in the code** (`src/gqteashmd/stages/analysis.py`, the only change under `src/`; commit `a52e7c0`):
+**The nominal level is not reached.** The interval is a nominal 95 % interval, and its measured coverage is below 0.95 at every tested N:
+
+| N | coverage | standard errors below 0.95 |
+|---|---|---|
+| 20 | 0.895 | 3.6 |
+| 50 | 0.9275 | 1.7 |
+| 100 | 0.935 | 1.2 |
+
+So N = 50 reaches the **pre-registered 0.90 threshold**, not the nominal level. The median fitted tau is also biased low at small N: 38.13 fs at N = 20, 38.80 at N = 50 and 39.80 at N = 100, against the true 40 fs.
+
+**What changed in the code** (`src/gqteashmd/stages/analysis.py`, the only change under `src/`; commit `a52e7c0`, the text corrected by the final review):
 
 - `SMALL_ENSEMBLE = 50` (was 20), and `small_ensemble` is `n_included < 50`.
-- `SMALL_ENSEMBLE_COVERAGE = "coverage 0.895 at N = 20, 0.927 at N = 50, 0.935 at N = 100"`, so the warning reads: `only N trajectories are included (fewer than 50): populations, intervals and the fit are not statistically reliable (measured 95 % tau interval coverage 0.895 at N = 20, 0.927 at N = 50, 0.935 at N = 100)`.
-  - The text prints 0.927 for 0.9275 (deferred minor).
+- `SMALL_ENSEMBLE_COVERAGE = "coverage 0.895 at N = 20, 0.9275 at N = 50, 0.935 at N = 100"`, so the warning reads: `only N trajectories are included (fewer than 50): populations, intervals and the fit are not statistically reliable (measured 95 % tau interval coverage 0.895 at N = 20, 0.9275 at N = 50, 0.935 at N = 100)`.
+  - Task 6 printed 0.927 for 0.9275. The final review changed it to 0.9275, and the test now asserts the whole text.
   - The wording was adapted to read well with the word "coverage" that the test requires.
 - `AnalysisStage.version` 1 -> 2: an existing project with `analysis` results stops with exit 3 and needs `--rerun-from analysis` (seconds; the trajectories stay).
 
@@ -428,9 +448,10 @@ Options:
   - (b) measure N = 30 and 40, to locate the boundary (about 16 min per three sizes on this machine);
   - (c) refuse the fit below N_min (spec owner decision 4 chose a warning).
 - Deferred minors that go with it:
-  - the warning prints 0.927 for 0.9275;
+  - the warning printed 0.927 for 0.9275 (fixed by the final review);
   - the spec's "else 100" fallback and its warning text are not coded (the constant was set by hand);
-  - the coverage text is hard-coded, and its test checks only the word "coverage".
+  - the coverage text is hard-coded (its test now asserts the whole text, final review).
+- Also: the interval does not reach its nominal 0.95 at any tested N, and the median tau is biased low at small N (section 6). Options: accept, since the threshold rule is 0.90; or study another interval method in a later sub-project.
 
 **5. The excluded fraction of 31-33 % in our runs (selection bias).**
 
@@ -448,15 +469,17 @@ Options:
 - *`make_fit.py`'s bootstrap std is not reproducible* (no seed prompt). Accept.
 - *The WSL VM stopped during a long run* (likely the idle timeout, not established). Option: `vmIdleTimeout=-1` in `.wslconfig` for runs of several hours (a machine setting; not set).
 - *Our backend failed inside the swap provider once* (`traj_00085` at 76.5 fs). In our own run the same initial condition ended `overlap_failure` at 62.25 fs. *(report)*
-- *The replay test's `raises=AssertionError`* also covers its hop, P(S0) and active-state assertions, so an xfail for another reason would pass silently (deferred minor). Option: give the bound checks their own message.
+- *The replay test's `raises=AssertionError` scope* (it once covered the hop, P(S0) and active-state assertions too) was **resolved by the final review**. Those checks moved to the passing pre-hop test, and each bound assertion of the xfail names its key.
+- *The analysis' own lifetime fit is not compared with `make_fit.py`* (section 4: our side of the fit check is a tool-local fit). Option: drive `make_fit.py` against the stage's fit with the delay fixed at 0, or accept that the fit is validated on synthetic data only.
 
 ## 8. The honest summary
 
 **What P9b shows:**
 
 - Our driver and SHARC 4.1's driver, on the same electronic structure (swap), give ensembles that agree under every rule fixed before the runs: classical populations, delayed-fit tau and t0, and first-hop times, on 48 paired trajectories.
-- Our analysis reproduces SHARC's `populations.py` exactly (classical) and to its print precision (quantum), and SHARC's `make_fit.py` lifetime to 0.14 fs.
-- The tau interval of our analysis covers at the nominal level from N = 50.
+- Our analysis' population functions reproduce SHARC's `populations.py` exactly (classical) and to its print precision (quantum).
+- A tool-local undelayed fit (`fit_undelayed`, not the stage's `analysis.kinetics`) gives `make_fit.py`'s lifetime to 0.14 fs (0.18 %, unexplained). The 36.93 fs bound of that check does not discriminate. So **the stage's lifetime fit is not validated against `make_fit.py`**.
+- The tau interval of our analysis reaches the pre-registered 0.90 coverage threshold from N = 50. It stays below its nominal 0.95 at every tested N (3.6, 1.7 and 1.2 SE below at N = 20, 50, 100), and the median tau is biased low at small N (38.13 fs at N = 20 against 40).
 
 **What it does not show:**
 
@@ -476,5 +499,10 @@ Options:
 8. **Task 6:** the warning wording was adapted after the numbers, to read with "coverage". N_min itself follows the fixed rule.
 9. **Task 5:** `make_fit.py` runs twice (normal mode for tau, bootstrap mode for the std), and our side holds a trajectory's last values past its end, as `populations.py` does. Both were decided while the tool was written, before the Task 9 comparison but after the Task 1 observations.
 10. **Task 10 (this report):** the location of the largest |dP|, the start split of the direct kept set, the aborted-against-jumped counts and the hops before our losses were read from the existing files. No calculation was run.
+11. **The final review (after all numbers were seen):**
+    - **The replay test was split.** A module fixture runs both sides once; a new passing test asserts the spec-5 preconditions, the same active state over the window and the four bounds over the records before the first hop; the full-window test keeps its bounds, window, start and settings as a strict xfail, with each bound assertion naming its key. The split tightens and adds; it loosens nothing. Run: 1 passed, 1 xfailed (the task-10 ledger report has the output).
+    - **A tool change:** a missing bootstrap std in `run_sharc_analysis.py` is now `inconclusive` (PR5), where it was taken as 0. It did not occur, so `tools.json` is unaffected.
+    - **The analysis warning text** prints 0.9275 instead of 0.927.
+    - **The claims about `make_fit.py` and the coverage** were corrected (sections 0, 4, 6 and this one).
 
 **Before any comparison, from the Task 1 observations** (not decisions after comparison numbers): the undelayed shared fit model (F4, because `make_fit.py` cannot express a delay), the quantum bound 1e-9 (F5) and the extractor and environment workarounds (F6).
