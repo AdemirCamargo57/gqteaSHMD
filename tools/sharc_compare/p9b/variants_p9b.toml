@@ -1,0 +1,4 @@
+# P9b (plan Task 7): the project's own settings, no overrides.
+[[variant]]
+name = "project"
+description = "the seed-2028 project as it is"

@@ -1,0 +1,29 @@
+printlevel 2
+geomfile "geom"
+veloc external
+velocfile "veloc"
+nstates 2
+charge 0
+state 1 mch
+coeff auto
+stepsize 0.024188843265857
+tmax 3.6343737006950145
+nsubsteps 25
+method tsh
+surf mch
+coupling nacdr
+eeom li
+nogradcorrect
+ekincorrect parallel_vel
+reflect_frustrated none
+decoherence_scheme none
+decoherence_param 0.1
+hopping_procedure sharc
+grad_all
+nac_all
+nospinorbit
+rngseed 8
+output_format ascii
+nowrite_restart_files
+write_grad
+write_nacdr

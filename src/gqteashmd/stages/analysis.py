@@ -42,7 +42,11 @@ FILES = ("populations.h5", "populations.csv", "hops.csv")
 DYNAMICS_ADVICE = "rerun with --rerun-from dynamics"
 TASK = "analysis"
 TABLE_ROWS = 25
-SMALL_ENSEMBLE = 20  # fewer included trajectories: warn, `small_ensemble` (ruling P8-5)
+# P9b (spec 6): the smallest of N = 20, 50, 100 whose 95 % tau interval covered the true tau in
+# at least 90 % of 400 synthetic repetitions (tools/validation/tau_coverage.py); fewer included
+# trajectories: warn and `small_ensemble` (ruling P8-5)
+SMALL_ENSEMBLE = 50
+SMALL_ENSEMBLE_COVERAGE = "coverage 0.895 at N = 20, 0.9275 at N = 50, 0.935 at N = 100"
 _TIME_TOLERANCE_FS = 1e-9
 
 FIT_FLAG_MEANINGS = {
@@ -65,7 +69,7 @@ def _task_error(message: str) -> TaskError:
 
 class AnalysisStage(Stage):
     name = "analysis"
-    version = 1
+    version = 2
     depends_on = ("selection", "dynamics")
     config_sections = ("analysis",)
     required_modules: tuple[str, ...] = ("h5py>=3.9", "scipy>=1.11")
@@ -204,7 +208,8 @@ class AnalysisStage(Stage):
         if n < SMALL_ENSEMBLE:
             warnings.append(
                 f"only {n} trajectories are included (fewer than {SMALL_ENSEMBLE}): populations, "
-                "intervals and the fit are not statistically reliable"
+                "intervals and the fit are not statistically reliable (measured 95 % "
+                f"tau interval {SMALL_ENSEMBLE_COVERAGE})"
             )
         p_classical, n_counts = populations.classical_populations(g.active, len(labels))
         p_lo, p_hi = populations.wilson_intervals(n_counts, n)

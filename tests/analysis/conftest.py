@@ -75,8 +75,9 @@ def summary_example():
             "project_seed": 7,
         },
         "warnings": [
-            "only 2 trajectories are included (fewer than 20): populations, intervals and the "
-            "fit are not statistically reliable",
+            "only 2 trajectories are included (fewer than 50): populations, intervals and the "
+            "fit are not statistically reliable (measured 95 % tau interval coverage 0.895 at "
+            "N = 20, 0.9275 at N = 50, 0.935 at N = 100)",
             "33% of the selected trajectories are excluded (more than "
             "warn_excluded_fraction = 0.1): possible selection bias, see 'excluded'",
         ],

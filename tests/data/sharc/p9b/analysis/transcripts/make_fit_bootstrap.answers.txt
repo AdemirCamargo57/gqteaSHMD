@@ -1,0 +1,16 @@
++ S0 S1
+end
++ S1 S0 k10
+end
++ S1
+end
+True
+20
+../../ens/bootstrap_data
+
+S1 = 3 4
+end
+end
+
+
+

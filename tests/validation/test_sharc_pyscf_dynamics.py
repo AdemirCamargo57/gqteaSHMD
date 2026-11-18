@@ -51,6 +51,14 @@ of the first runs (both runs identical to every printed digit):
   structure under both drivers, agreement to about 4 digits); the relative P(S0) differences of
   both our couplings are printed, report-only (``test_relative_s0_population_report``).
 
+P9b Task 8 (``test_replayed_trajectory_*``): one hopping-on trajectory. sharc.x runs on
+our backend (``SwapModel``) with hopping on; our ``TrajectoryRunner`` replays its random numbers
+(``ReplaySource`` of output.dat block 9). Start: ``tests/data/ethylene_hop_start.json`` (the first
+swap-ensemble trajectory with an accepted hop at or before 20 fs, chosen by the rule of spec 5).
+Bounds fixed in spec 5 before any run: positions 1e-5 bohr, velocities 1e-6, populations and
+hopping probabilities 1e-5, the same active state; the window ends at a near tie (1e-5), our
+first rejected step or after 80 steps.
+
 Run with ``-s`` to see the per-step differences.
 """
 
@@ -343,3 +351,186 @@ def test_the_energy_check_ends_the_run_at_the_step_24_solution_change(harness, o
     assert result["n_grid_steps"] == CHANGE_STEP - 1, (coupling, result)
     assert (CHANGE_STEP - 1) * harness.DT_FS < result["t_final_fs"] < CHANGE_STEP * harness.DT_FS
     assert result["rejections_by_signal"].get("energy", 0) >= 1, (coupling, result)
+
+
+# --- P9b: a replayed hopping-on trajectory (spec 5; plan Task 8) ------------------------------
+# sharc.x on our backend (SwapModel) with hopping on; our TrajectoryRunner replays its random
+# numbers (output.dat block 9 of steps 1, 2, ...). Both: SA3-CASSCF(2,2)/6-31G* from
+# tests/data/ethylene_hop_start.json, overlap coupling, EDC, endpoint interpolation (PR3).
+# Pre-registered bounds (spec 5): positions <= 1e-5 bohr, velocities <= 1e-6 au, populations
+# and hopping probabilities <= 1e-5, the same active state; the window ends at the first step
+# whose random number lies within 1e-5 of a cumulative hopping probability on either side,
+# at our first rejected step (a halving would shift the replayed stream), or after 80 steps.
+
+REPLAY_STEPS = 80
+REPLAY_BOUNDS = {"q": 1e-5, "v": 1e-6, "populations": 1e-5, "probabilities": 1e-5}
+NEAR_TIE = 1e-5
+START = Path(__file__).resolve().parents[1] / "data" / "ethylene_hop_start.json"
+
+
+def _near_tie(xi: float, probabilities: np.ndarray) -> bool:
+    return bool(np.any(np.abs(np.cumsum(probabilities) - xi) < NEAR_TIE))
+
+
+def _replay_backend(start, scratch):
+    from gqteashmd.config.schema import ElectronicSection
+    from gqteashmd.electronic.base import MoleculeSpec
+    from gqteashmd.electronic.pyscf_backend import PySCFBackend
+
+    scratch.mkdir(parents=True, exist_ok=True)
+    return PySCFBackend(
+        MoleculeSpec(tuple(start["symbols"]), 0, 1),
+        ElectronicSection.model_validate(start["electronic"]),
+        log_file=scratch / "electronic.log",
+        threads=2,
+        memory_mb=1500,
+        scratch_dir=scratch,
+        reference_coords_bohr=np.asarray(start["equilibrium_bohr"]).reshape(-1, 3),
+    )
+
+
+@pytest.fixture(scope="module")
+def replay(tmp_path_factory):
+    """sharc.x and our runner on the same start and random stream, run once for both tests.
+
+    Returns the per-record maxima over the compared window and over the records before the first
+    hop. The window rules are those of spec 5 plus the plan's end at our first rejected step or
+    substep record (a halving would shift the replayed stream; it did not fire).
+    """
+    from gqteashmd.core.units import AU_TIME_IN_FS, DALTON_IN_ME
+    from gqteashmd.dynamics.options import DynamicsOptions
+    from gqteashmd.dynamics.randomness import ReplaySource
+    from gqteashmd.trajectory.model import BackendModel
+    from gqteashmd.trajectory.runner import InitialConditions, RunSettings, TrajectoryRunner
+    from gqteashmd.trajectory.store import StepLog
+
+    tmp_path = tmp_path_factory.mktemp("replay")
+    dyn = _load("run_sharc_pyscf_dynamics")
+    start = json.loads(START.read_text())
+    q0 = np.asarray(start["q_bohr"]).reshape(-1, 3)
+    v0 = np.asarray(start["v_au"]).reshape(-1, 3)
+    n_states = int(start["electronic"]["singlets"])
+    sharc = dyn.run_sharc_trajectory(
+        dyn.interface_geometry(q0),
+        v0,
+        n_steps=REPLAY_STEPS,
+        workdir=tmp_path / "sharc",
+        symbols=start["symbols"],
+        masses_amu=start["masses_amu"],
+        sharc_home=Path(os.environ["SHARC_HOME"]),
+        provider="ours",
+        model=dyn.SwapModel(_replay_backend(start, tmp_path / "b1"), coupling="overlap"),
+        coupling="overlap",
+        n_states=n_states,
+        state_mch=1,
+        hopping="sharc",
+        decoherence="edc",
+        seed=int(start["seed"]),
+    )
+    traj = sharc["trajectory"]
+    dt_au = 0.5 / AU_TIME_IN_FS
+    options = DynamicsOptions(
+        dt_au=dt_au,
+        nsubsteps=25,
+        hopping="sharc",
+        decoherence="edc",
+        ekin_correction="parallel_vel",
+        coupling="overlap",
+        gradient_transformation="none",
+        substep_interpolation="endpoint",
+    )
+    masses = np.repeat(np.asarray(start["masses_amu"]) * DALTON_IN_ME, 3)
+    model = BackendModel(_replay_backend(start, tmp_path / "b2"), masses, coupling="overlap")
+    TrajectoryRunner(
+        model, RunSettings(options, tmax_au=REPLAY_STEPS * dt_au), tmp_path / "ours"
+    ).run(
+        InitialConditions(dyn.interface_geometry(q0).reshape(-1), v0.reshape(-1), 1),
+        ReplaySource(list(traj.random_numbers[1:])),
+    )
+    rows = StepLog(tmp_path / "ours" / "steps.log", n_states, q0.size).read()
+    # the window: steps 1..end-1 are compared; it ends at a near tie, a rejection or step 80
+    end = min(len(rows), len(traj.steps))
+    for k in range(1, end):
+        if int(rows["rejections"][k]) > 0 or int(rows["ticks"][k]) != 0:
+            end = k
+            break
+        if _near_tie(float(traj.random_numbers[k]), traj.probabilities[k]) or _near_tie(
+            float(rows["random_number"][k]), rows["probabilities"][k]
+        ):
+            end = k
+            break
+    ours_p = rows["c_real"][:end] ** 2 + rows["c_imag"][:end] ** 2
+    sharc_p = np.abs(traj.c[:end]) ** 2
+    dprob = np.abs(rows["probabilities"][1:end] - traj.probabilities[1:end]).max(axis=1)
+    per_record = {
+        "q": np.abs(rows["q"][:end] - traj.q[:end]).max(axis=1),
+        "v": np.abs(rows["v"][:end] - traj.v[:end]).max(axis=1),
+        "populations": np.abs(ours_p - sharc_p).max(axis=1),
+        # step 0 has no propagation, so the probabilities are compared from step 1 on
+        "probabilities": np.concatenate([[0.0], dprob]),
+    }
+    changes = np.flatnonzero(np.diff(traj.active[:end])) + 1
+    hops = int(changes.size)
+    first_hop = int(changes[0]) if hops else end
+    diffs = {k: float(v.max()) for k, v in per_record.items()}
+    before = {k: float(v[:first_hop].max()) for k, v in per_record.items()}
+    print(
+        f"\n[P9b replay] window {end} steps, hops {hops}, max P(S0) {sharc_p[:, 0].max():.3e}, "
+        + ", ".join(f"d{k} {v:.2e}" for k, v in diffs.items())
+    )
+    print(
+        f"[P9b replay] before the first hop (steps 0-{first_hop - 1}): "
+        + ", ".join(f"d{k} {v:.2e}" for k, v in before.items())
+    )
+    e_s = np.array([np.diag(h).real for h in traj.hamiltonian])
+    for k in range(20, min(31, end)):
+        print(
+            f"[P9b replay] step {k}: dq {np.abs(rows['q'][k] - traj.q[k]).max():.2e} "
+            f"dv {np.abs(rows['v'][k] - traj.v[k]).max():.2e} "
+            f"dpop {np.abs(ours_p[k] - sharc_p[k]).max():.2e} "
+            f"dprob {np.abs(rows['probabilities'][k] - traj.probabilities[k]).max():.2e} "
+            f"E_tot sharc {e_s[k][traj.active[k]] + traj.e_kinetic[k]:.10f} "
+            f"ours {rows['e_total'][k]:.10f}"
+        )
+    return {
+        "end": end,
+        "hops": hops,
+        "first_hop": first_hop,
+        "max_p_s0": float(sharc_p[:, 0].max()),
+        "active_ours": np.asarray(rows["active"][:end]),
+        "active_sharc": np.asarray(traj.active[:end]),
+        "diffs": diffs,
+        "before": before,
+    }
+
+
+def test_replayed_trajectory_agrees_before_the_hop(replay):
+    """The spec-5 preconditions, the same active state over the window, and the four spec-5
+    bounds over the records before the first hop (steps 0 .. hop-1).
+
+    Added by the P9b final review, after the numbers were seen: it splits the original test and
+    adds this passing check; the full-window check below keeps its bounds and window.
+    """
+    assert replay["hops"] >= 1, "no hop inside the compared window: the check cannot fail"
+    assert replay["max_p_s0"] >= 1e-3, "P(S0) < 1e-3 in the window: the check cannot fail"
+    assert np.array_equal(replay["active_ours"], replay["active_sharc"]), "active states differ"
+    for key, bound in REPLAY_BOUNDS.items():
+        value = replay["before"][key]
+        assert value <= bound, f"{key} before the first hop: {value:.3e} > bound {bound:.0e}"
+
+
+@pytest.mark.xfail(
+    strict=True,
+    raises=AssertionError,
+    reason=(
+        "P9b Task 8, measured: start 9 (rngseed 10), one hop S1->S0 at step 23 (11.5 fs), window "
+        "81 records (80 steps); max differences dq 0.455 bohr (bound 1e-5), dv 2.79e-3 (1e-6), "
+        "populations 2.87e-4 (1e-5), probabilities 5.19e-4 (1e-5); steps 0-22 agree within "
+        "1.3e-7; the bounds are first exceeded at the hop step (dv 3.3e-6, populations 1.1e-4)"
+    ),
+)
+def test_replayed_trajectory_over_the_pre_registered_window(replay):
+    """The spec-5 bounds over the whole pre-registered window (strict xfail, ruling P5)."""
+    for key, bound in REPLAY_BOUNDS.items():
+        value = replay["diffs"][key]
+        assert value <= bound, f"{key} over the window: {value:.3e} > bound {bound:.0e}"

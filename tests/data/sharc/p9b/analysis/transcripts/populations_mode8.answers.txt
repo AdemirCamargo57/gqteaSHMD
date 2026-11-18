@@ -1,0 +1,10 @@
+Singlet_1
+end
+8
+False
+
+
+5.0
+
+
+

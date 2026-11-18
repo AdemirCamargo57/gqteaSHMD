@@ -1,0 +1,109 @@
+Script for population computation started...
+
+
+  ================================================================================
+||                                                                                ||
+||                    Reading populations from SHARC dynamics                     ||
+||                                                                                ||
+||                             Author: Sebastian Mai                              ||
+||                                                                                ||
+||                                  Version:4.0                                   ||
+||                                    01.04.25                                    ||
+||                                                                                ||
+  ================================================================================
+
+
+This script calculates ensemble populations
+(e.g. based on the classically occupied state or based on the quantum amplitudes).
+  
+-------------------Paths to trajectories--------------------
+
+Please enter the paths to all directories containing the "TRAJ_0XXXX" directories.
+E.g. Sing_2/ and Sing_3/. 
+Please enter one path at a time, and type "end" to finish the list.
+Path:  [end] (autocomplete enabled) ['TRAJ_00001', 'TRAJ_00000']
+Found 2 subdirectories in total.
+
+Path:  [end] (autocomplete enabled) 
+Total number of subdirectories: 2
+
+------------------------Analyze Mode------------------------
+
+This script can analyze the classical populations in different ways:
+1       Number of trajectories in each diagonal state                                   from output.lis
+2       Number of trajectories in each (approximate) MCH state                          from output.lis
+3       Number of trajectories in each (approximate) MCH state (multiplets summed up)   from output.lis
+4       Number of trajectories whose total spin value falls into certain intervals      from output.lis
+5       Number of trajectories whose dipole moment falls into certain intervals         from output.lis
+6       Number of trajectories whose oscillator strength falls into certain intervals   from output_data/fosc.out
+
+It can also sum the quantum amplitudes:
+7       Quantum amplitudes in diagonal picture                                          from output_data/coeff_diag.out
+8       Quantum amplitudes in MCH picture                                               from output_data/coeff_MCH.out
+9       Quantum amplitudes in MCH picture (multiplets summed up)                        from output_data/coeff_MCH.out
+
+It can also transform the classical diagonal populations to MCH basis:
+12      Transform diagonal classical populations to MCH                                 from output_data/coeff_class_MCH.out
+13      Transform diagonal classical populations to MCH (multiplets summed up)          from output_data/coeff_class_MCH.out
+14      Wigner-transform classical diagonal populations to MCH                          from output_data/coeff_mixed_MCH.out
+15      Wigner-transform classical diagonal populations to MCH (multiplets summed up)   from output_data/coeff_mixed_MCH.out 
+
+It can also compute diabatic populations:
+20      Quantum amplitudes in diabatic picture                                          from output_data/coeff_diab.out
+21      Transform diagonal classical populations to diabatic                            from output_data/coeff_class_diab.out
+22      Wigner-transform classical diagonal populations to diabatic                     from output_data/coeff_mixed_diab.out
+
+Analyze mode: 
+----------------------Number of states----------------------
+
+Please enter the number of states as a list of integers
+e.g. 3 0 3 for three singlets, zero doublets and three triplets.
+Number of states: [3] 
+
+-----------------------Normalization------------------------
+
+Normalize the populations? [True] 
+----------------------Simulation time-----------------------
+
+Up to which simulation time should the analysis be performed? (Trajectories which are shorter are continued with their last values.)
+Simulation time (in fs):  [1000.0] 
+------------------Setup for bootstrapping?------------------
+
+
+The population data can be analyzed by fitting with a kinetic model (via make_fitscript.py). In order to estimate errors for these time constants (via bootstrapping), additional data needs to be saved here.
+Save data for bootstrapping? [False] -----------------------Gnuplot script-----------------------
+
+Gnuplot script? [False] 
+#########################Full input#########################
+
+paths                      ['Singlet_1']
+mode                       2
+run_extractor              False
+run_extractor_full         False
+states                     [3]
+nstates                    3
+nmstates                   3
+statemap                   {1: [1, 1, 0.0, 1], 2: [1, 2, 0.0, 2], 3: [1, 3, 0.0, 3]}
+statemap_compact           {1: [1, 1], 2: [1, 2], 3: [1, 3]}
+normalize                  True
+maxtime                    5.0
+bootstrap                  False
+gnuplot                    False
+
+Do you want to do the specified analysis? [True] 
+Checking the directories...
+Singlet_1/TRAJ_00000          OK
+Singlet_1/TRAJ_00001          OK
+Number of trajectories: 2
+Trajectory Singlet_1/TRAJ_00000/output.lis with start time 0.000 fs
+Trajectory Singlet_1/TRAJ_00001/output.lis with start time 0.000 fs
+Found dt=0.500000, nsteps=11, nstates=3
+
+Singlet_1/TRAJ_00000/output.lis                             10
+Singlet_1/TRAJ_00001/output.lis                             10
+Shortest trajectory: 5.000000
+Longest trajectory: 5.000000
+Number of trajectories: 2
+
+Writing to pop_2.out ...
+Writing number of trajectories per step to traj_per_step_pop_2.out ...
