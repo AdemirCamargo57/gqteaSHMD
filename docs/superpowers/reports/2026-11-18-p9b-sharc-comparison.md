@@ -472,6 +472,17 @@ Options:
 - *The replay test's `raises=AssertionError` scope* (it once covered the hop, P(S0) and active-state assertions too) was **resolved by the final review**. Those checks moved to the passing pre-hop test, and each bound assertion of the xfail names its key.
 - *The analysis' own lifetime fit is not compared with `make_fit.py`* (section 4: our side of the fit check is a tool-local fit). Option: drive `make_fit.py` against the stage's fit with the delay fixed at 0, or accept that the fit is validated on synthetic data only.
 
+### Owner decisions (2026-11-18)
+
+The owner took the recommended option of each item:
+
+1. **Hop energy convention: (c), an option.** The current rule stays the default, and SHARC's convention becomes an option. The replay is rerun with the option on and asserted up to 20 steps after the hop. Our ensemble is rerun with the option as a report. Spec: `docs/superpowers/specs/2026-11-18-hop-energy-option-design.md`.
+2. **Direct ensemble: (a)**, accepted as a report and closed.
+3. **tau/t0 intervals: (a)**, the pass is accepted as measured.
+4. **N_min: (a)**, it stays 50. The interval's coverage below its nominal 0.95 is accepted.
+5. **Excluded fraction: (b)**, the losses after a hop are reopened as a sub-project, after the hop energy option.
+6. **Smaller items:** all accepted as they are. The stage's lifetime fit stays validated on synthetic data only. `vmIdleTimeout=-1` was set in `.wslconfig` on 2026-11-18.
+
 ## 8. The honest summary
 
 **What P9b shows:**
