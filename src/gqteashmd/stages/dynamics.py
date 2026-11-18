@@ -68,6 +68,7 @@ def run_settings(section: DynamicsStageSection) -> RunSettings:
         edc_convention=section.edc_convention,
         substep_interpolation=section.substep_interpolation,
         coupling=section.coupling,
+        hop_energy=section.hop_energy,
     )
     return RunSettings(
         options,
@@ -124,6 +125,8 @@ class DynamicsStage(Stage):
         dynamics = ctx.config.dynamics.model_dump(mode="json")
         dynamics.pop("tmax_fs")  # O16: raising it extends finished trajectories
         dynamics.pop("max_failed_fraction")  # finalize-only
+        if dynamics.get("hop_energy") == "current":
+            dynamics.pop("hop_energy")  # hashed only when set: projects made before it stay current
         return {
             "electronic": electronic_fingerprint(ctx.config.electronic),
             "dynamics": dynamics,

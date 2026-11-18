@@ -23,6 +23,7 @@ def test_absent_table_means_no_dynamics(tmp_path, write_input):
 def test_defaults(tmp_path, write_input):
     d = _load(tmp_path, write_input, TDA + "[dynamics]\ntmax_fs = 10.0\n").dynamics
     assert d is not None
+    assert d.hop_energy == "current"
     assert (d.tmax_fs, d.dt_fs, d.nsubsteps, d.coupling, d.hopping) == (
         10.0,
         0.5,
@@ -64,6 +65,7 @@ def test_tmax_is_required(tmp_path, write_input):
         ("tmax_fs = 10.0\nenergy_jump_limit_eV = 0.0\n", "energy_jump_limit_eV"),
         ("tmax_fs = 10.0\nenergy_jump_limit_eV = inf\n", "energy_jump_limit_eV"),
         ("tmax_fs = 10.0\neselect_Eh = 0.1\n", "eselect_Eh"),
+        ('tmax_fs = 10.0\nhop_energy = "sharc"\n', "hop_energy"),
         ('tmax_fs = 10.0\ncoupling = "nacdr"\n', "nacdr"),
     ],
 )

@@ -105,6 +105,7 @@ class DynamicsSection(_Section):
     coupling: Literal["nacdr", "overlap"] = _OPTION_DEFAULTS["coupling"]
     gradient_transformation: Literal["ngt", "none"] = _OPTION_DEFAULTS["gradient_transformation"]
     eselect_Eh: float | None = Field(default=_OPTION_DEFAULTS["eselect_Eh"], gt=0)
+    hop_energy: Literal["current", "previous"] = _OPTION_DEFAULTS["hop_energy"]
 
 
 class EnsembleSection(_Section):

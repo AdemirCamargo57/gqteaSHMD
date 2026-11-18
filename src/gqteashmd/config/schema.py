@@ -285,6 +285,7 @@ class DynamicsStageSection(_Section):
     decoherence_param_Eh: float = Field(default=0.1, gt=0, allow_inf_nan=False)
     edc_convention: Literal["sharc", "granucci_persico"] = "sharc"
     substep_interpolation: Literal["midpoint", "endpoint"] = "midpoint"
+    hop_energy: Literal["current", "previous"] = "current"
     energy_drift_limit_eV: float = Field(default=0.5, gt=0, allow_inf_nan=False)
     energy_jump_limit_eV: float = Field(default=0.1, gt=0, allow_inf_nan=False)
     stop_after_s0_fs: float | None = Field(default=None, gt=0, allow_inf_nan=False)
