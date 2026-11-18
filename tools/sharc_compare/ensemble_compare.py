@@ -271,6 +271,23 @@ def compare(
     return out
 
 
+def our_output_path(dyn_dir: Path, task: str) -> Path:
+    """`<dynamics stage dir>/tasks/<task>/output.h5` (ProjectLayout.task_dir)."""
+    return Path(dyn_dir) / "tasks" / task / "output.h5"
+
+
+def read_ours(dyn_dir: Path, tasks: Sequence[str]) -> dict[str, Trajectory | None]:
+    """Our trajectories by task; a partial absence is None, none at all is an error."""
+    ours = {k: read_our_trajectory(our_output_path(dyn_dir, k), k) for k in tasks}
+    if tasks and all(t is None for t in ours.values()):
+        raise ValueError(
+            f"none of our {len(tasks)} selected trajectories was found; "
+            f"looked for {our_output_path(dyn_dir, tasks[0])} (and the same under tasks/ "
+            "for the other trajectories)"
+        )
+    return ours
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     from forensics import find_stage_dir, jsonable
     from project_inputs import load_project_inputs
@@ -289,7 +306,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     n_total = round(dyn.tmax_fs / dyn.dt_fs)
     tasks = [s.task_id for s in inputs.starts]
     dyn_dir = find_stage_dir(inputs.project_dir, "dynamics")
-    ours = {k: read_our_trajectory(dyn_dir / k / "output.h5", k) for k in tasks}
+    try:
+        ours = read_ours(dyn_dir, tasks)
+    except ValueError as error:
+        print(f"ensemble_compare: error: {error}", file=sys.stderr)
+        return 1
     theirs = {k: read_sharc_trajectory(args.sharc / k, k, n_total=n_total) for k in tasks}
     result = compare(
         ours,

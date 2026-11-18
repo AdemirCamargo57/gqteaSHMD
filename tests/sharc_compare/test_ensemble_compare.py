@@ -1,7 +1,8 @@
 """The P9b paired comparison rules on synthetic ensembles (spec 3.3; plan Task 3)."""
 
 import numpy as np
-from tests.diagnosis.conftest import load_tool
+import pytest
+from tests.diagnosis.conftest import load_tool, make_rows, write_trajectory
 
 from gqteashmd.analysis.grid import Trajectory
 from gqteashmd.analysis.populations import bootstrap_indices
@@ -128,3 +129,26 @@ def test_report_tables_are_present():
         "start_difference",
     ):
         assert key in r["report"], key
+
+
+def _project_with_one_trajectory(tmp_path):
+    dyn = tmp_path / "06_dynamics"
+    rows = make_rows([5.0, 5.0, 5.05], [[0.0, 5.0], [0.0, 5.0], [0.0, 5.0]])
+    write_trajectory(dyn / "tasks" / "traj_00000", rows, outcome="finished")
+    return dyn
+
+
+def test_our_trajectories_are_read_from_the_tasks_directory(tmp_path):
+    dyn = _project_with_one_trajectory(tmp_path)
+    assert ec.our_output_path(dyn, "traj_00000") == dyn / "tasks" / "traj_00000" / "output.h5"
+    ours = ec.read_ours(dyn, ["traj_00000", "traj_00001"])
+    assert ours["traj_00000"] is not None
+    assert ours["traj_00000"].task == "traj_00000"
+    assert ours["traj_00001"] is None  # a partial absence stays a missing entry
+
+
+def test_no_trajectory_of_ours_is_a_loud_error(tmp_path):
+    dyn = tmp_path / "06_dynamics"
+    dyn.mkdir()
+    with pytest.raises(ValueError, match="tasks"):
+        ec.read_ours(dyn, ["traj_00000", "traj_00001"])
