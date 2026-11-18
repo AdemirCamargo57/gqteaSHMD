@@ -1,6 +1,8 @@
 # The hop energy option: design
 
-Status: written 2026-11-18; owner approval pending. Branch `feat/hop-energy-option` (from `main` `4e61daa`).
+Status: written 2026-11-18; owner-approved 2026-11-18. Branch `feat/hop-energy-option` (from `main` `4e61daa`).
+
+**Erratum (added 2026-11-18, after the work):** none of the spec's content changed; the rule, the input, the fingerprint rule, the replay window and bounds (4.2) and the ensemble comparison (4.3) were implemented as written, and no bound, window, seed or setting was altered after a number was seen. Two process notes from the ledger, neither a change of content: (H1) the controller started the 2 h ensemble run of 4.3 itself, detached, instead of a subagent; (H2) the controller recorded the Task 5 reports itself. The measured numbers are in `docs/superpowers/reports/2026-11-18-hop-energy-option.md`.
 
 ## 0. Owner decisions (2026-11-18)
 
