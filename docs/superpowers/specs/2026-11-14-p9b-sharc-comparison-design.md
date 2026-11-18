@@ -1,5 +1,43 @@
 # P9b: the SHARC comparison campaign (design)
 
+> **Erratum (2026-11-18, written with the report `docs/superpowers/reports/2026-11-18-p9b-sharc-comparison.md`).** Where the work differs from this design:
+>
+> **Plan rulings** (`docs/superpowers/plans/2026-11-14-p9b-sharc-comparison.md`, binding where they differ from this spec):
+>
+> - **PR1:** the SHARC reader produces `analysis.grid.Trajectory`, not `TrajectoryData` (7.2).
+> - **PR2:** ours-nacdr is a copy of the seed-2028 project rerun from `dynamics` with `coupling = "nacdr"`, not a `run_variants.py` run (3.1). `run_variants.py` gives no reference geometry, so the start rule would not apply there. The copy path was taken: `gqteashmd status` worked on the copy, and the two `trajectories.json` files are identical.
+> - **PR3:** the ensembles keep `substep_interpolation = "midpoint"`; only the replay uses `"endpoint"`.
+> - **PR4:** SHARC's frustrated hops are reported as `null`. Task 1 found them only in `output.lis` (`# Jump frustrated.`), never in `output.dat`.
+> - **PR5:** a fit without an estimate or std, or a KS sample below 2, is `inconclusive` with the reason. It did not occur.
+> - **PR6:** the comparison grid is every 1 fs, with `dt_out` 1.0 fs.
+> - **PR7:** "exact" classical equality means a difference within half the last printed decimal.
+> - **PR8:** the swap provider already supplies overlaps, so 7.1's "added if missing" needed no code; the swap jobs run in spawn processes.
+> - **PR9:** the replay (5) comes after the runs.
+>
+> **Controller rulings** (ledger `.superpowers/sdd/2026-11-14-p9b-sharc-comparison/progress.md`):
+>
+> - **P1:** Task 5's live test body was written by the implementer from the Task 1 facts.
+> - **P2:** a partly tautological Task 3 test was kept as written; no plan step changed.
+> - **P3:** the long runs were started detached in WSL (`~/p9b/run_all.sh`).
+> - **P4:** after the stop of the ours-nacdr run, it was resumed by a plain `gqteashmd run`, not by the chain's `--rerun-from dynamics`.
+> - **P5:** the replay test failed its bounds and is `xfail(strict=True)` with its measured numbers. The bounds, window and start are unchanged.
+> - **P6:** a report-only diagnosis of the replay's hop step was added, decided after the numbers were seen: the energies offline, and one pair of runs with `decoherence = "none"`.
+> - **P7:** the Task 3 tool defect was fixed (`637a9f8`). `ensemble_compare.py` read `06_dynamics/<task>/output.h5` instead of `06_dynamics/tasks/<task>/output.h5` and silently paired 0. Task 9 first used symlinked shadow projects; the reruns on the real projects are identical.
+>
+> **Other changes:**
+>
+> - **The fit of section 4 is undelayed:** `make_fit.py` cannot express a delay (Task 1, F4), so the shared model is $y = A\,e^{-t/\tau}$ with $A = y(0)$. $s_{\text{SHARC}}$ is `make_fit.py`'s bootstrap std, which is not seedable.
+> - **The quantum print bound is $10^{-9}$** (`%17.9f`, F5).
+> - **SHARC's `data_extractor.x` is run by the tool**, not by `populations.py`, whose in-script call fails in this setup (F6).
+> - **The SHARC print level is 2.**
+> - **The `n_samples` 500 fallback did not fire** (100 of 100 selected at 300).
+> - **A SHARC trajectory whose QM call failed** ("stopped": 1 swap, 5 direct) is not kept (3.2).
+> - **Costs (3.1):** ours took 1 h 56 min; ours-nacdr about 7 h 34 min over three windows, after a deliberate stop and a WSL VM stop (two resumes, 16 trajectories resumed); swap 5 h 37 min; direct 15 h 35 min. The coverage study took 979 s, not about 30 min.
+> - **Section 6:** the warning wording was adapted to contain the word "coverage". The coverage text is a constant, and the "none reaches 0.90 -> 100" fallback is not coded, because N_min = 50 was reached.
+> - **The replay (5) fails its bounds after the hop at step 23.** At every SHARC hop, SHARC's $E_{\text{tot}}$ equals the previous record's (measured over 221 swap hops); ours keeps the current step's Verlet-completed $E_{\text{tot}}$. That this is SHARC's rule is inferred. No `src/` change was made (8); this is decision 1 of the report.
+> - **The direct ensemble** has 13 paired, so it is `inconclusive`. 75 of 100 start on another solution, and all of those jump on SHARC's side.
+> - **The verdicts:** the swap rules pass on 48 paired, and the section-4 checks pass. N_min = 50 (coverage 0.895 / 0.9275 / 0.935), `SMALL_ENSEMBLE` = 50 and `AnalysisStage.version` 2.
+
 Status: design approved section by section by the owner on 2026-11-14; this file awaits the owner's review. Sub-project P9b of the master plan's P9 (SHARC validation campaign), split from P9a by owner decision (P9a spec, section 0, decision 1). P9a and the CASSCF start rule are closed and merged into `main` (`07fc528`). Branch `feat/p9b-sharc-comparison`.
 
 ## 0. Owner decisions (2026-11-14, multiple choice; every recommended option)
