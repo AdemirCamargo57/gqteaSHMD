@@ -58,6 +58,9 @@ swap-ensemble trajectory with an accepted hop at or before 20 fs, chosen by the 
 Bounds fixed in spec 5 before any run: positions 1e-5 bohr, velocities 1e-6, populations and
 hopping probabilities 1e-5, the same active state; the window ends at a near tie (1e-5), our
 first rejected step or after 80 steps.
+``test_replayed_trajectory_with_the_previous_hop_energy`` repeats the same SHARC run against
+our runner with ``hop_energy = "previous"`` over steps 0 .. hop + 20 (window and bounds
+pre-registered in the hop energy option spec, 4.2).
 
 Run with ``-s`` to see the per-step differences.
 """
@@ -390,20 +393,8 @@ def _replay_backend(start, scratch):
 
 
 @pytest.fixture(scope="module")
-def replay(tmp_path_factory):
-    """sharc.x and our runner on the same start and random stream, run once for both tests.
-
-    Returns the per-record maxima over the compared window and over the records before the first
-    hop. The window rules are those of spec 5 plus the plan's end at our first rejected step or
-    substep record (a halving would shift the replayed stream; it did not fire).
-    """
-    from gqteashmd.core.units import AU_TIME_IN_FS, DALTON_IN_ME
-    from gqteashmd.dynamics.options import DynamicsOptions
-    from gqteashmd.dynamics.randomness import ReplaySource
-    from gqteashmd.trajectory.model import BackendModel
-    from gqteashmd.trajectory.runner import InitialConditions, RunSettings, TrajectoryRunner
-    from gqteashmd.trajectory.store import StepLog
-
+def replay_sharc(tmp_path_factory):
+    """sharc.x on our backend, hopping on, run once for every replay test of this module."""
     tmp_path = tmp_path_factory.mktemp("replay")
     dyn = _load("run_sharc_pyscf_dynamics")
     start = json.loads(START.read_text())
@@ -427,7 +418,28 @@ def replay(tmp_path_factory):
         decoherence="edc",
         seed=int(start["seed"]),
     )
-    traj = sharc["trajectory"]
+    return {
+        "dyn": dyn,
+        "start": start,
+        "q0": q0,
+        "v0": v0,
+        "n_states": n_states,
+        "traj": sharc["trajectory"],
+        "tmp": tmp_path,
+    }
+
+
+def _replay_ours(shared, hop_energy, name):
+    """Our runner on the same start, replaying SHARC's random numbers; returns the step log."""
+    from gqteashmd.core.units import AU_TIME_IN_FS, DALTON_IN_ME
+    from gqteashmd.dynamics.options import DynamicsOptions
+    from gqteashmd.dynamics.randomness import ReplaySource
+    from gqteashmd.trajectory.model import BackendModel
+    from gqteashmd.trajectory.runner import InitialConditions, RunSettings, TrajectoryRunner
+    from gqteashmd.trajectory.store import StepLog
+
+    dyn, start, tmp = shared["dyn"], shared["start"], shared["tmp"]
+    q0, v0 = shared["q0"], shared["v0"]
     dt_au = 0.5 / AU_TIME_IN_FS
     options = DynamicsOptions(
         dt_au=dt_au,
@@ -438,37 +450,58 @@ def replay(tmp_path_factory):
         coupling="overlap",
         gradient_transformation="none",
         substep_interpolation="endpoint",
+        hop_energy=hop_energy,
     )
     masses = np.repeat(np.asarray(start["masses_amu"]) * DALTON_IN_ME, 3)
-    model = BackendModel(_replay_backend(start, tmp_path / "b2"), masses, coupling="overlap")
-    TrajectoryRunner(
-        model, RunSettings(options, tmax_au=REPLAY_STEPS * dt_au), tmp_path / "ours"
-    ).run(
-        InitialConditions(dyn.interface_geometry(q0).reshape(-1), v0.reshape(-1), 1),
-        ReplaySource(list(traj.random_numbers[1:])),
+    model = BackendModel(
+        _replay_backend(start, tmp / f"{name}_backend"), masses, coupling="overlap"
     )
-    rows = StepLog(tmp_path / "ours" / "steps.log", n_states, q0.size).read()
-    # the window: steps 1..end-1 are compared; it ends at a near tie, a rejection or step 80
+    TrajectoryRunner(model, RunSettings(options, tmax_au=REPLAY_STEPS * dt_au), tmp / name).run(
+        InitialConditions(dyn.interface_geometry(q0).reshape(-1), v0.reshape(-1), 1),
+        ReplaySource(list(shared["traj"].random_numbers[1:])),
+    )
+    return StepLog(tmp / name / "steps.log", shared["n_states"], q0.size).read()
+
+
+def _natural_end(rows, traj):
+    """Spec 5 window end: a near tie, our first rejected step or substep record, or step 80."""
     end = min(len(rows), len(traj.steps))
     for k in range(1, end):
         if int(rows["rejections"][k]) > 0 or int(rows["ticks"][k]) != 0:
-            end = k
-            break
+            return k
         if _near_tie(float(traj.random_numbers[k]), traj.probabilities[k]) or _near_tie(
             float(rows["random_number"][k]), rows["probabilities"][k]
         ):
-            end = k
-            break
+            return k
+    return end
+
+
+def _per_record(rows, traj, end):
     ours_p = rows["c_real"][:end] ** 2 + rows["c_imag"][:end] ** 2
     sharc_p = np.abs(traj.c[:end]) ** 2
     dprob = np.abs(rows["probabilities"][1:end] - traj.probabilities[1:end]).max(axis=1)
-    per_record = {
+    return {
         "q": np.abs(rows["q"][:end] - traj.q[:end]).max(axis=1),
         "v": np.abs(rows["v"][:end] - traj.v[:end]).max(axis=1),
         "populations": np.abs(ours_p - sharc_p).max(axis=1),
         # step 0 has no propagation, so the probabilities are compared from step 1 on
         "probabilities": np.concatenate([[0.0], dprob]),
-    }
+    }, sharc_p
+
+
+@pytest.fixture(scope="module")
+def replay(replay_sharc):
+    """sharc.x and our runner on the same start and random stream, run once for both tests.
+
+    Returns the per-record maxima over the compared window and over the records before the first
+    hop. The window rules are those of spec 5 plus the plan's end at our first rejected step or
+    substep record (a halving would shift the replayed stream; it did not fire).
+    """
+    rows = _replay_ours(replay_sharc, "current", "ours")
+    traj = replay_sharc["traj"]
+    end = _natural_end(rows, traj)
+    per_record, sharc_p = _per_record(rows, traj, end)
+    ours_p = rows["c_real"][:end] ** 2 + rows["c_imag"][:end] ** 2
     changes = np.flatnonzero(np.diff(traj.active[:end])) + 1
     hops = int(changes.size)
     first_hop = int(changes[0]) if hops else end
@@ -534,3 +567,66 @@ def test_replayed_trajectory_over_the_pre_registered_window(replay):
     for key, bound in REPLAY_BOUNDS.items():
         value = replay["diffs"][key]
         assert value <= bound, f"{key} over the window: {value:.3e} > bound {bound:.0e}"
+
+
+# --- hop_energy = "previous" (spec 2026-11-18-hop-energy-option-design.md, 4.2) ---------------
+# The same SHARC run; ours with SHARC's hop energy convention. Pre-registered before any run:
+# the window is steps 0 .. h + 20 (h = the first step at which SHARC's active state changes), or
+# shorter at a near tie or our first rejected step; the P9b bounds; h <= 59, P(S0) >= 1e-3 in
+# the window, the same active state; |E_tot(h) - E_tot(h - 1)| <= 1e-9 Eh on our side.
+
+HOP_WINDOW_AFTER = 20
+HOP_ENERGY_STEP_BOUND_EH = 1e-9
+
+
+@pytest.fixture(scope="module")
+def replay_previous(replay_sharc):
+    traj = replay_sharc["traj"]
+    rows = _replay_ours(replay_sharc, "previous", "ours_previous")
+    natural = _natural_end(rows, traj)
+    changes = np.flatnonzero(np.diff(traj.active[:natural])) + 1
+    h = int(changes[0]) if changes.size else None
+    end = natural if h is None else min(natural, h + HOP_WINDOW_AFTER + 1)
+    per_record, sharc_p = _per_record(rows, traj, end)
+    diffs = {k: float(v.max()) for k, v in per_record.items()}
+    full_end = min(len(rows), len(traj.steps))
+    full, _ = _per_record(rows, traj, full_end)
+    e_step = None if h is None else abs(float(rows["e_total"][h]) - float(rows["e_total"][h - 1]))
+    print(
+        f"\n[hop_energy previous] hop step {h}, window {end} records (natural end {natural}), "
+        f"max P(S0) {sharc_p[:, 0].max():.3e}, |E_tot(h) - E_tot(h-1)| {e_step}, "
+        + ", ".join(f"d{k} {v:.2e}" for k, v in diffs.items())
+    )
+    print(
+        f"[hop_energy previous] all {full_end} records: "
+        + ", ".join(f"d{k} {float(v.max()):.2e}" for k, v in full.items())
+    )
+    if h is not None:
+        for k in range(h - 1, min(h + HOP_WINDOW_AFTER + 1, full_end)):
+            print(
+                f"[hop_energy previous] step {k}: "
+                + " ".join(f"d{key} {float(v[k]):.2e}" for key, v in full.items())
+                + f" E_tot ours {float(rows['e_total'][k]):.10f}"
+            )
+    return {
+        "hop": h,
+        "end": end,
+        "max_p_s0": float(sharc_p[:, 0].max()),
+        "active_ours": np.asarray(rows["active"][:end]),
+        "active_sharc": np.asarray(traj.active[:end]),
+        "diffs": diffs,
+        "hop_energy_step_Eh": e_step,
+    }
+
+
+def test_replayed_trajectory_with_the_previous_hop_energy(replay_previous):
+    """Spec 4.2: the P9b bounds from step 0 through 20 steps after the hop, with hop_energy =
+    "previous"; the window was fixed from P9b numbers already seen (stated in the spec)."""
+    r = replay_previous
+    assert r["hop"] is not None and r["hop"] <= 59, f"no usable hop in the window: {r['hop']}"
+    assert r["max_p_s0"] >= 1e-3, "P(S0) < 1e-3 in the window: the check cannot fail"
+    assert np.array_equal(r["active_ours"], r["active_sharc"]), "active states differ"
+    assert r["hop_energy_step_Eh"] <= HOP_ENERGY_STEP_BOUND_EH, r["hop_energy_step_Eh"]
+    for key, bound in REPLAY_BOUNDS.items():
+        value = r["diffs"][key]
+        assert value <= bound, f"{key} up to h + {HOP_WINDOW_AFTER}: {value:.3e} > {bound:.0e}"
