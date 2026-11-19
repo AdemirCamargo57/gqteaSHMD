@@ -709,3 +709,124 @@ def test_no_held_probability_no_warning(tmp_path, write_input):
     assert data["estimators"]["censored"]["empty_rows"] == 0
     assert not any("held" in w for w in data["warnings"])
     assert "- empty_rows: 0\n" in (ctx.stage_dir / "report.md").read_text()
+
+
+def test_a_damaged_censored_trajectory_stops_a_complete_analysis(tmp_path, write_input):
+    # final review T5a (ruling T5-1): both estimators are computed, so a censored trajectory is
+    # checked also under estimator = "complete", where main would have excluded it unread
+    damaged = [-1.0, float("nan"), -1.0]
+    trajs = [(FIN, [1, 1, 1, 1, 1], {}), ("overlap_failure", [1, 0, 0], {"e_total": damaged})]
+    ctx = _context(tmp_path, write_input, trajs, estimator="complete")
+    with pytest.raises(TaskError, match="non-finite e_total in an included trajectory") as info:
+        run_stage(ctx)
+    assert info.value.retryable is False
+    assert "traj_00001" in str(info.value) and "--rerun-from dynamics" in str(info.value)
+    assert not (ctx.stage_dir / "analysis.json").exists()  # a task error, not a recorded stop
+
+
+def _baseline_trajectories():
+    """Six finished trajectories with hops and graded quantum populations, plus two losses."""
+    actives = [
+        [1, 1, 1, 1, 1],
+        [1, 1, 0, 0, 0],
+        [1, 1, 1, 0, 0],
+        [1, 0, 0, 0, 0],
+        [1, 1, 1, 1, 0],
+        [1, 1, 1, 1, 1],
+    ]
+    trajs = []
+    for k, active in enumerate(actives):
+        p1 = [max(0.0, 1.0 - m * (0.1 + 0.05 * k)) for m in range(5)]
+        trajs.append((FIN, active, {"populations": [[1.0 - p, p] for p in p1]}))
+    trajs.append(("overlap_failure", [1, 0, 0], {}))
+    trajs.append(("energy_drift", [1, 1], {}))
+    return trajs
+
+
+# Final review T5b: produced on main f738b35 (before the censored analysis) by running this
+# scenario through main's AnalysisStage (tests/stages/test_analysis.py `_context`/`run_stage`,
+# seed 2026, n_bootstrap 100) and printing repr floats; the branch must reproduce them exactly
+# under estimator = "complete". The values depend on NumPy and SciPy (environment.yml).
+BASELINE_P_S1 = [1.0, 0.8333333333333334, 0.6666666666666666, 0.5, 0.3333333333333333]
+BASELINE_P_S1_LOWER = [
+    0.6096657120978346,
+    0.43649717781352987,
+    0.299993315138392,
+    0.1876163064826506,
+    0.09677141110578041,
+]
+BASELINE_P_S1_UPPER = [
+    1.0,
+    0.9699466302516935,
+    0.9032285888942195,
+    0.8123836935173494,
+    0.700006684861608,
+]
+BASELINE_RHO_S1 = [1.0, 0.775, 0.55, 0.3333333333333333, 0.19999999999999998]
+BASELINE_RHO_S1_LOWER = [
+    1.0,
+    0.7039583333333335,
+    0.4079166666666667,
+    0.13729166666666665,
+    0.03333333333333332,
+]
+BASELINE_RHO_S1_UPPER = [
+    1.0,
+    0.8460416666666667,
+    0.6920833333333333,
+    0.5381249999999997,
+    0.39999999999999997,
+]
+BASELINE_FIT = {
+    "classical": {
+        "A": 1.0,
+        "t0_fs": 0.2119968412487169,
+        "tau_fs": 1.7687999587775307,
+        "t0_interval_fs": [1.0524126595077609e-18, 1.5959787372074765],
+        "tau_interval_fs": [0.3479278723827433, 3.57966856953346],
+        "t0_std_fs": 0.4749146353703487,
+        "tau_std_fs": 0.9034104838892965,
+        "rms": 0.020903470034306416,
+        "flags": [],
+        "bootstrap_failures": 0,
+    },
+    "quantum": {
+        "A": 1.0,
+        "t0_fs": 0.22031920968379914,
+        "tau_fs": 1.179935785581576,
+        "t0_interval_fs": [0.162871532680283, 0.28117708361593835],
+        "tau_interval_fs": [0.6963675824051245, 2.0707755783289676],
+        "t0_std_fs": 0.03444332309211499,
+        "tau_std_fs": 0.3732270255036135,
+        "rms": 0.01895484498317354,
+        "flags": [],
+        "bootstrap_failures": 0,
+    },
+}
+
+
+@pytest.mark.parametrize("population", ["classical", "quantum"])
+def test_the_complete_estimator_reproduces_main_exactly(tmp_path, write_input, population):
+    ctx = _context(
+        tmp_path,
+        write_input,
+        _baseline_trajectories(),
+        seed=2026,
+        analysis=f'fit_population = "{population}"\n',
+        estimator="complete",
+    )
+    run_stage(ctx)
+    data = _analysis(ctx)
+    assert data["n_included"] == 6 and data["horizon_fs"] == 2.0
+    assert data["included"] == [f"traj_{k:05d}" for k in range(6)]
+    fit = {k: data["fit"][k] for k in BASELINE_FIT[population]}
+    assert fit == BASELINE_FIT[population]
+    with h5py.File(ctx.stage_dir / "populations.h5") as f:
+        assert f["classical"][()][:, 1].tolist() == BASELINE_P_S1
+        assert f["classical_lower"][()][:, 1].tolist() == BASELINE_P_S1_LOWER
+        assert f["classical_upper"][()][:, 1].tolist() == BASELINE_P_S1_UPPER
+        assert f["quantum"][()][:, 1].tolist() == BASELINE_RHO_S1
+        assert f["quantum_lower"][()][:, 1].tolist() == BASELINE_RHO_S1_LOWER
+        assert f["quantum_upper"][()][:, 1].tolist() == BASELINE_RHO_S1_UPPER
+        target = BASELINE_P_S1 if population == "classical" else BASELINE_RHO_S1
+        assert f["fit_target"][()].tolist() == target
