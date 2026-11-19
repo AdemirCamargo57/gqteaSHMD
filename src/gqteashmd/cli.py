@@ -141,6 +141,7 @@ allow_fewer = false           # accept fewer trajectories if too few pass the se
 # [analysis]                         # optional; runs after dynamics by default
 # fit_states = ["S1", "S2"]          # fitted population (default: every excited state)
 # fit_population = "classical"       # or "quantum"
+# estimator = "censored"             # or "complete": only finished trajectories
 # n_bootstrap = 1000
 # energy_jump_eV = 0.1               # flag trajectories with a larger E_tot jump
 # exclude_energy_jumps = false"""

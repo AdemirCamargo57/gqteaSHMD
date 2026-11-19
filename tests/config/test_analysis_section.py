@@ -16,6 +16,7 @@ def _load(tmp_path, write_input, extra):
 def test_defaults_without_a_table(tmp_path, write_input):
     a = _load(tmp_path, write_input, "").analysis
     assert a.enabled is True and a.fit_states is None and a.fit_population == "classical"
+    assert a.estimator == "censored"
     assert a.n_bootstrap == 1000 and a.energy_jump_eV == ENERGY_JUMP_DEFAULT_EV
     assert a.exclude_energy_jumps is False and a.warn_excluded_fraction == 0.2
 
@@ -56,3 +57,26 @@ def test_init_template_has_a_commented_analysis_block(tmp_path):
     from gqteashmd.cli import TEMPLATE
 
     assert "# [analysis]" in TEMPLATE and "# fit_states" in TEMPLATE
+
+
+def test_estimator_defaults_to_censored(tmp_path, write_input):
+    assert _load(tmp_path, write_input, "").analysis.estimator == "censored"
+
+
+def test_estimator_complete_is_accepted(tmp_path, write_input):
+    a = _load(tmp_path, write_input, '[analysis]\nestimator = "complete"\n').analysis
+    assert a.estimator == "complete"
+
+
+def test_an_unknown_estimator_is_rejected(tmp_path, write_input):
+    with pytest.raises(ConfigError, match="estimator"):
+        _load(tmp_path, write_input, '[analysis]\nestimator = "kaplan"\n')
+
+
+def test_a_quantum_fit_needs_the_complete_estimator(tmp_path, write_input):
+    (tmp_path / "a").mkdir()
+    (tmp_path / "b").mkdir()
+    with pytest.raises(ConfigError, match='estimator = "complete"'):
+        _load(tmp_path / "a", write_input, '[analysis]\nfit_population = "quantum"\n')
+    text = '[analysis]\nfit_population = "quantum"\nestimator = "complete"\n'
+    assert _load(tmp_path / "b", write_input, text).analysis.fit_population == "quantum"
