@@ -70,6 +70,20 @@ def test_stage_populations_equal_a_direct_recomputation(tmp_path, write_input):
         assert (_ana(tmp_path) / name).exists()
 
 
+def test_without_losses_the_censored_default_equals_the_complete_rule(tmp_path, write_input):
+    # censored analysis spec 4.1 item 1, on the canned pipeline (every trajectory finishes)
+    assert _main(_input(tmp_path, write_input)) == 0
+    summary = _analysis(tmp_path)
+    assert summary["estimator"] == "censored" and summary["schema_version"] == 2
+    assert summary["n_censored"] == 0 and summary["n_complete"] == 3
+    complete = summary["estimators"]["complete"]["table"]
+    assert len(summary["table"]) == len(complete) > 1
+    for row, other in zip(summary["table"], complete, strict=True):
+        assert row["time_fs"] == other["time_fs"]
+        for state, value in row["P"].items():
+            assert abs(value - other["P"][state]) <= 1e-12, (row["time_fs"], state)
+
+
 def test_raising_tmax_recomputes_the_analysis_in_one_run(tmp_path, write_input):
     assert _main(_input(tmp_path, write_input)) == 0
     assert _analysis(tmp_path)["horizon_fs"] == pytest.approx(2.0)
