@@ -2,6 +2,22 @@
 
 Status: written 2026-11-19; owner-approved 2026-11-19. Branch `feat/censored-analysis` (from `main` `f738b35`).
 
+> **Erratum (2026-11-19, after the implementation).** The plan's rulings (`docs/superpowers/plans/2026-11-19-censored-analysis.md`, "Plan rulings") and the task rulings of the ledger change these details. The measured numbers are in `docs/superpowers/reports/2026-11-19-censored-analysis.md`.
+>
+> - **4.1 item 2 (PR1):** the Markov rule compares at steps 10, 20, ..., 100 and every state (30 comparisons) with the bound **4 SE**, not 3 SE at every time and state (303 comparisons would fail by chance in most runs). The "must be able to fail" check uses the same points and bound. Fixed before any run. Measured: worst |z| censored 2.84, still-running 31.9, complete-only 50.7; coverage 0.9625.
+> - **2.2 (PR2):** `empty_rows` counts only an interval and state with nobody at risk **and** a positive estimated population at its start.
+> - **2.2 (PR3):** the censored estimator's bootstrap draws from `task_rng(seed, "analysis", 1)`, not from stream 0; the complete estimator keeps stream 0, so its numbers are unchanged.
+> - **2.5 (PR4, ruling T5-4):** the top-level `n_included`, `included`, `excluded`, `small_ensemble`, `fit` and `table` belong to the estimator in use; `estimators` holds a block per estimator with `n`, `small_ensemble`, `fit` and `table` (plus `empty_rows` and `quantum_rule` for `censored`). The blocks carry **no** per-time populations with intervals and no `n_excluded`; the full curves with intervals of both estimators are in `populations.csv`/`.h5` (PR6), and `excluded` is top-level only. `n_complete`, `n_censored`, `censored` and `estimator` are always computed. Hops, `energy.drift_eV` and `consistency` are over the complete trajectories; `consistency` is `null` without a complete trajectory.
+> - **2.1 (PR5):** a trajectory whose censoring grid step is at or after the horizon counts as complete in the censored estimator and is not in `censored` or `n_censored`. So `n_complete` (the complete rule's count, ruling T5-3) can differ from `n_included - n_censored`.
+> - **2.5 (PR6):** the other estimator's columns are named `complete_P_S1`, `complete_P_S1_lower`, `complete_P_S1_upper`, ..., `complete_rho_...` (CSV) and `complete_classical`, `complete_classical_lower`, ..., `complete_quantum_...` (HDF5), or with the prefix `censored_`; they are left out when that estimator has no trajectory. Its fit target and curve are not in the files.
+> - **2.1 (PR7):** the horizon is computed from the complete trajectories of the P8 rule and passed to both grids.
+> - **3 (PR10):** `e_total_before_hop` is set only at an **accepted** hop, not at a frustrated one: there the record's `e_total` already equals $E_{\text{diag}}'_\lambda + K(\mathbf v')$.
+> - **2.1, the checks (ruling T5-1):** the data checks (a t = 0 record, finite data, the norm) run over every trajectory either estimator uses, also under `estimator = "complete"`. A lost trajectory with a damaged `output.h5` therefore stops the stage under `"complete"`, where `main` excluded it unchecked.
+> - **2.5, the included-jump warning (ruling T5-2):** it counts the flagged trajectories among those the estimator in use uses, minus those censored for an energy jump.
+> - **2.4:** the files do not mark the censored quantum curve as the at-risk average; only `analysis.json` (`quantum_rule: "at_risk_average"`) and the documents say so.
+> - **4.1 item 4, the hop check as tested:** the runner test scripts one energy jump in the call of the first hop step and asserts one `energy` rejection under both rules; it does not assert the `electronic_discontinuity` ending at the smallest step at a hop step, nor that the run finishes after the halved retry (a deferred minor of Task 1). The ending itself is the F1 path of P9a plan 2.
+> - **What was decided after numbers were seen:** nothing that changed a bound, window, seed or setting.
+
 ## 0. Owner decisions (2026-11-19, multiple choice)
 
 These follow the owner decision of 2026-11-18 that the losses after a hop are the next sub-project (hop energy option spec, section 0, item 4).
