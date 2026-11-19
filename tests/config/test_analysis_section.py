@@ -76,7 +76,8 @@ def test_an_unknown_estimator_is_rejected(tmp_path, write_input):
 def test_a_quantum_fit_needs_the_complete_estimator(tmp_path, write_input):
     (tmp_path / "a").mkdir()
     (tmp_path / "b").mkdir()
-    with pytest.raises(ConfigError, match='estimator = "complete"'):
+    # final review M3: the message points at the section that explains the refusal
+    with pytest.raises(ConfigError, match=r'estimator = "complete".*USER_MANUAL 8\.13\.3\)'):
         _load(tmp_path / "a", write_input, '[analysis]\nfit_population = "quantum"\n')
     text = '[analysis]\nfit_population = "quantum"\nestimator = "complete"\n'
     assert _load(tmp_path / "b", write_input, text).analysis.fit_population == "quantum"

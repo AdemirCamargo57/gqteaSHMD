@@ -359,7 +359,7 @@ class AnalysisSection(_Section):
         if self.fit_population == "quantum" and self.estimator == "censored":
             raise ValueError(
                 'fit_population = "quantum" needs estimator = "complete" (the censored '
-                "estimator applies to the classical populations only; USER_MANUAL 8.13)"
+                "estimator applies to the classical populations only; USER_MANUAL 8.13.3)"
             )
         return self
 
