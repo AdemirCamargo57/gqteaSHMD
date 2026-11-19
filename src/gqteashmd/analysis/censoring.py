@@ -8,9 +8,13 @@ interval. With no censoring it equals the plain fractions.
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
 import numpy as np
+
+from gqteashmd.analysis.energy import first_jump_index
+from gqteashmd.analysis.grid import INCLUDED_OUTCOMES, Excluded, Trajectory
 
 
 @dataclass(frozen=True)
@@ -103,3 +107,66 @@ def bootstrap_at_risk_average(
     with np.errstate(invalid="ignore", divide="ignore"):
         result: np.ndarray = num / den
     return result
+
+
+@dataclass(frozen=True)
+class Censored:
+    task: str
+    outcome: str
+    reason: str  # "outcome" (ended early) or "energy_jump" (exclude_energy_jumps = true)
+    grid_step: int  # the last full-step grid point used
+    time_fs: float
+
+
+def censoring_step(t: Trajectory, *, output_every: int, before_record: int | None = None) -> int:
+    """The last grid step (a multiple of output_every) with a full-step record, among the
+    records before index `before_record` (all records if None); 0 if there is none."""
+    stop = t.grid_step.size if before_record is None else int(before_record)
+    steps = t.grid_step[:stop]
+    full = steps[(t.ticks[:stop] == 0) & (steps % output_every == 0)]
+    return int(full.max()) if full.size else 0
+
+
+def select_censored(
+    tasks: Sequence[str],
+    trajectories: Mapping[str, Trajectory | None],
+    *,
+    output_every: int,
+    n_total: int,
+    dt_fs: float,
+    energy_jump_eV: float | None,
+) -> tuple[list[Trajectory], dict[str, int], list[Censored], list[Excluded]]:
+    """Spec section 2.1: complete and censored trajectories are used, the others excluded.
+
+    `energy_jump_eV` is the threshold when exclude_energy_jumps = true, else None: a
+    trajectory is then censored before its first jump over grid steps <= n_total (P8 PR3).
+    """
+    used: list[Trajectory] = []
+    at: dict[str, int] = {}
+    censored: list[Censored] = []
+    excluded: list[Excluded] = []
+    for task in tasks:
+        t = trajectories.get(task)
+        if t is None:
+            excluded.append(Excluded(task, "task_failed", None))
+            continue
+        if t.time_fs.size == 0:
+            excluded.append(Excluded(task, t.outcome, t.t_final_fs))
+            continue
+        jump_at = None
+        if energy_jump_eV is not None:
+            window = int(np.count_nonzero(t.grid_step <= n_total))  # records are time-ordered
+            jump_at = first_jump_index(t.e_total[:window], energy_jump_eV)
+        if jump_at is not None:
+            reason = "energy_jump"
+            step = censoring_step(t, output_every=output_every, before_record=jump_at)
+        elif t.outcome in INCLUDED_OUTCOMES:
+            used.append(t)
+            continue
+        else:
+            reason = "outcome"
+            step = censoring_step(t, output_every=output_every)
+        used.append(t)
+        at[task] = step
+        censored.append(Censored(task, t.outcome, reason, step, step * float(dt_fs)))
+    return used, at, censored, excluded

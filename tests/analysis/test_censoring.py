@@ -4,6 +4,8 @@ import numpy as np
 import pytest
 
 from gqteashmd.analysis import censoring, populations
+from gqteashmd.analysis.grid import Trajectory, on_grid
+from gqteashmd.core.units import HARTREE_IN_EV
 
 T = np.array([[0.98, 0.02, 0.0], [0.04, 0.95, 0.01], [0.0, 0.05, 0.95]])  # rows: from S0, S1, S2
 STEPS = 100
@@ -123,3 +125,61 @@ def test_at_risk_average_and_its_bootstrap():
 def test_resample_weights_count_multiplicities():
     w = censoring.resample_weights(np.array([[0, 0, 2], [1, 2, 2]]), 3)
     np.testing.assert_array_equal(w, [[2, 0, 1], [0, 1, 2]])
+
+
+def _traj(task, outcome, active, *, e_total=None, every=1):
+    n = len(active)
+    return Trajectory(
+        task=task,
+        outcome=outcome,
+        initial_state=int(active[0]) if n else 1,
+        grid_step=np.arange(n, dtype=np.int64),
+        ticks=np.zeros(n, dtype=np.int64),
+        time_fs=0.5 * np.arange(n),
+        active=np.asarray(active, dtype=np.int64),
+        hop_from=np.full(n, -1),
+        hop_to=np.full(n, -1),
+        frustrated=np.zeros(n, dtype=bool),
+        e_total=np.zeros(n) if e_total is None else np.asarray(e_total, dtype=float),
+        populations=np.eye(2)[np.asarray(active, dtype=np.int64)],
+    )
+
+
+def test_select_censored_sorts_every_ending():
+    trajs = {
+        "traj_00000": _traj("traj_00000", "finished", [1, 1, 0, 0, 0]),
+        "traj_00001": _traj("traj_00001", "overlap_failure", [1, 0, 0]),
+        "traj_00002": _traj("traj_00002", "electronic_failure", []),
+        "traj_00003": None,
+        "traj_00004": _traj(
+            "traj_00004", "finished", [1, 1, 1, 1, 1], e_total=[0, 0, 0, 0.2 / HARTREE_IN_EV, 0]
+        ),
+    }
+    tasks = list(trajs)
+    used, at, cens, excl = censoring.select_censored(
+        tasks, trajs, output_every=1, n_total=4, dt_fs=0.5, energy_jump_eV=0.1
+    )
+    assert [t.task for t in used] == ["traj_00000", "traj_00001", "traj_00004"]
+    assert at == {"traj_00001": 2, "traj_00004": 2}  # the jump is at record 3: censored at 2
+    assert [(c.task, c.reason, c.grid_step, c.time_fs) for c in cens] == [
+        ("traj_00001", "outcome", 2, 1.0),
+        ("traj_00004", "energy_jump", 2, 1.0),
+    ]
+    assert [(e.task, e.reason) for e in excl] == [
+        ("traj_00002", "electronic_failure"),
+        ("traj_00003", "task_failed"),
+    ]
+    _, at_off, _, _ = censoring.select_censored(
+        tasks, trajs, output_every=1, n_total=4, dt_fs=0.5, energy_jump_eV=None
+    )
+    assert at_off == {"traj_00001": 2}  # exclude_energy_jumps = false: no jump censoring
+
+
+def test_on_grid_marks_the_censored_part_as_unobserved():
+    a = _traj("a", "finished", [1, 1, 0, 0, 0])
+    b = _traj("b", "overlap_failure", [1, 0, 0])
+    g = on_grid([a, b], output_every=1, dt_fs=0.5, n_total=4, n_states=2, censored_at={"b": 2})
+    np.testing.assert_array_equal(g.observed, [[1, 1, 1, 1, 1], [1, 1, 1, 0, 0]])
+    assert g.cut == () and g.horizon_steps == 4
+    g2 = on_grid([a], output_every=1, dt_fs=0.5, n_total=4, n_states=2, horizon=2)
+    assert g2.horizon_steps == 2 and g2.observed.shape == (1, 3) and g2.observed.all()
