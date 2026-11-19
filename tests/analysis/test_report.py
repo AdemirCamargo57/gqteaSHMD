@@ -122,10 +122,22 @@ def test_markdown_shows_the_other_estimator(summary_example):
     assert "- estimator: complete\n" in section
     assert "- tau_fs: 61.25\n" in section and "- tau_interval_fs: [50, 70]\n" in section
     assert "- t0_fs: 3.5\n" in section and "- t0_interval_fs: [2, 4]" in section
-    assert text.index("## Fit") < text.index("## Other estimator") < text.index("## Hops")
+    assert (
+        text.index("## Fit")
+        < text.index("## Other estimator")
+        < text.index("## Hops (complete trajectories)")
+    )
     s = _censored_summary(summary_example)
     s["estimators"] = {**s["estimators"], "complete": None}
     section = analysis_markdown(s).split("## Other estimator\n", 1)[1].split("\n## ", 1)[0]
     assert "- tau_fs: -\n" in section and "- t0_interval_fs: -" in section
     section = analysis_markdown(summary_example).split("## Other estimator\n", 1)[1]
     assert section.startswith("- estimator: -\n- tau_fs: -\n")
+
+
+def test_markdown_says_hops_and_energy_cover_the_complete_trajectories(summary_example):
+    # final review m4: under the censored default these sections cover the complete ones only
+    text = analysis_markdown(_censored_summary(summary_example))
+    assert "\n## Hops (complete trajectories)\n- pairs: S1->S0 2\n" in text
+    assert "\n## Energy (complete trajectories)\n- drift_eV: " in text
+    assert "\n## Hops\n" not in text and "\n## Energy\n" not in text

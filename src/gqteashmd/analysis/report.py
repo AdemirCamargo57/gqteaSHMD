@@ -137,7 +137,7 @@ def analysis_markdown(summary: Mapping[str, Any]) -> str:
         out.append(f"- {key}: {_n(other_fit.get(key))}")
 
     hops = s.get("hops") or {}
-    out += ["", "## Hops"]
+    out += ["", "## Hops (complete trajectories)"]
     out.append(f"- pairs: {_items(hops.get('pairs'))}")
     out.append(f"- frustrated (by originating state): {_items(hops.get('frustrated_from'))}")
     out.append(f"- hops per trajectory: {_items(hops.get('per_trajectory'))}")
@@ -145,7 +145,7 @@ def analysis_markdown(summary: Mapping[str, Any]) -> str:
     out.append(f"- first S0 arrival (fs): {_items(hops.get('first_s0_arrival_fs'))}")
 
     energy = s.get("energy") or {}
-    out += ["", "## Energy"]
+    out += ["", "## Energy (complete trajectories)"]
     out.append(f"- drift_eV: {_items(energy.get('drift_eV'))}")
     out.append(f"- jump_threshold_eV: {_n(energy.get('jump_threshold_eV'))}")
     for f in energy.get("flagged") or []:
