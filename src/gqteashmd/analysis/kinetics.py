@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Iterable
 from dataclasses import dataclass
 
 import numpy as np
@@ -89,15 +90,33 @@ class FitWithUncertainty:
 def bootstrap_fit(
     t: np.ndarray, per_trajectory: np.ndarray, indices: np.ndarray, *, dt_out: float
 ) -> FitWithUncertainty:
-    fit = fit_delayed_exponential(t, per_trajectory.mean(axis=0), dt_out=dt_out)
-    if fit.tau_fs is None or per_trajectory.shape[0] < 2:
+    return bootstrap_fit_curves(
+        t,
+        per_trajectory.mean(axis=0),
+        (per_trajectory[idx].mean(axis=0) for idx in indices),
+        n_trajectories=int(per_trajectory.shape[0]),
+        dt_out=dt_out,
+    )
+
+
+def bootstrap_fit_curves(
+    t: np.ndarray,
+    curve: np.ndarray,
+    resampled: Iterable[np.ndarray],
+    *,
+    n_trajectories: int,
+    dt_out: float,
+) -> FitWithUncertainty:
+    """The fit of `curve` with percentile intervals from the fits of the `resampled` curves."""
+    fit = fit_delayed_exponential(t, curve, dt_out=dt_out)
+    if fit.tau_fs is None or n_trajectories < 2:
         # a resample of one trajectory is that trajectory: no information on the spread
         return FitWithUncertainty(fit, None, None, None, None, 0)
     taus: list[float] = []
     t0s: list[float] = []
     failures = 0
-    for idx in indices:
-        r = fit_delayed_exponential(t, per_trajectory[idx].mean(axis=0), dt_out=dt_out)
+    for y in resampled:
+        r = fit_delayed_exponential(t, y, dt_out=dt_out)
         if r.tau_fs is None or r.t0_fs is None:
             failures += 1
             continue

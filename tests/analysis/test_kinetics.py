@@ -6,6 +6,7 @@ import pytest
 
 from gqteashmd.analysis.kinetics import (
     bootstrap_fit,
+    bootstrap_fit_curves,
     fit_delayed_exponential,
     model_curve,
     tau_from_log,
@@ -76,3 +77,15 @@ def test_no_fit_means_no_bootstrap():
     result = bootstrap_fit(T, per, bootstrap_indices(np.random.default_rng(1), 10, 100), dt_out=0.5)
     assert result.fit.flags == ("no_decay",) and result.tau_interval_fs is None
     assert result.bootstrap_failures == 0
+
+
+def test_bootstrap_fit_is_bootstrap_fit_curves_on_the_means():
+    rng = np.random.default_rng(4)
+    t = np.arange(0.0, 100.5, 0.5)
+    per = (rng.exponential(40.0, size=(60, 1)) + 10.0 > t[None, :]).astype(float)
+    idx = rng.integers(0, 60, size=(50, 60))
+    a = bootstrap_fit(t, per, idx, dt_out=0.5)
+    b = bootstrap_fit_curves(
+        t, per.mean(axis=0), (per[i].mean(axis=0) for i in idx), n_trajectories=60, dt_out=0.5
+    )
+    assert a == b
