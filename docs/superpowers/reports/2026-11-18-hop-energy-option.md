@@ -22,7 +22,7 @@ Date: 2026-11-18. Branch `feat/hop-energy-option` (from `main` `4e61daa`). The s
   - Task 2, `pytest tests/config tests/stages/test_dynamics.py tests/test_cli_model_dynamics.py tests/test_cli.py -q -W error -m "not slow and not pyscf"`: **173 passed, 2 deselected** (asserted).
   - Task 3, the live replay file `-k replayed`: **2 passed, 18 deselected, 1 xfailed in 468.85 s** (asserted).
   - Task 4, `tests/validation/test_hop_energy_report.py`: **4 passed** (asserted).
-  - The full suite has not run yet.
+  - The full suite `pytest -W error` with SHARC and ORCA at `972f478`: **1514 passed, 2 skipped, 4 xfailed in 10366.60 s** (2 h 52 min 46 s). The final fix wave's tests (`dc9b86d`, after it) were run alone: `tests/dynamics tests/trajectory tests/stages/test_dynamics.py` **484 passed**.
 - **The report script.** `tools/validation/hop_energy_report.py` compares two projects (JSON out, nothing asserted, never imported by `gqteashmd`).
 
 ## 2. The replay with `hop_energy = "previous"` (asserted)
