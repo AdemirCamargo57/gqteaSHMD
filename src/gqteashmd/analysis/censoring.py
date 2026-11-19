@@ -78,11 +78,31 @@ def bootstrap_aalen_johansen(
     active = np.asarray(active, dtype=np.int64)
     n = active.shape[0]
     w = resample_weights(indices, n)
-    x = transition_indicators(active, observed, n_states)
-    counts = np.tensordot(w, x, axes=(1, 0))  # (B, G-1, S, S)
+    counts = _resample_counts(w, active, np.asarray(observed, dtype=bool), n_states)
     initial = w @ np.eye(n_states)[active[:, 0]] / n
     p, _ = _product(initial, counts)
     return p
+
+
+def _resample_counts(
+    w: np.ndarray, active: np.ndarray, observed: np.ndarray, n_states: int
+) -> np.ndarray:
+    """(B, G-1, S, S): the transition counts of every resample, `w` (B, n) contracted with
+    `transition_indicators` one state pair at a time, so the (n, G-1, S, S) indicator tensor
+    is never built (final review I1). The counts are integers, so this is exact."""
+    g = active.shape[1]
+    counts = np.zeros((w.shape[0], max(g - 1, 0), n_states, n_states))
+    if g < 2:
+        return counts
+    risk = observed[:, :-1] & observed[:, 1:]
+    start, end = active[:, :-1], active[:, 1:]
+    for a in range(n_states):
+        from_a = risk & (start == a)
+        if not from_a.any():
+            continue
+        for b in range(n_states):
+            counts[:, :, a, b] = w @ (from_a & (end == b)).astype(float)
+    return counts
 
 
 def at_risk_average(values: np.ndarray, observed: np.ndarray) -> np.ndarray:
@@ -99,11 +119,18 @@ def at_risk_average(values: np.ndarray, observed: np.ndarray) -> np.ndarray:
 def bootstrap_at_risk_average(
     values: np.ndarray, observed: np.ndarray, indices: np.ndarray
 ) -> np.ndarray:
-    """(B, G, ...): `at_risk_average` on every resample."""
+    """(B, G, ...): `at_risk_average` on every resample.
+
+    The resample weights (B, n) are contracted over the trajectories first, so memory is
+    O(B G S) plus the size of `values`; no (B, n, G) array is formed (final review I1)."""
     v = np.asarray(values, dtype=float)
-    w = resample_weights(indices, v.shape[0])[:, :, None] * np.asarray(observed, dtype=float)[None]
-    num = np.einsum("bng,ng...->bg...", w, v)
-    den = w.sum(axis=1).reshape(w.shape[0], -1, *((1,) * (v.ndim - 2)))
+    n = v.shape[0]
+    obs = np.asarray(observed, dtype=float)
+    w = resample_weights(indices, n)
+    b = w.shape[0]
+    weighted = obs.reshape(obs.shape + (1,) * (v.ndim - 2)) * v  # (n, G, ...)
+    num = (w @ weighted.reshape(n, -1)).reshape((b,) + v.shape[1:])
+    den = (w @ obs).reshape(b, -1, *((1,) * (v.ndim - 2)))
     with np.errstate(invalid="ignore", divide="ignore"):
         result: np.ndarray = num / den
     return result

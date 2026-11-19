@@ -1,5 +1,7 @@
 """Censored estimators (censored analysis spec, sections 2.2 and 4.1 items 1-2)."""
 
+import tracemalloc
+
 import numpy as np
 import pytest
 
@@ -125,6 +127,91 @@ def test_at_risk_average_and_its_bootstrap():
 def test_resample_weights_count_multiplicities():
     w = censoring.resample_weights(np.array([[0, 0, 2], [1, 2, 2]]), 3)
     np.testing.assert_array_equal(w, [[2, 0, 1], [0, 1, 2]])
+
+
+def _random_resamples(n, b, seed):
+    return populations.bootstrap_indices(np.random.default_rng(seed), n, b)
+
+
+def test_the_bootstrap_of_a_random_resample_is_the_estimate_of_that_resample():
+    # final review T2: the bootstrap-weights path against the estimator on the resampled data
+    rng = np.random.default_rng(5)
+    active, observed = _simulate(rng, n=30)
+    idx = _random_resamples(30, 8, 6)
+    boot = censoring.bootstrap_aalen_johansen(active, observed, 3, idx)
+    for b, rows in enumerate(idx):
+        aj = censoring.aalen_johansen(active[rows], observed[rows], 3)
+        assert np.abs(boot[b] - aj.populations).max() <= 1e-12, b
+
+
+def test_the_bootstrap_at_risk_average_of_a_random_resample_is_its_average():
+    # final review I1: row by row against `at_risk_average` of the resampled data
+    rng = np.random.default_rng(7)
+    active, observed = _simulate(rng, n=30)
+    values = rng.random((30, STEPS + 1, 3))
+    idx = _random_resamples(30, 8, 8)
+    boot = censoring.bootstrap_at_risk_average(values, observed, idx)
+    assert boot.shape == (8, STEPS + 1, 3)
+    for b, rows in enumerate(idx):
+        expected = censoring.at_risk_average(values[rows], observed[rows])
+        np.testing.assert_array_equal(np.isnan(boot[b]), np.isnan(expected))
+        ok = ~np.isnan(expected)
+        assert np.abs(boot[b][ok] - expected[ok]).max() <= 1e-12, b
+
+
+def test_the_bootstrap_helpers_equal_the_dense_formulas():
+    # final review I1: the contracted forms give the numbers of the dense (B, n, G) and
+    # (n, G-1, S, S) forms they replace, to 1e-12
+    rng = np.random.default_rng(9)
+    active, observed = _simulate(rng, n=25)
+    values = rng.random((25, STEPS + 1, 3))
+    idx = _random_resamples(25, 6, 10)
+    w = censoring.resample_weights(idx, 25)
+    dense = w[:, :, None] * observed.astype(float)[None]
+    with np.errstate(invalid="ignore", divide="ignore"):
+        old = np.einsum("bng,ng...->bg...", dense, values) / dense.sum(axis=1)[..., None]
+    new = censoring.bootstrap_at_risk_average(values, observed, idx)
+    np.testing.assert_array_equal(np.isnan(new), np.isnan(old))
+    assert np.nanmax(np.abs(new - old)) <= 1e-12
+    x = censoring.transition_indicators(active, observed, 3)
+    counts = np.tensordot(w, x, axes=(1, 0))
+    initial = w @ np.eye(3)[active[:, 0]] / 25
+    old_p, _ = censoring._product(initial, counts)
+    new_p = censoring.bootstrap_aalen_johansen(active, observed, 3, idx)
+    assert np.abs(new_p - old_p).max() <= 1e-12
+
+
+def _peak_bytes(f):
+    tracemalloc.start()
+    try:
+        f()
+        return tracemalloc.get_traced_memory()[1]
+    finally:
+        tracemalloc.stop()
+
+
+def test_the_bootstrap_at_risk_average_does_not_expand_over_the_trajectories():
+    # final review I1: no (B, n, G) array; memory O(B G S) plus the size of the input
+    n, g, b, s = 100, 401, 200, 3
+    rng = np.random.default_rng(11)
+    values = rng.random((n, g, s))
+    observed = rng.random((n, g)) < 0.9
+    idx = _random_resamples(n, b, 12)
+    peak = _peak_bytes(lambda: censoring.bootstrap_at_risk_average(values, observed, idx))
+    bound = 4 * values.nbytes + 4 * (b * g * s * 8)  # the dense form needs 8 B n G = 64 MB
+    assert peak < bound, (peak, bound)
+
+
+def test_the_bootstrap_aalen_johansen_does_not_build_the_dense_indicators():
+    # final review I1 (optional part): no (n, G-1, S, S) indicator tensor
+    n, g, b, s = 2000, 101, 10, 3
+    rng = np.random.default_rng(13)
+    active = rng.integers(0, s, size=(n, g))
+    observed = rng.random((n, g)) < 0.95
+    idx = _random_resamples(n, b, 14)
+    peak = _peak_bytes(lambda: censoring.bootstrap_aalen_johansen(active, observed, s, idx))
+    dense = n * (g - 1) * s * s * 8  # 14.4 MB
+    assert peak < dense / 2, (peak, dense)
 
 
 def _traj(task, outcome, active, *, e_total=None, every=1):
