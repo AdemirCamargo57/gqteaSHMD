@@ -305,3 +305,15 @@ def test_overlap_coupling_runs_on_a_tully_input(tmp_path, capsys):
     assert main(["model-dynamics", str(_write(tmp_path, text)), "--json", str(out)]) == 0
     capsys.readouterr()
     assert json.loads(out.read_text())["dynamics"]["coupling"] == "overlap"
+
+
+def test_hop_energy_reaches_the_library_options():
+    from pydantic import ValidationError
+
+    from gqteashmd.config.model_dynamics import DynamicsSection
+    from gqteashmd.dynamics.options import DynamicsOptions
+
+    section = DynamicsSection(hop_energy="previous")
+    assert DynamicsOptions(**section.model_dump()).hop_energy == "previous"
+    with pytest.raises(ValidationError, match="hop_energy"):
+        DynamicsSection(hop_energy="sharc")

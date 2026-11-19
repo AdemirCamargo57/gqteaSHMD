@@ -16,6 +16,7 @@ EDC_CONVENTIONS = decoherence.EDC_CONVENTIONS
 SUBSTEP_INTERPOLATIONS = propagators.INTERPOLATIONS
 COUPLINGS = ("nacdr", "overlap")
 GRADIENT_TRANSFORMATIONS = ("ngt", "none")
+HOP_ENERGIES = ("current", "previous")
 
 
 def _choice(name: str, value: object, allowed: tuple[str, ...]) -> None:
@@ -42,6 +43,7 @@ class DynamicsOptions:
     coupling: str = "nacdr"
     gradient_transformation: str = "ngt"
     eselect_Eh: float | None = None
+    hop_energy: str = "current"
 
     def __post_init__(self) -> None:
         if not _finite(self.dt_au) or not self.dt_au > 0:
@@ -70,6 +72,7 @@ class DynamicsOptions:
             )
         _choice("coupling", self.coupling, COUPLINGS)
         _choice("gradient_transformation", self.gradient_transformation, GRADIENT_TRANSFORMATIONS)
+        _choice("hop_energy", self.hop_energy, HOP_ENERGIES)
         if self.eselect_Eh is not None and (
             not _finite(self.eselect_Eh) or not self.eselect_Eh > 0
         ):

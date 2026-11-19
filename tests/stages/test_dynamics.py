@@ -230,3 +230,38 @@ def test_pyscf_backend_reference_is_the_sampling_equilibrium(tmp_path, write_inp
     assert dynamics_module._pyscf_backend(ctx, None, task_dir) == "backend"
     expected = read_samples_h5(ctx.upstream_dir("sampling") / "samples.h5")["equilibrium_bohr"]
     np.testing.assert_array_equal(seen["reference"], expected)
+
+
+MAIN_DYNAMICS_FINGERPRINT_KEYS = {
+    "dt_fs",
+    "nsubsteps",
+    "coupling",
+    "hopping",
+    "ekin_correction",
+    "frustrated",
+    "decoherence",
+    "decoherence_param_Eh",
+    "edc_convention",
+    "substep_interpolation",
+    "energy_drift_limit_eV",
+    "energy_jump_limit_eV",
+    "stop_after_s0_fs",
+    "overlap_threshold",
+    "max_step_halvings",
+    "output_every",
+}
+
+
+def test_hop_energy_reaches_the_options_and_the_fingerprint_only_when_set(tmp_path, write_input):
+    default = _context(tmp_path / "a", write_input)
+    assert run_settings(default.config.dynamics).options.hop_energy == "current"
+    fp_default = _stage().fingerprint_inputs(default)["dynamics"]
+    # the default leaves the fingerprint as before the option existed (4e61daa), so projects
+    # made before the key stay up to date
+    assert set(fp_default) == MAIN_DYNAMICS_FINGERPRINT_KEYS
+    lines = 'tmax_fs = 2.0\ndt_fs = 0.25\nhop_energy = "previous"\n'
+    previous = _context(tmp_path / "b", write_input, dynamics=lines)
+    assert run_settings(previous.config.dynamics).options.hop_energy == "previous"
+    fp_previous = _stage().fingerprint_inputs(previous)["dynamics"]
+    assert fp_previous["hop_energy"] == "previous"
+    assert {k: v for k, v in fp_previous.items() if k != "hop_energy"} == fp_default

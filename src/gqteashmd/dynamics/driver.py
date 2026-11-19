@@ -19,7 +19,10 @@ trajectories are bit-identical to P7a-1). One step, in the order of item 11:
    overlaps of snap'. This gives c' and R^diag.
 7. Hopping probabilities from lambda (``"sharc"`` with R^diag and c^diag; ``"fssh"`` only with
    U = ``None``, item 8); draw exactly one xi ~ U[0, 1), also when hopping is ``"none"``.
-8. If a target j is chosen: adjust v' for dE = E^diag'_j - E^diag'_lambda (item 9; for
+8. If a target j is chosen: adjust v' for dE = E^diag'_j - E^diag'_lambda
+   (``hop_energy = "current"``) or
+   dE = E^diag'_j + K(v') - E_tot,prev (``"previous"``: the previous record's E_tot, recomputed
+   from the state; ``hop_delta_e``) (item 9; for
    ``parallel_nac`` the direction is ``snapshot.nacs[lambda, j]`` of the masked snap' when U' is
    ``None``, else Re K^diag'_lambda j, refused when it is complex). Accepted: lambda <- j.
    Frustrated: lambda unchanged, v' kept or reflected.
@@ -43,7 +46,7 @@ from gqteashmd.dynamics.decoherence import apply_decoherence
 from gqteashmd.dynamics.hopping import choose_state, hopping_probabilities
 from gqteashmd.dynamics.integrators import acceleration, verlet_positions, verlet_velocities
 from gqteashmd.dynamics.models import ElectronicModel
-from gqteashmd.dynamics.options import DynamicsOptions
+from gqteashmd.dynamics.options import HOP_ENERGIES, DynamicsOptions
 from gqteashmd.dynamics.propagators import propagate_diagonal
 from gqteashmd.dynamics.randomness import RandomSource
 from gqteashmd.dynamics.records import ElectronicSnapshot, StepRecord, TrajectoryState
@@ -84,6 +87,25 @@ class Outcome(StrEnum):
 def kinetic_energy(v: np.ndarray, masses: np.ndarray) -> float:
     """K = v^T M v / 2."""
     return 0.5 * float(np.sum(np.asarray(masses) * v * v))
+
+
+def hop_delta_e(
+    hop_energy: str, e_new: float, e_old: float, kinetic: float, e_total_previous: float
+) -> float:
+    """The dE given to ``adjust_velocity`` at a hop (item 8).
+
+    ``"current"``: E^diag'_j - E^diag'_lambda, which keeps the total energy of the
+    Verlet-completed step. ``"previous"``: E^diag'_j + K(v') - E_tot,prev, so an accepted
+    ``parallel_vel`` hop ends with E_tot = E_tot,prev, the previous record's total energy
+    (SHARC 4.1's convention as measured in P9b; for ``parallel_nac`` the same dE is our own
+    definition).
+    """
+    if hop_energy not in HOP_ENERGIES:
+        allowed = ", ".join(HOP_ENERGIES)
+        raise ValueError(f"hop_energy must be one of {allowed}; got {hop_energy!r}")
+    if hop_energy == "current":
+        return float(e_new - e_old)
+    return float(e_new + kinetic - e_total_previous)
 
 
 def _check_fssh(options: DynamicsOptions | None, u: np.ndarray | None) -> None:
@@ -291,7 +313,20 @@ def step(
     frustrated = False
     target = choose_state(lam, probabilities, xi)
     if target is not None:
-        delta_e = float(e_diag1[target] - e_diag1[lam])
+        if options.hop_energy == "previous":
+            # E_tot of the step's starting state = the previous record's E_tot (item 11)
+            e_total_previous = float(
+                diagonal_energies(snap0.hamiltonian, u0)[state.active]
+            ) + kinetic_energy(v0, masses)
+            delta_e = hop_delta_e(
+                "previous",
+                e_diag1[target],
+                e_diag1[lam],
+                kinetic_energy(v1, masses),
+                e_total_previous,
+            )
+        else:
+            delta_e = hop_delta_e("current", e_diag1[target], e_diag1[lam], 0.0, 0.0)
         direction = None
         if options.ekin_correction == "parallel_nac":
             direction = _hop_direction(masked1, g_diag1, e_diag1, lam, target)

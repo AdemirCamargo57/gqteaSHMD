@@ -134,6 +134,7 @@ allow_fewer = false           # accept fewer trajectories if too few pass the se
 # coupling = "overlap"               # "nacdr" needs method = "casscf"
 # hopping = "sharc"
 # decoherence = "edc"
+# hop_energy = "current"             # or "previous": SHARC 4.1's convention at a hop
 # energy_drift_limit_eV = 0.5
 # energy_jump_limit_eV = 0.1         # reject a step whose E_tot jumps by more
 

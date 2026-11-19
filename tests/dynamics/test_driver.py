@@ -5,7 +5,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from gqteashmd.dynamics.driver import Outcome, initial_state, run_trajectory, step
+from gqteashmd.dynamics.driver import Outcome, hop_delta_e, initial_state, run_trajectory, step
 from gqteashmd.dynamics.lvc import LVCModel, lvc_wigner_samples
 from gqteashmd.dynamics.models import TullySimpleAvoidedCrossing
 from gqteashmd.dynamics.options import DynamicsOptions
@@ -698,3 +698,106 @@ def test_diagonal_propagation_matches_the_diabatic_schroedinger_equation(couplin
     coarse, fine = _diabatic_error(coupling, 1.0), _diabatic_error(coupling, 0.5)
     assert fine < 1e-6, fine
     assert 3.0 <= coarse / fine <= 5.0, (coarse, fine)
+
+
+def test_hop_delta_e_for_both_rules():
+    # exact binary fractions, so the comparisons are exact
+    assert hop_delta_e("current", 0.25, 0.125, 0.5, 9.0) == 0.125
+    assert hop_delta_e("previous", 0.25, 0.125, 0.5, 0.625) == 0.125
+    assert hop_delta_e("previous", 0.25, 0.125, 0.5, 0.5) == 0.25
+    with pytest.raises(ValueError, match="hop_energy"):
+        hop_delta_e("sharc", 0.25, 0.125, 0.5, 0.5)
+
+
+@pytest.mark.parametrize(("ekin", "tol"), [("parallel_vel", 1e-12), ("parallel_nac", 1e-10)])
+def test_previous_hop_energy_keeps_the_previous_record_energy(ekin, tol):
+    """xi = 0 every step: a hop whenever a probability is positive (as the continuity test)."""
+    model = TullySimpleAvoidedCrossing()
+    state = _start(model, x0=-4.0, k=20.0)
+    runs = {}
+    for rule in ("current", "previous"):
+        options = DynamicsOptions(dt_au=1.0, hopping="sharc", ekin_correction=ekin, hop_energy=rule)
+        _, _, runs[rule] = _run(model, state, options, ReplaySource([0.0] * 2000), max_steps=800)
+    prev = runs["previous"]
+    hops = [i for i, r in enumerate(prev) if r.hop_to is not None]
+    assert len(hops) >= 2
+    energies = [state.e_total_initial] + [r.e_total for r in prev]
+    for i in hops:
+        assert not prev[i].frustrated
+        assert abs(prev[i].e_total - energies[i]) <= tol, (i, prev[i].e_total - energies[i])
+    # before the first hop the two rules give identical records; the first hop is the same step
+    first = next(i for i, r in enumerate(runs["current"]) if r.hop_to is not None)
+    assert first == hops[0]
+    _assert_records_equal(runs["current"][:first], prev[:first])
+    # the rule changes the hop itself: "current" keeps the Verlet-completed energy of the step
+    assert prev[first].e_total != runs["current"][first].e_total
+
+
+@pytest.mark.parametrize("frustrated", ["keep", "reflect"])
+def test_previous_hop_energy_frustrated_hop(frustrated):
+    """Too little kinetic energy for the upper state under either rule (K 0.004 < gap 0.018)."""
+    model = TullySimpleAvoidedCrossing()
+    options = DynamicsOptions(
+        dt_au=1.0, hopping="sharc", frustrated=frustrated, hop_energy="previous"
+    )
+    state = _start(model, x0=-1.5, k=4.0)
+    _, _, records = _run(model, state, options, ReplaySource([0.0] * 3000), max_steps=200)
+    first = next(r for r in records if r.frustrated)
+    assert first.hop_from is None and first.hop_to is None and first.active == 0
+    assert all(r.active == 0 for r in records)
+    assert (first.v[0] < 0.0) if frustrated == "reflect" else (first.v[0] > 0.0)
+    # every hop is frustrated, so v' is kept or reflected whatever dE is: the two rules give
+    # identical records (this also pins the frustration criterion E_tot,prev < E_j(q'))
+    current = DynamicsOptions(dt_au=1.0, hopping="sharc", frustrated=frustrated)
+    _, _, records_current = _run(model, state, current, ReplaySource([0.0] * 3000), max_steps=200)
+    _assert_records_equal(records_current, records)
+
+
+def test_previous_hop_energy_passes_the_independent_delta_e(monkeypatch):
+    """Forced hop: the dE given to adjust_velocity is E_j(q') + K(v') - E_tot,prev, recomputed
+    here from the records (energies, velocity before the adjustment, previous record)."""
+    from gqteashmd.dynamics import driver as driver_module
+
+    model = TullySimpleAvoidedCrossing()
+    options = DynamicsOptions(dt_au=1.0, hopping="sharc", hop_energy="previous")
+    state = _start(model, x0=-4.0, k=20.0)
+    seen = []
+    original = driver_module.adjust_velocity
+
+    def spy(velocity, masses, delta_e, **kwargs):
+        seen.append((velocity.copy(), float(delta_e)))
+        return original(velocity, masses, delta_e, **kwargs)
+
+    monkeypatch.setattr(driver_module, "adjust_velocity", spy)
+    _, _, records = _run(model, state, options, ReplaySource([0.0] * 800), max_steps=800)
+    attempts = [i for i, r in enumerate(records) if r.hop_to is not None or r.frustrated]
+    assert len(attempts) == len(seen) >= 2
+    totals = [state.e_total_initial] + [r.e_total for r in records]
+    checked = 0
+    for i, (v_before, delta_e) in zip(attempts, seen, strict=True):
+        r = records[i]
+        if r.hop_to is None:
+            continue  # a frustrated attempt has no recorded target
+        kinetic = 0.5 * float(np.sum(model.masses * v_before * v_before))
+        expected = float(r.energies[r.hop_to]) + kinetic - totals[i]
+        assert delta_e == pytest.approx(expected, abs=1e-12)
+        checked += 1
+    assert checked >= 2
+
+
+@pytest.mark.parametrize("eselect", [None, 0.05])
+@pytest.mark.parametrize(("rule", "pinned"), [("previous", True), ("current", False)])
+def test_previous_hop_energy_with_spin_orbit_and_eselect(rule, pinned, eselect):
+    """U is not None (lvc_soc): at every accepted hop E_tot is that of the previous record
+    under "previous" (and is not under "current", so the test discriminates)."""
+    options = DynamicsOptions(dt_au=0.5, hop_energy=rule, eselect_Eh=eselect)
+    state, _, _, records = _lvc_run(options, 300, rng=_forced_stream(300))
+    assert all(r.u is not None for r in records)
+    totals = [state.e_total_initial] + [r.e_total for r in records]
+    hops = [i for i, r in enumerate(records) if r.hop_to is not None and not r.frustrated]
+    assert len(hops) >= 2
+    worst = max(abs(totals[i + 1] - totals[i]) for i in hops)
+    if pinned:
+        assert worst <= 1e-10, worst
+    else:
+        assert worst > 1e-10, worst
