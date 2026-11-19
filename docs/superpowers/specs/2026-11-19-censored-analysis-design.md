@@ -1,6 +1,6 @@
 # The censored analysis and the hop-step energy check: design
 
-Status: written 2026-11-19; awaiting owner review. Branch `feat/censored-analysis` (from `main` `f738b35`).
+Status: written 2026-11-19; owner-approved 2026-11-19. Branch `feat/censored-analysis` (from `main` `f738b35`).
 
 ## 0. Owner decisions (2026-11-19, multiple choice)
 
