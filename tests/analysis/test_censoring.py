@@ -214,15 +214,18 @@ def test_the_bootstrap_aalen_johansen_does_not_build_the_dense_indicators():
     assert peak < dense / 2, (peak, dense)
 
 
-def _traj(task, outcome, active, *, e_total=None, every=1):
+def _traj(task, outcome, active, *, e_total=None, grid_step=None, ticks=None):
+    """Records at grid steps 0, 1, ... unless `grid_step`/`ticks` are given (8 ticks a step)."""
     n = len(active)
+    steps = np.arange(n) if grid_step is None else np.asarray(grid_step)
+    sub = np.zeros(n) if ticks is None else np.asarray(ticks)
     return Trajectory(
         task=task,
         outcome=outcome,
         initial_state=int(active[0]) if n else 1,
-        grid_step=np.arange(n, dtype=np.int64),
-        ticks=np.zeros(n, dtype=np.int64),
-        time_fs=0.5 * np.arange(n),
+        grid_step=steps.astype(np.int64),
+        ticks=sub.astype(np.int64),
+        time_fs=0.5 * (steps + sub / 8),
         active=np.asarray(active, dtype=np.int64),
         hop_from=np.full(n, -1),
         hop_to=np.full(n, -1),
@@ -270,3 +273,46 @@ def test_on_grid_marks_the_censored_part_as_unobserved():
     assert g.cut == () and g.horizon_steps == 4
     g2 = on_grid([a], output_every=1, dt_fs=0.5, n_total=4, n_states=2, horizon=2)
     assert g2.horizon_steps == 2 and g2.observed.shape == (1, 3) and g2.observed.all()
+
+
+def test_censoring_step_with_output_every_above_one():
+    # final review T3: output.h5 keeps full steps that are multiples of output_every, plus the
+    # last record (grid step 5 here); the censoring step is the last kept multiple, 4
+    t = _traj("a", "overlap_failure", [1, 1, 1, 0], grid_step=[0, 2, 4, 5])
+    assert censoring.censoring_step(t, output_every=2) == 4
+    assert censoring.censoring_step(t, output_every=4) == 4
+    assert censoring.censoring_step(t, output_every=2, before_record=2) == 2
+    t3 = _traj("b", "energy_drift", [1, 1, 1], grid_step=[0, 3, 5])
+    assert censoring.censoring_step(t3, output_every=3) == 3
+
+
+def test_censoring_step_ignores_substep_records():
+    # final review T3: records inside a halved interval (ticks > 0) are not grid points; a
+    # trajectory that ends inside the interval after grid step 2 is censored at 2
+    t = _traj(
+        "a", "overlap_failure", [1, 1, 1, 0, 0], grid_step=[0, 1, 2, 2, 2], ticks=[0, 0, 0, 4, 6]
+    )
+    assert censoring.censoring_step(t, output_every=1) == 2
+    early = _traj("b", "electronic_failure", [1, 1, 1], grid_step=[0, 0, 0], ticks=[0, 4, 6])
+    assert censoring.censoring_step(early, output_every=1) == 0
+    # a jump at the substep record (index 3): censored at the last full step before it
+    assert censoring.censoring_step(t, output_every=1, before_record=3) == 2
+    assert censoring.censoring_step(t, output_every=1, before_record=2) == 1
+
+
+def test_the_jump_window_is_clipped_at_n_total():
+    # final review T3 (P8 PR3): a jump after grid step n_total does not censor; one before does
+    big = 0.2 / HARTREE_IN_EV
+    late = _traj("late", "finished", [1] * 7, e_total=[0, 0, 0, 0, 0, big, big])  # step 5
+    edge = _traj("edge", "finished", [1] * 7, e_total=[0, 0, 0, 0, big, big, big])  # step 4
+    trajs = {"late": late, "edge": edge}
+    used, at, cens, excl = censoring.select_censored(
+        ["late", "edge"], trajs, output_every=1, n_total=4, dt_fs=0.5, energy_jump_eV=0.1
+    )
+    assert [t.task for t in used] == ["late", "edge"] and excl == []
+    assert at == {"edge": 3}  # the jump into grid step 4 is inside the window: censored at 3
+    assert [(c.task, c.reason, c.grid_step) for c in cens] == [("edge", "energy_jump", 3)]
+    _, at6, _, _ = censoring.select_censored(
+        ["late"], trajs, output_every=1, n_total=6, dt_fs=0.5, energy_jump_eV=0.1
+    )
+    assert at6 == {"late": 4}  # with the window up to 6 the late jump censors too
