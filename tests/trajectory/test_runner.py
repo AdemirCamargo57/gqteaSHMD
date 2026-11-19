@@ -383,3 +383,30 @@ def test_energy_jump_limit_validation():
     for bad in (0.0, -1.0, float("nan"), float("inf")):
         with pytest.raises(ValueError, match="energy_jump_limit_au"):
             RunSettings(options, tmax_au=10 * DT, energy_jump_limit_au=bad)
+
+
+@pytest.mark.parametrize("rule", ["previous", "current"])
+def test_an_energy_jump_at_a_hop_step_is_seen_under_both_rules(tmp_path, rule):
+    """An energy jump (every energy + 0.01 Eh) in the call of the first hop step is rejected
+    under both rules: under "previous" the hop record's e_total is pinned to the previous
+    record's, so only e_total_before_hop shows it (spec section 3)."""
+    settings = _settings(options={"hop_energy": rule}, energy_jump_limit_au=F1)
+    _, reference = _run(tmp_path, name="ref", settings=settings, source=ReplaySource([0.0] * 400))
+    rows = _log(reference)
+    hop_row = int(np.flatnonzero(rows["hop_to"] >= 0)[0])
+    assert hop_row > 0
+    # without rejections log row r is grid step r, computed by call r + 1 (call 1 is step 0)
+    result, _ = _run(
+        tmp_path,
+        name="jump",
+        settings=settings,
+        faults={hop_row + 1: "energy_jump"},
+        source=ReplaySource([0.0] * 400),
+    )
+    assert result["rejections_by_signal"] == {"energy": 1}, result["rejections_by_signal"]
+
+
+def test_previous_without_faults_rejects_nothing_new(tmp_path):
+    settings = _settings(options={"hop_energy": "previous"}, energy_jump_limit_au=F1)
+    result, _ = _run(tmp_path, settings=settings, source=ReplaySource([0.0] * 400))
+    assert result["n_hops"] > 0 and result["n_rejections"] == 0
