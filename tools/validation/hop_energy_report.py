@@ -63,6 +63,37 @@ def outcome_changes(
     ]
 
 
+def analysis_numbers(analysis: dict[str, Any]) -> dict[str, Any]:
+    """The complete-rule numbers of an analysis.json (final review m1).
+
+    Under schema_version 2 the top-level `n_included` and `fit` belong to the estimator in use
+    (`censored` by default), so the complete rule's are read from `estimators["complete"]`
+    (null when no trajectory is complete); schema 1 has the complete rule at the top level.
+    """
+    schema = analysis.get("schema_version", 1)
+    if schema >= 2:
+        block = (analysis.get("estimators") or {}).get("complete") or {}
+        n_included = block.get("n", 0)
+        small = block.get("small_ensemble")
+        fit = block.get("fit") or {}
+    else:
+        n_included = analysis.get("n_included")
+        small = analysis.get("small_ensemble")
+        fit = analysis.get("fit") or {}
+    return {
+        "schema_version": schema,
+        "estimator_read": "complete",
+        "n_selected": analysis.get("n_selected"),
+        "n_included": n_included,
+        "small_ensemble": small,
+        "warnings": analysis.get("warnings"),
+        "t0_fs": fit.get("t0_fs"),
+        "t0_interval_fs": fit.get("t0_interval_fs"),
+        "tau_fs": fit.get("tau_fs"),
+        "tau_interval_fs": fit.get("tau_interval_fs"),
+    }
+
+
 def summarize(run_dir: Path) -> dict[str, Any]:
     dyn = find_stage_dir(run_dir, "dynamics")
     summary = json.loads((dyn / "dynamics_summary.json").read_text())
@@ -77,7 +108,6 @@ def summarize(run_dir: Path) -> dict[str, Any]:
             a, b = record_energy_changes_eV(t)
             hop_d.extend(a.tolist())
             other_d.extend(b.tolist())
-    fit = analysis.get("fit") or {}
     return {
         "run": str(run_dir),
         "outcomes": summary["outcomes"],
@@ -91,16 +121,7 @@ def summarize(run_dir: Path) -> dict[str, Any]:
         ),
         "record_dE_eV_at_hops": quantiles(hop_d),
         "record_dE_eV_elsewhere": quantiles(other_d),
-        "analysis": {
-            "n_selected": analysis.get("n_selected"),
-            "n_included": analysis.get("n_included"),
-            "small_ensemble": analysis.get("small_ensemble"),
-            "warnings": analysis.get("warnings"),
-            "t0_fs": fit.get("t0_fs"),
-            "t0_interval_fs": fit.get("t0_interval_fs"),
-            "tau_fs": fit.get("tau_fs"),
-            "tau_interval_fs": fit.get("tau_interval_fs"),
-        },
+        "analysis": analysis_numbers(analysis),
         "rows": rows,
     }
 
