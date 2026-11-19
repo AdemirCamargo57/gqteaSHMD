@@ -279,6 +279,21 @@ class AnalysisStage(Stage):
                 f"fit: bootstrap_failures ({fitu.bootstrap_failures} of {section.n_bootstrap} "
                 "bootstrap resamples gave no fit and are left out of the intervals)"
             )
+        # final review I2, ruling F1: name the identity rows that carry probability and, with
+        # no complete trajectory, the held tail; the horizon and the fit are left as they are
+        if est_censored.empty_rows:
+            warnings.append(
+                f"the censored estimator held {est_censored.empty_rows} state probabilities over "
+                "intervals with no trajectory at risk (empty_rows = "
+                f"{est_censored.empty_rows}); the censored curve and its fit are not supported "
+                "by data there"
+            )
+        if not complete:
+            t_last = float(g_censored.time_fs[g_censored.observed.any(axis=0)].max())
+            warnings.append(
+                f"no trajectory is complete: the censored curve beyond {t_last:g} fs, the last "
+                "time any trajectory is observed, is held constant"
+            )
 
         # hops, drifts and consistency stay over the complete trajectories (ruling PR4)
         complete_tasks = {t.task for t in complete}

@@ -96,6 +96,15 @@ def test_markdown_shows_the_estimator_and_its_counts(summary_example):
     assert "- estimator: -\n" in old and "- n_complete: -\n" in old
 
 
+def test_markdown_shows_the_empty_rows_of_the_censored_estimator(summary_example):
+    # final review I2: the count of held state probabilities is printed
+    s = _censored_summary(summary_example)
+    s["estimators"]["censored"]["empty_rows"] = 3
+    text = analysis_markdown(s)
+    assert "- n_censored: 1\n- empty_rows: 3\n" in text
+    assert "- empty_rows: -\n" in analysis_markdown(summary_example)  # no estimators block
+
+
 def test_markdown_lists_the_censored_trajectories(summary_example):
     text = analysis_markdown(_censored_summary(summary_example))
     section = text.split("## Censored trajectories\n", 1)[1].split("\n## ", 1)[0]

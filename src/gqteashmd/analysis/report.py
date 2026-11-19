@@ -64,6 +64,8 @@ def analysis_markdown(summary: Mapping[str, Any]) -> str:
     out += [f"- n_included: {_n(s.get('n_included'))}"]
     out += [f"- n_complete: {_n(s.get('n_complete'))}"]
     out += [f"- n_censored: {_n(s.get('n_censored'))}"]
+    censored_block = (s.get("estimators") or {}).get("censored") or {}
+    out += [f"- empty_rows: {_n(censored_block.get('empty_rows'))}"]
     out += [f"- small_ensemble: {_n(s.get('small_ensemble'))}"]
     out += [f"- horizon_fs: {_n(s.get('horizon_fs'))}", f"- dt_out_fs: {_n(s.get('dt_out_fs'))}"]
     out += ["", "## Outcomes"]

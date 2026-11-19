@@ -670,3 +670,42 @@ def test_without_a_complete_trajectory_the_censored_estimator_still_runs(tmp_pat
         assert not any(name.startswith("complete_") for name in f)
         assert f.attrs["estimator"] == "censored" and f.attrs["n_complete"] == 0
     assert "complete_P_S0" not in (ctx.stage_dir / "populations.csv").read_text()
+    # final review I2: the held probabilities and the held tail are named (ruling F1)
+    n_empty = data["estimators"]["censored"]["empty_rows"]
+    assert EMPTY_ROWS_WARNING.format(n=n_empty) in data["warnings"]
+    # traj_00001 (energy_drift) is observed up to its last record, grid step 3 = 1.5 fs
+    assert NO_COMPLETE_WARNING.format(t="1.5") in data["warnings"]
+    assert f"- empty_rows: {n_empty}\n" in (ctx.stage_dir / "report.md").read_text()
+
+
+EMPTY_ROWS_WARNING = (
+    "the censored estimator held {n} state probabilities over intervals with no trajectory at "
+    "risk (empty_rows = {n}); the censored curve and its fit are not supported by data there"
+)
+NO_COMPLETE_WARNING = (
+    "no trajectory is complete: the censored curve beyond {t} fs, the last time any trajectory "
+    "is observed, is held constant"
+)
+
+
+def test_held_probabilities_are_warned_about_with_complete_trajectories(tmp_path, write_input):
+    # the complete trajectory stays in S1; the censored one is in S0 at its censoring step
+    # (1.0 fs), so S0 has probability and nobody at risk over the last two intervals
+    trajs = [(FIN, [1, 1, 1, 1, 1], {}), ("overlap_failure", [1, 0, 0], {})]
+    for estimator in ("censored", "complete"):
+        ctx = _context(tmp_path / estimator, write_input, trajs, estimator=estimator)
+        run_stage(ctx)
+        data = _analysis(ctx)
+        assert data["estimators"]["censored"]["empty_rows"] == 2
+        assert EMPTY_ROWS_WARNING.format(n=2) in data["warnings"], estimator
+        assert not any(w.startswith("no trajectory is complete") for w in data["warnings"])
+        assert "- empty_rows: 2\n" in (ctx.stage_dir / "report.md").read_text()
+
+
+def test_no_held_probability_no_warning(tmp_path, write_input):
+    ctx = _context(tmp_path, write_input, _varied_trajectories(), estimator="censored")
+    run_stage(ctx)
+    data = _analysis(ctx)
+    assert data["estimators"]["censored"]["empty_rows"] == 0
+    assert not any("held" in w for w in data["warnings"])
+    assert "- empty_rows: 0\n" in (ctx.stage_dir / "report.md").read_text()
