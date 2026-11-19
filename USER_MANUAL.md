@@ -3342,7 +3342,7 @@ The full-window test is therefore a **strict xfail**, with these numbers in its 
 **Measured, not tested:** the selection bias of the excluded trajectories (31-33 % here; all 33 losses of ours had a hop before their end).
 
 ### 8.18 The hop energy option
-**Status [IMPLEMENTED]** (branch `feat/hop-energy-option`; the report is `docs/superpowers/reports/2026-11-18-hop-energy-option.md`). The key `hop_energy` is described in §4.2 and §5.7 and the rule in §8.12. The default `"current"` is bit-identical to the version before the option (the golden test of the dynamics core is unchanged). The key is hashed in the `dynamics` fingerprint only when it is not `"current"`, and `DynamicsStage.version` stays 2.
+**Status [IMPLEMENTED]** (merged into `main` on 2026-11-19; the report is `docs/superpowers/reports/2026-11-18-hop-energy-option.md`). The key `hop_energy` is described in §4.2 and §5.7 and the rule in §8.12. The default `"current"` is bit-identical to the version before the option (the golden test of the dynamics core is unchanged). The key is hashed in the `dynamics` fingerprint only when it is not `"current"`, and `DynamicsStage.version` stays 2.
 
 **Why.** §8.17.6 measured that SHARC 4.1 keeps the previous record's total energy at a hop (all 221 swap hops), while ours keeps the current step's, and that this accounts for the difference after the hop in a replayed trajectory, to the precision of one trajectory. Neither rule is wrong; `"previous"` removes one step's integration error at each hop. That SHARC's rule is this one is an inference from the black-box measurement.
 
@@ -3534,7 +3534,7 @@ P1 foundation (done) → P2 input schema and pre-run checks (done) → P3a PySCF
   - Small-ensemble threshold: 50 (`analysis` version 2).
   - The decisions it leaves (among them the hop energy convention) were taken by the owner on 2026-11-18.
   - **[PLANNED]**: a later robustness sub-project (TDA/TDDFT root-skip detection, among others).
-- **The hop energy option** (after P9b; implemented on `feat/hop-energy-option`, §8.18): `hop_energy = "previous"`, SHARC's rule, as an option.
+- **The hop energy option** (after P9b; implemented, §8.18): `hop_energy = "previous"`, SHARC's rule, as an option.
 - **Next [PLANNED]:** the losses after a hop (owner decision 2026-11-18).
 
 This manual is updated with each step. Sections marked [PLANNED] become [IMPLEMENTED] when their sub-project is finished and validated.
