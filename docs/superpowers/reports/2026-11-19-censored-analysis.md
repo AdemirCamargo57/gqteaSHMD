@@ -37,7 +37,7 @@ Date: 2026-11-19. Branch `feat/censored-analysis` (from `main` `f738b35`). The s
 | 5 | `pytest tests/analysis tests/stages/test_analysis.py tests/stages/test_analysis_pipeline.py tests/config tests/test_orchestrator.py -q -W error -m "not pyscf"`; `pytest tests/test_e2e_dynamics.py -m "not slow"` | **254 passed** (550.39 s), then **87 passed** for `tests/stages/test_analysis.py tests/analysis` after the extra test; e2e **1 passed**, 1 deselected (33.91 s) |
 | 6 | `pytest tests/validation/test_censoring_report.py -q -W error` | **5 passed** (1.76 s) |
 
-**Full suite: not yet run (controller).**
+**Full suite `pytest -W error` with SHARC and ORCA at `33242d3` (2026-11-19, the documents commit, before the final fix wave): 1561 passed, 2 skipped, 4 xfailed in 10533.17 s (2 h 55 min 33 s)** (the same two skips by design and four xfails as the hop energy option). The final fix wave (`5dd0e60` to `59cd773`) came after it and was run alone: `tests/analysis tests/stages/test_analysis.py tests/stages/test_analysis_pipeline.py tests/trajectory tests/validation/test_hop_energy_report.py tests/validation/test_censoring_report.py tests/config` (all markers) 315 passed; its re-review's non-slow run 135 passed.
 
 What the tests assert, among others:
 
