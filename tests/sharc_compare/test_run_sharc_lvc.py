@@ -4,7 +4,6 @@ against a fake interface script (our own, written into tmp_path); for the sharc.
 public manual, section 5.3.1) and our own QM.out provider for the swap test."""
 
 import importlib.util
-import os
 import subprocess
 import sys
 import time
@@ -16,6 +15,7 @@ import pytest
 from gqteashmd.core.units import HARTREE_IN_EV
 from gqteashmd.dynamics.lvc import LVCModel
 from gqteashmd.dynamics.options import DynamicsOptions
+from gqteashmd.execution.processes import _alive
 
 TOOLS = Path(__file__).resolve().parents[2] / "tools" / "sharc_compare"
 
@@ -209,11 +209,12 @@ time.sleep(300)
         )
     assert time.monotonic() - start < 60
     pid = int((work / "child.pid").read_text())
+    # The killed child is an orphan. Under a PID 1 that does not reap (the CI container's
+    # `tail -f /dev/null`) it stays a zombie, which os.kill(pid, 0) still finds; `_alive`
+    # counts a zombie as exited.
     deadline = time.monotonic() + 10
     while time.monotonic() < deadline:
-        try:
-            os.kill(pid, 0)
-        except ProcessLookupError:
+        if not _alive(pid):
             break
         time.sleep(0.05)
     else:

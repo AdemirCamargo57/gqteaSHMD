@@ -28,6 +28,6 @@ jobs:
       - name: Type check
         run: mypy
       - name: Fast tests
-        run: pytest -m "not slow"
+        run: bash .github/scripts/pytest-annotate.sh -m "not slow"
       - name: Slow tests
-        run: pytest -m slow
+        run: bash .github/scripts/pytest-annotate.sh -m slow
