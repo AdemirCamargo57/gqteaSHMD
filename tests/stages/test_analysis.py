@@ -745,8 +745,15 @@ def _baseline_trajectories():
 
 # Final review T5b: produced on main f738b35 (before the censored analysis) by running this
 # scenario through main's AnalysisStage (tests/stages/test_analysis.py `_context`/`run_stage`,
-# seed 2026, n_bootstrap 100) and printing repr floats; the branch must reproduce them exactly
-# under estimator = "complete". The values depend on NumPy and SciPy (environment.yml).
+# seed 2026, n_bootstrap 100) and printing repr floats; the branch must reproduce them under
+# estimator = "complete". The counts and the classical populations (fractions of trajectories)
+# are compared exactly. Everything else (Wilson bounds, quantum averages, bootstrap intervals,
+# the fit) is compared to a relative 1e-9, because environment.yml does not pin NumPy or SciPy
+# and the last bits can differ between builds (BLAS, least_squares). A NumPy release that
+# changes the stream of Generator.integers changes the bootstrap resamples themselves; then
+# regenerate these numbers on the old code rather than widen the tolerance.
+REL = 1e-9
+ABS = 1e-12
 BASELINE_P_S1 = [1.0, 0.8333333333333334, 0.6666666666666666, 0.5, 0.3333333333333333]
 BASELINE_P_S1_LOWER = [
     0.6096657120978346,
@@ -806,7 +813,7 @@ BASELINE_FIT = {
 
 
 @pytest.mark.parametrize("population", ["classical", "quantum"])
-def test_the_complete_estimator_reproduces_main_exactly(tmp_path, write_input, population):
+def test_the_complete_estimator_reproduces_main(tmp_path, write_input, population):
     ctx = _context(
         tmp_path,
         write_input,
@@ -819,14 +826,24 @@ def test_the_complete_estimator_reproduces_main_exactly(tmp_path, write_input, p
     data = _analysis(ctx)
     assert data["n_included"] == 6 and data["horizon_fs"] == 2.0
     assert data["included"] == [f"traj_{k:05d}" for k in range(6)]
-    fit = {k: data["fit"][k] for k in BASELINE_FIT[population]}
-    assert fit == BASELINE_FIT[population]
+    for key, expected in BASELINE_FIT[population].items():
+        got = data["fit"][key]
+        if key in ("flags", "bootstrap_failures"):
+            assert got == expected, key
+        else:
+            assert got == pytest.approx(expected, rel=REL, abs=ABS), key
+
+    def close(values, expected):
+        return values == pytest.approx(expected, rel=REL, abs=ABS)
+
     with h5py.File(ctx.stage_dir / "populations.h5") as f:
         assert f["classical"][()][:, 1].tolist() == BASELINE_P_S1
-        assert f["classical_lower"][()][:, 1].tolist() == BASELINE_P_S1_LOWER
-        assert f["classical_upper"][()][:, 1].tolist() == BASELINE_P_S1_UPPER
-        assert f["quantum"][()][:, 1].tolist() == BASELINE_RHO_S1
-        assert f["quantum_lower"][()][:, 1].tolist() == BASELINE_RHO_S1_LOWER
-        assert f["quantum_upper"][()][:, 1].tolist() == BASELINE_RHO_S1_UPPER
-        target = BASELINE_P_S1 if population == "classical" else BASELINE_RHO_S1
-        assert f["fit_target"][()].tolist() == target
+        assert close(f["classical_lower"][()][:, 1].tolist(), BASELINE_P_S1_LOWER)
+        assert close(f["classical_upper"][()][:, 1].tolist(), BASELINE_P_S1_UPPER)
+        assert close(f["quantum"][()][:, 1].tolist(), BASELINE_RHO_S1)
+        assert close(f["quantum_lower"][()][:, 1].tolist(), BASELINE_RHO_S1_LOWER)
+        assert close(f["quantum_upper"][()][:, 1].tolist(), BASELINE_RHO_S1_UPPER)
+        if population == "classical":
+            assert f["fit_target"][()].tolist() == BASELINE_P_S1
+        else:
+            assert close(f["fit_target"][()].tolist(), BASELINE_RHO_S1)
