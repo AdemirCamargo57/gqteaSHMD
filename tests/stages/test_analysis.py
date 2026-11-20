@@ -747,12 +747,15 @@ def _baseline_trajectories():
 # scenario through main's AnalysisStage (tests/stages/test_analysis.py `_context`/`run_stage`,
 # seed 2026, n_bootstrap 100) and printing repr floats; the branch must reproduce them under
 # estimator = "complete". The counts and the classical populations (fractions of trajectories)
-# are compared exactly. Everything else (Wilson bounds, quantum averages, bootstrap intervals,
-# the fit) is compared to a relative 1e-9, because environment.yml does not pin NumPy or SciPy
-# and the last bits can differ between builds (BLAS, least_squares). A NumPy release that
-# changes the stream of Generator.integers changes the bootstrap resamples themselves; then
-# regenerate these numbers on the old code rather than widen the tolerance.
+# are compared exactly. The Wilson bounds and quantum averages are compared to a relative
+# 1e-9, the fit values (estimates, intervals, std, rms) to a relative 1e-6: environment.yml does
+# not pin NumPy or SciPy, and OpenBLAS picks its kernels by CPU, so the last bits differ between
+# machines; least_squares then stops at a slightly different point within its own tolerance
+# (t0 moved by 2e-9 relative with OPENBLAS_CORETYPE=SandyBridge, measured 2026-11-20). A NumPy
+# release that changes the stream of Generator.integers changes the bootstrap resamples
+# themselves; then regenerate these numbers on the old code rather than widen the tolerance.
 REL = 1e-9
+FIT_REL = 1e-6
 ABS = 1e-12
 BASELINE_P_S1 = [1.0, 0.8333333333333334, 0.6666666666666666, 0.5, 0.3333333333333333]
 BASELINE_P_S1_LOWER = [
@@ -831,7 +834,7 @@ def test_the_complete_estimator_reproduces_main(tmp_path, write_input, populatio
         if key in ("flags", "bootstrap_failures"):
             assert got == expected, key
         else:
-            assert got == pytest.approx(expected, rel=REL, abs=ABS), key
+            assert got == pytest.approx(expected, rel=FIT_REL, abs=ABS), key
 
     def close(values, expected):
         return values == pytest.approx(expected, rel=REL, abs=ABS)

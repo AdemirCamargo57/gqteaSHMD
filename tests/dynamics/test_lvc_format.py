@@ -68,7 +68,10 @@ def test_regeneration_matches_committed_files():
     texts = fx.fixture_texts()
     for name in TEMPLATES:
         assert texts[name] == (DATA / name).read_text(encoding="utf-8")
-    # V0.txt holds eigenvectors: compare numerically (last-digit LAPACK differences).
+    # V0.txt holds eigenvectors: compare numerically (last-digit LAPACK differences). An
+    # eigenvector's sign is arbitrary and LAPACK's choice depends on the CPU kernel (mode 7
+    # flips with OPENBLAS_CORETYPE=SandyBridge, measured 2026-11-20), so the vibrational modes
+    # are compared up to sign and the six zero modes, a degenerate subspace, by their projector.
     a = read_v0(texts["V0.txt"])
     b = V0()
     assert a.symbols == b.symbols
@@ -76,9 +79,15 @@ def test_regeneration_matches_committed_files():
         (a.coords_bohr, b.coords_bohr),
         (a.masses_amu, b.masses_amu),
         (a.frequencies_Eh, b.frequencies_Eh),
-        (a.modes, b.modes),
     ]:
         assert np.max(np.abs(x - y)) < 1e-12
+    zero = b.frequencies_Eh == 0.0
+    ext_a, ext_b = a.modes[:, zero], b.modes[:, zero]
+    assert np.max(np.abs(ext_a @ ext_a.T - ext_b @ ext_b.T)) < 1e-12
+    vib_a, vib_b = a.modes[:, ~zero], b.modes[:, ~zero]
+    signs = np.sign(np.sum(vib_a * vib_b, axis=0))
+    assert np.all(signs != 0)
+    assert np.max(np.abs(vib_a * signs - vib_b)) < 1e-12
 
 
 def test_modes_orthogonal_and_six_zero_frequencies():
