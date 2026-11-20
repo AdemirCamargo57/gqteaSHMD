@@ -324,6 +324,7 @@ class AnalysisSection(_Section):
     enabled: bool = True
     fit_states: list[str] | None = None
     fit_population: Literal["classical", "quantum"] = "classical"
+    estimator: Literal["censored", "complete"] = "censored"
     n_bootstrap: int = Field(default=1000, ge=100)
     energy_jump_eV: float = Field(default=ENERGY_JUMP_DEFAULT_EV, gt=0, allow_inf_nan=False)
     exclude_energy_jumps: bool = False
@@ -352,6 +353,15 @@ class AnalysisSection(_Section):
         if not labels:
             raise ValueError("analysis.fit_states must not be empty (omit it to use all)")
         return [str(label) for label in labels]
+
+    @model_validator(mode="after")
+    def _quantum_fit_needs_complete(self) -> AnalysisSection:
+        if self.fit_population == "quantum" and self.estimator == "censored":
+            raise ValueError(
+                'fit_population = "quantum" needs estimator = "complete" (the censored '
+                "estimator applies to the classical populations only; USER_MANUAL 8.13.3)"
+            )
+        return self
 
 
 class ShmdConfig(_Section):

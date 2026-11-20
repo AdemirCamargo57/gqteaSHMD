@@ -201,8 +201,8 @@ def test_finalize_reports_rejection_signals_and_resumes(tmp_path, write_input, c
     assert "rejections by signal" in (ctx.stage_dir / "dynamics_summary.md").read_text()
 
 
-def test_the_stage_version_is_two():
-    assert DynamicsStage.version == 2
+def test_the_stage_version_is_three():
+    assert DynamicsStage.version == 3
 
 
 def test_fingerprint_carries_the_electronic_fingerprint(tmp_path, write_input):

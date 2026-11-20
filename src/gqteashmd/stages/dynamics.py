@@ -92,7 +92,9 @@ def _finite_or_none(value: Any) -> float | None:
 
 class DynamicsStage(Stage):
     name = "dynamics"
-    version = 2
+    # 3: under hop_energy = "previous" the energy-jump signal sees the energy before the hop's
+    # velocity adjustment (censored analysis spec, section 3); 2: P9a plan 2, F1
+    version = 3
     depends_on = ("prepare", "sampling", "selection")
     config_sections = ("electronic", "dynamics")
     required_modules: tuple[str, ...] = ("pyscf>=2.6", "h5py>=3.9")

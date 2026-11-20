@@ -49,6 +49,42 @@ def test_populations_csv():
     assert lines[4].endswith(",")  # fit_curve NaN -> empty field
 
 
+def test_an_extra_block_is_written_to_both_files(tmp_path):
+    other = np.array([[0.25, 0.75], [0.5, 0.5]])
+    path = tmp_path / "populations.h5"
+    write_populations_h5(
+        path,
+        **ARRAYS,
+        attrs={"n_included": 2},
+        extra={"complete_classical": other, "complete_classical_lower": other - 0.25},
+    )
+    with h5py.File(path, "r") as f:
+        np.testing.assert_array_equal(f["complete_classical"][()], other)
+        np.testing.assert_array_equal(f["complete_classical_lower"][()], other - 0.25)
+        assert f["complete_classical"].attrs["units"] == "-"
+    text = format_populations_csv(
+        **ARRAYS,
+        comments=[],
+        extra_blocks=[("complete_P", other, other - 0.25, other + 0.25)],
+    )
+    lines = text.splitlines()
+    header = lines[0].split(",")
+    start = header.index("fit_curve") + 1
+    assert header[start:] == [
+        "complete_P_S0",
+        "complete_P_S0_lower",
+        "complete_P_S0_upper",
+        "complete_P_S1",
+        "complete_P_S1_lower",
+        "complete_P_S1_upper",
+    ]
+    first = lines[1].split(",")
+    assert len(first) == len(header)
+    assert [float(x) for x in first[start:]] == [0.25, 0.0, 0.5, 0.75, 0.5, 1.0]
+    plain = format_populations_csv(**ARRAYS, comments=[]).splitlines()
+    assert [line.split(",")[:start] for line in lines] == [line.split(",") for line in plain]
+
+
 def test_hops_csv():
     text = format_hops_csv(
         [

@@ -80,14 +80,20 @@ def _write_traj(
     )
 
 
-def _context(tmp_path, write_input, trajs, *, analysis="", seed=None, file_only=()):
+def _context(
+    tmp_path, write_input, trajs, *, analysis="", seed=None, file_only=(), estimator="complete"
+):
     """`trajs`: list of (outcome, active_by_step, kwargs) or None (no file, in the summary).
 
     `file_only`: indices whose output.h5 exists but which are absent from the summary.
     """
     tmp_path.mkdir(parents=True, exist_ok=True)
     path = write_input(
-        tmp_path, extra=ELECTRONIC + DYNAMICS + "[analysis]\nn_bootstrap = 100\n" + analysis
+        tmp_path,
+        extra=ELECTRONIC
+        + DYNAMICS
+        + f'[analysis]\nn_bootstrap = 100\nestimator = "{estimator}"\n'
+        + analysis,
     )
     cfg = load_config(path).config
     if seed is not None:
@@ -445,6 +451,7 @@ def test_fingerprint_inputs(tmp_path, write_input):
             "n_bootstrap": 100,
             "energy_jump_eV": ENERGY_JUMP_DEFAULT_EV,
             "exclude_energy_jumps": False,
+            "estimator": "complete",
         },
         "project_seed": ctx.config.project.seed,
     }
@@ -464,7 +471,7 @@ def test_enabled_needs_a_dynamics_table(tmp_path, write_input):
 
 def test_stage_attributes():
     stage = AnalysisStage()
-    assert stage.name == "analysis" and stage.version == 2
+    assert stage.name == "analysis" and stage.version == 3
     assert stage.depends_on == ("selection", "dynamics")
     assert stage.config_sections == ("analysis",)
     assert stage.required_modules == ("h5py>=3.9", "scipy>=1.11")
@@ -544,3 +551,282 @@ def test_the_small_ensemble_threshold_is_the_measured_n_min():
     assert analysis_module.SMALL_ENSEMBLE_COVERAGE == (
         "coverage 0.895 at N = 20, 0.9275 at N = 50, 0.935 at N = 100"
     )
+
+
+def test_censored_estimator_uses_a_lost_trajectory_up_to_its_end(tmp_path, write_input):
+    trajs = [
+        (FIN, [1, 1, 1, 0, 0], {}),
+        (FIN, [1, 1, 1, 1, 1], {}),
+        ("overlap_failure", [1, 0, 0], {}),
+    ]
+    ctx = _context(tmp_path, write_input, trajs, estimator="censored")
+    run_stage(ctx)
+    data = _analysis(ctx)
+    assert data["schema_version"] == 2 and data["estimator"] == "censored"
+    assert data["n_complete"] == 2 and data["n_censored"] == 1 and data["n_included"] == 3
+    assert data["censored"] == [
+        {
+            "task": "traj_00002",
+            "outcome": "overlap_failure",
+            "reason": "outcome",
+            "censored_at_fs": 1.0,
+        }
+    ]
+    assert set(data["estimators"]) == {"complete", "censored"}
+    assert data["estimators"]["complete"]["n"] == 2
+    assert data["estimators"]["censored"]["n"] == 3
+    # at t = 1.0 fs: traj 0 in S1, traj 1 in S1, traj 2 in S0 -> P(S0) = 1/3; after that the
+    # censored trajectory's S0 probability is carried by the estimator, not dropped
+    row = next(r for r in data["table"] if r["time_fs"] == 1.0)
+    assert row["P"]["S0"] == pytest.approx(1 / 3)
+    complete_row = next(r for r in data["estimators"]["complete"]["table"] if r["time_fs"] == 1.0)
+    assert complete_row["P"]["S0"] == 0.0  # the complete rule dropped the decayed trajectory
+
+
+def test_without_losses_the_two_estimators_agree(tmp_path, write_input):
+    ctx = _context(tmp_path, write_input, _varied_trajectories(), estimator="censored")
+    run_stage(ctx)
+    data = _analysis(ctx)
+    for a, b in zip(data["table"], data["estimators"]["complete"]["table"], strict=True):
+        for s, value in a["P"].items():
+            assert value == pytest.approx(b["P"][s], abs=1e-12)
+    assert data["n_censored"] == 0 and data["estimators"]["censored"]["empty_rows"] == 0
+
+
+def test_the_censored_fraction_warning(tmp_path, write_input, caplog):
+    trajs = [(FIN, [1, 1, 1, 1, 1], {})] + [("overlap_failure", [1, 0, 0], {})] * 3
+    ctx = _context(tmp_path, write_input, trajs, estimator="censored")
+    run_stage(ctx)
+    text = " ".join(_analysis(ctx)["warnings"])
+    assert "75% of the selected trajectories are not complete" in text
+    assert "3 censored, 0 without data" in text
+
+
+def test_the_files_carry_the_other_estimator(tmp_path, write_input):
+    h5py = pytest.importorskip("h5py")
+    trajs = [(FIN, [1, 1, 1, 0, 0], {}), ("overlap_failure", [1, 0, 0], {})]
+    ctx = _context(tmp_path, write_input, trajs, estimator="censored")
+    run_stage(ctx)
+    with h5py.File(ctx.stage_dir / "populations.h5", "r") as f:
+        assert "complete_classical" in f and "complete_quantum_upper" in f
+    header = next(
+        line
+        for line in (ctx.stage_dir / "populations.csv").read_text().splitlines()
+        if not line.startswith("#")
+    )
+    assert "complete_P_S0" in header.split(",")
+
+
+def test_energy_jump_censoring_keeps_the_part_before_the_jump(tmp_path, write_input):
+    jump = [-1.0, -1.0, -1.0 + 0.2 / HARTREE_IN_EV, -1.0 + 0.2 / HARTREE_IN_EV, -1.0]
+    trajs = [(FIN, [1, 1, 1, 1, 1], {"e_total": jump}), (FIN, [1, 1, 1, 1, 1], {})]
+    ctx = _context(
+        tmp_path,
+        write_input,
+        trajs,
+        estimator="censored",
+        analysis="energy_jump_eV = 0.1\nexclude_energy_jumps = true\n",
+    )
+    run_stage(ctx)
+    data = _analysis(ctx)
+    # the jump is at record 2 (1.0 fs): censored at the last grid time before it, 0.5 fs
+    assert data["censored"] == [
+        {
+            "task": "traj_00000",
+            "outcome": "finished",
+            "reason": "energy_jump",
+            "censored_at_fs": 0.5,
+        }
+    ]
+    assert data["excluded"] == [] and data["n_included"] == 2
+    assert data["estimators"]["complete"]["n"] == 1  # the complete rule excludes it
+
+
+def test_a_trajectory_lost_after_the_horizon_counts_as_complete(tmp_path, write_input):
+    # the shortest finished trajectory sets the horizon at 1.0 fs (grid step 2); the lost one
+    # has records up to grid step 4, so it is complete up to the horizon (ruling PR5)
+    trajs = [(FIN, [1, 1, 0], {}), ("energy_drift", [1, 1, 1, 0, 0], {})]
+    ctx = _context(tmp_path, write_input, trajs, estimator="censored")
+    run_stage(ctx)
+    data = _analysis(ctx)
+    assert data["horizon_fs"] == pytest.approx(1.0)
+    assert data["n_censored"] == 0 and data["censored"] == [] and data["n_included"] == 2
+    assert data["estimators"]["complete"]["n"] == 1
+
+
+def test_without_a_complete_trajectory_the_censored_estimator_still_runs(tmp_path, write_input):
+    # no finished trajectory: the horizon is tmax (grid.horizon_steps), the complete block is
+    # null and the files carry no complete_ columns (ruling PR6)
+    trajs = [("overlap_failure", [1, 0, 0], {}), ("energy_drift", [1, 1, 1, 1], {})]
+    ctx = _context(tmp_path, write_input, trajs, estimator="censored")
+    run_stage(ctx)
+    data = _analysis(ctx)
+    assert data["horizon_fs"] == pytest.approx(2.0)
+    assert data["n_complete"] == 0 and data["n_censored"] == 2 and data["n_included"] == 2
+    assert data["estimators"]["complete"] is None and data["consistency"] is None
+    assert data["estimators"]["censored"]["empty_rows"] > 0  # nobody at risk at the end
+    assert data["hops"]["pairs"] == {}
+    with h5py.File(ctx.stage_dir / "populations.h5", "r") as f:
+        assert not any(name.startswith("complete_") for name in f)
+        assert f.attrs["estimator"] == "censored" and f.attrs["n_complete"] == 0
+    assert "complete_P_S0" not in (ctx.stage_dir / "populations.csv").read_text()
+    # final review I2: the held probabilities and the held tail are named (ruling F1)
+    n_empty = data["estimators"]["censored"]["empty_rows"]
+    assert EMPTY_ROWS_WARNING.format(n=n_empty) in data["warnings"]
+    # traj_00001 (energy_drift) is observed up to its last record, grid step 3 = 1.5 fs
+    assert NO_COMPLETE_WARNING.format(t="1.5") in data["warnings"]
+    assert f"- empty_rows: {n_empty}\n" in (ctx.stage_dir / "report.md").read_text()
+
+
+EMPTY_ROWS_WARNING = (
+    "the censored estimator held {n} state probabilities over intervals with no trajectory at "
+    "risk (empty_rows = {n}); the censored curve and its fit are not supported by data there"
+)
+NO_COMPLETE_WARNING = (
+    "no trajectory is complete: the censored curve beyond {t} fs, the last time any trajectory "
+    "is observed, is held constant"
+)
+
+
+def test_held_probabilities_are_warned_about_with_complete_trajectories(tmp_path, write_input):
+    # the complete trajectory stays in S1; the censored one is in S0 at its censoring step
+    # (1.0 fs), so S0 has probability and nobody at risk over the last two intervals
+    trajs = [(FIN, [1, 1, 1, 1, 1], {}), ("overlap_failure", [1, 0, 0], {})]
+    for estimator in ("censored", "complete"):
+        ctx = _context(tmp_path / estimator, write_input, trajs, estimator=estimator)
+        run_stage(ctx)
+        data = _analysis(ctx)
+        assert data["estimators"]["censored"]["empty_rows"] == 2
+        assert EMPTY_ROWS_WARNING.format(n=2) in data["warnings"], estimator
+        assert not any(w.startswith("no trajectory is complete") for w in data["warnings"])
+        assert "- empty_rows: 2\n" in (ctx.stage_dir / "report.md").read_text()
+
+
+def test_no_held_probability_no_warning(tmp_path, write_input):
+    ctx = _context(tmp_path, write_input, _varied_trajectories(), estimator="censored")
+    run_stage(ctx)
+    data = _analysis(ctx)
+    assert data["estimators"]["censored"]["empty_rows"] == 0
+    assert not any("held" in w for w in data["warnings"])
+    assert "- empty_rows: 0\n" in (ctx.stage_dir / "report.md").read_text()
+
+
+def test_a_damaged_censored_trajectory_stops_a_complete_analysis(tmp_path, write_input):
+    # final review T5a (ruling T5-1): both estimators are computed, so a censored trajectory is
+    # checked also under estimator = "complete", where main would have excluded it unread
+    damaged = [-1.0, float("nan"), -1.0]
+    trajs = [(FIN, [1, 1, 1, 1, 1], {}), ("overlap_failure", [1, 0, 0], {"e_total": damaged})]
+    ctx = _context(tmp_path, write_input, trajs, estimator="complete")
+    with pytest.raises(TaskError, match="non-finite e_total in an included trajectory") as info:
+        run_stage(ctx)
+    assert info.value.retryable is False
+    assert "traj_00001" in str(info.value) and "--rerun-from dynamics" in str(info.value)
+    assert not (ctx.stage_dir / "analysis.json").exists()  # a task error, not a recorded stop
+
+
+def _baseline_trajectories():
+    """Six finished trajectories with hops and graded quantum populations, plus two losses."""
+    actives = [
+        [1, 1, 1, 1, 1],
+        [1, 1, 0, 0, 0],
+        [1, 1, 1, 0, 0],
+        [1, 0, 0, 0, 0],
+        [1, 1, 1, 1, 0],
+        [1, 1, 1, 1, 1],
+    ]
+    trajs = []
+    for k, active in enumerate(actives):
+        p1 = [max(0.0, 1.0 - m * (0.1 + 0.05 * k)) for m in range(5)]
+        trajs.append((FIN, active, {"populations": [[1.0 - p, p] for p in p1]}))
+    trajs.append(("overlap_failure", [1, 0, 0], {}))
+    trajs.append(("energy_drift", [1, 1], {}))
+    return trajs
+
+
+# Final review T5b: produced on main f738b35 (before the censored analysis) by running this
+# scenario through main's AnalysisStage (tests/stages/test_analysis.py `_context`/`run_stage`,
+# seed 2026, n_bootstrap 100) and printing repr floats; the branch must reproduce them exactly
+# under estimator = "complete". The values depend on NumPy and SciPy (environment.yml).
+BASELINE_P_S1 = [1.0, 0.8333333333333334, 0.6666666666666666, 0.5, 0.3333333333333333]
+BASELINE_P_S1_LOWER = [
+    0.6096657120978346,
+    0.43649717781352987,
+    0.299993315138392,
+    0.1876163064826506,
+    0.09677141110578041,
+]
+BASELINE_P_S1_UPPER = [
+    1.0,
+    0.9699466302516935,
+    0.9032285888942195,
+    0.8123836935173494,
+    0.700006684861608,
+]
+BASELINE_RHO_S1 = [1.0, 0.775, 0.55, 0.3333333333333333, 0.19999999999999998]
+BASELINE_RHO_S1_LOWER = [
+    1.0,
+    0.7039583333333335,
+    0.4079166666666667,
+    0.13729166666666665,
+    0.03333333333333332,
+]
+BASELINE_RHO_S1_UPPER = [
+    1.0,
+    0.8460416666666667,
+    0.6920833333333333,
+    0.5381249999999997,
+    0.39999999999999997,
+]
+BASELINE_FIT = {
+    "classical": {
+        "A": 1.0,
+        "t0_fs": 0.2119968412487169,
+        "tau_fs": 1.7687999587775307,
+        "t0_interval_fs": [1.0524126595077609e-18, 1.5959787372074765],
+        "tau_interval_fs": [0.3479278723827433, 3.57966856953346],
+        "t0_std_fs": 0.4749146353703487,
+        "tau_std_fs": 0.9034104838892965,
+        "rms": 0.020903470034306416,
+        "flags": [],
+        "bootstrap_failures": 0,
+    },
+    "quantum": {
+        "A": 1.0,
+        "t0_fs": 0.22031920968379914,
+        "tau_fs": 1.179935785581576,
+        "t0_interval_fs": [0.162871532680283, 0.28117708361593835],
+        "tau_interval_fs": [0.6963675824051245, 2.0707755783289676],
+        "t0_std_fs": 0.03444332309211499,
+        "tau_std_fs": 0.3732270255036135,
+        "rms": 0.01895484498317354,
+        "flags": [],
+        "bootstrap_failures": 0,
+    },
+}
+
+
+@pytest.mark.parametrize("population", ["classical", "quantum"])
+def test_the_complete_estimator_reproduces_main_exactly(tmp_path, write_input, population):
+    ctx = _context(
+        tmp_path,
+        write_input,
+        _baseline_trajectories(),
+        seed=2026,
+        analysis=f'fit_population = "{population}"\n',
+        estimator="complete",
+    )
+    run_stage(ctx)
+    data = _analysis(ctx)
+    assert data["n_included"] == 6 and data["horizon_fs"] == 2.0
+    assert data["included"] == [f"traj_{k:05d}" for k in range(6)]
+    fit = {k: data["fit"][k] for k in BASELINE_FIT[population]}
+    assert fit == BASELINE_FIT[population]
+    with h5py.File(ctx.stage_dir / "populations.h5") as f:
+        assert f["classical"][()][:, 1].tolist() == BASELINE_P_S1
+        assert f["classical_lower"][()][:, 1].tolist() == BASELINE_P_S1_LOWER
+        assert f["classical_upper"][()][:, 1].tolist() == BASELINE_P_S1_UPPER
+        assert f["quantum"][()][:, 1].tolist() == BASELINE_RHO_S1
+        assert f["quantum_lower"][()][:, 1].tolist() == BASELINE_RHO_S1_LOWER
+        assert f["quantum_upper"][()][:, 1].tolist() == BASELINE_RHO_S1_UPPER
+        target = BASELINE_P_S1 if population == "classical" else BASELINE_RHO_S1
+        assert f["fit_target"][()].tolist() == target

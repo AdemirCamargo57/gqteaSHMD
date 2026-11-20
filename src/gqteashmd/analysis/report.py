@@ -51,6 +51,7 @@ def analysis_markdown(summary: Mapping[str, Any]) -> str:
     out: list[str] = ["# Analysis", "", "## Settings"]
     settings = s.get("settings") or {}
     for key in (
+        "estimator",
         "fit_states",
         "fit_population",
         "n_bootstrap",
@@ -61,6 +62,10 @@ def analysis_markdown(summary: Mapping[str, Any]) -> str:
         out.append(f"- {key}: {_n(settings.get(key))}")
     out += ["", f"- n_selected: {_n(s.get('n_selected'))}"]
     out += [f"- n_included: {_n(s.get('n_included'))}"]
+    out += [f"- n_complete: {_n(s.get('n_complete'))}"]
+    out += [f"- n_censored: {_n(s.get('n_censored'))}"]
+    censored_block = (s.get("estimators") or {}).get("censored") or {}
+    out += [f"- empty_rows: {_n(censored_block.get('empty_rows'))}"]
     out += [f"- small_ensemble: {_n(s.get('small_ensemble'))}"]
     out += [f"- horizon_fs: {_n(s.get('horizon_fs'))}", f"- dt_out_fs: {_n(s.get('dt_out_fs'))}"]
     out += ["", "## Outcomes"]
@@ -78,6 +83,17 @@ def analysis_markdown(summary: Mapping[str, Any]) -> str:
             )
     else:
         out.append("none excluded")
+    out += ["", "## Censored trajectories"]
+    censored = s.get("censored") or []
+    if censored:
+        out += ["| task | outcome | reason | censored_at_fs |", "|---|---|---|---|"]
+        for c in censored:
+            out.append(
+                f"| {c.get('task')} | {c.get('outcome')} | {c.get('reason')}"
+                f" | {_n(c.get('censored_at_fs'))} |"
+            )
+    else:
+        out.append("none censored")
     cut = s.get("cut") or []
     out += ["", "## Cut at the horizon", ", ".join(cut) if cut else "none"]
 
@@ -113,8 +129,15 @@ def analysis_markdown(summary: Mapping[str, Any]) -> str:
     ):
         out.append(f"- {key}: {_n(fit.get(key))}")
 
+    in_use = s.get("estimator")
+    other = {"censored": "complete", "complete": "censored"}.get(str(in_use))
+    other_fit = (((s.get("estimators") or {}).get(other) or {}).get("fit") or {}) if other else {}
+    out += ["", "## Other estimator", f"- estimator: {_n(other)}"]
+    for key in ("tau_fs", "tau_interval_fs", "t0_fs", "t0_interval_fs"):
+        out.append(f"- {key}: {_n(other_fit.get(key))}")
+
     hops = s.get("hops") or {}
-    out += ["", "## Hops"]
+    out += ["", "## Hops (complete trajectories)"]
     out.append(f"- pairs: {_items(hops.get('pairs'))}")
     out.append(f"- frustrated (by originating state): {_items(hops.get('frustrated_from'))}")
     out.append(f"- hops per trajectory: {_items(hops.get('per_trajectory'))}")
@@ -122,7 +145,7 @@ def analysis_markdown(summary: Mapping[str, Any]) -> str:
     out.append(f"- first S0 arrival (fs): {_items(hops.get('first_s0_arrival_fs'))}")
 
     energy = s.get("energy") or {}
-    out += ["", "## Energy"]
+    out += ["", "## Energy (complete trajectories)"]
     out.append(f"- drift_eV: {_items(energy.get('drift_eV'))}")
     out.append(f"- jump_threshold_eV: {_n(energy.get('jump_threshold_eV'))}")
     for f in energy.get("flagged") or []:

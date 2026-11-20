@@ -383,3 +383,59 @@ def test_energy_jump_limit_validation():
     for bad in (0.0, -1.0, float("nan"), float("inf")):
         with pytest.raises(ValueError, match="energy_jump_limit_au"):
             RunSettings(options, tmax_au=10 * DT, energy_jump_limit_au=bad)
+
+
+@pytest.mark.parametrize("rule", ["previous", "current"])
+def test_an_energy_jump_at_a_hop_step_is_seen_under_both_rules(tmp_path, rule):
+    """An energy jump (every energy + 0.01 Eh) in the call of the first hop step is rejected
+    under both rules: under "previous" the hop record's e_total is pinned to the previous
+    record's, so only e_total_before_hop shows it (spec section 3)."""
+    settings = _settings(options={"hop_energy": rule}, energy_jump_limit_au=F1)
+    _, reference = _run(tmp_path, name="ref", settings=settings, source=ReplaySource([0.0] * 400))
+    rows = _log(reference)
+    hop_row = int(np.flatnonzero(rows["hop_to"] >= 0)[0])
+    assert hop_row > 0
+    # without rejections log row r is grid step r, computed by call r + 1 (call 1 is step 0)
+    result, _ = _run(
+        tmp_path,
+        name="jump",
+        settings=settings,
+        faults={hop_row + 1: "energy_jump"},
+        source=ReplaySource([0.0] * 400),
+    )
+    assert result["rejections_by_signal"] == {"energy": 1}, result["rejections_by_signal"]
+
+
+def test_previous_without_faults_rejects_nothing_new(tmp_path):
+    settings = _settings(options={"hop_energy": "previous"}, energy_jump_limit_au=F1)
+    result, _ = _run(tmp_path, settings=settings, source=ReplaySource([0.0] * 400))
+    assert result["n_hops"] > 0 and result["n_rejections"] == 0
+
+
+@pytest.mark.parametrize("persistent", [False, True])
+def test_a_persistent_energy_jump_at_a_hop_step_ends_the_trajectory(tmp_path, persistent):
+    """Spec 4.1 item 4 (final review T1): under "previous" an energy jump at the hop step's
+    call that persists through every halved retry (the first substep of each halving, so
+    max_step_halvings + 1 calls) ends the trajectory as electronic_discontinuity; a single
+    one is rejected once and the trajectory finishes."""
+    settings = _settings(options={"hop_energy": "previous"}, energy_jump_limit_au=F1)
+    halvings = settings.max_step_halvings
+    _, reference = _run(tmp_path, name="ref", settings=settings, source=ReplaySource([0.0] * 400))
+    hop_row = int(np.flatnonzero(_log(reference)["hop_to"] >= 0)[0])
+    assert hop_row > 0
+    first = hop_row + 1  # without rejections log row r is computed by call r + 1
+    n_faults = halvings + 1 if persistent else 1
+    result, _ = _run(
+        tmp_path,
+        name="jump",
+        settings=settings,
+        faults={first + k: "energy_jump" for k in range(n_faults)},
+        source=ReplaySource([0.0] * 400),
+    )
+    assert result["rejections_by_signal"] == {"energy": n_faults}, result
+    if persistent:
+        assert result["outcome"] == "electronic_discontinuity", result
+        assert result["n_grid_steps"] == hop_row - 1
+        assert "energy_jump_limit_eV" in result["message"]
+    else:
+        assert result["outcome"] == "finished", result

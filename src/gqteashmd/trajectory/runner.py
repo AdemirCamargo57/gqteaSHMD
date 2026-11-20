@@ -292,7 +292,10 @@ class TrajectoryRunner:
     def _energy_jump(
         self, state: TrajectoryState, record: StepRecord, progress: Progress
     ) -> float | None:
-        """|E_tot - E_tot(previous record)| if it exceeds energy_jump_limit_au, else None."""
+        """|E - E_tot(previous record)| if it exceeds energy_jump_limit_au, else None.
+
+        E is the record's E_tot, or its e_total_before_hop under hop_energy = "previous" at a hop.
+        """
         limit = self.settings.energy_jump_limit_au
         if limit is None:
             return None
@@ -303,7 +306,10 @@ class TrajectoryRunner:
             )
         # A non-finite E_tot gives a NaN jump, rejected here as an energy jump (practically
         # unreachable: BackendModel already rejects non-finite energies as electronic failures).
-        jump = abs(float(record.e_total) - previous)
+        # Under hop_energy = "previous" an accepted hop's e_total equals the previous record's
+        # by construction; the energy before the adjustment is what can jump (spec section 3).
+        energy = record.e_total if record.e_total_before_hop is None else record.e_total_before_hop
+        jump = abs(float(energy) - previous)
         return None if jump <= limit else jump
 
     def _rollback(self, saved: dict[str, Any]) -> RandomSource:

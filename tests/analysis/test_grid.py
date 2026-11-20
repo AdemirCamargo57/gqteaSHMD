@@ -71,6 +71,7 @@ def test_grid_holds_stopped_trajectories_in_s0_and_lists_cut_ones():
     np.testing.assert_array_equal(g.populations[1, 1], [1.0, 0.0, 0.0])
     assert g.horizon_steps == 3 and g.horizon_fs == 1.5 and g.cut == ("a",)
     assert g.tasks == ("a", "s")
+    assert g.observed.shape == g.active.shape and g.observed.all()
 
 
 def test_substep_records_are_not_grid_points():

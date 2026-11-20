@@ -66,7 +66,10 @@ def test_workflow_runs_dynamics_resumes_and_extends(tmp_path, write_input):
         for r in _summary(layout)["trajectories"]
         if r["outcome"] in ("finished", "stopped_in_s0")
     }
-    assert set(analysis["included"]) == included and analysis["stage_failed"] is False
+    censored = {c["task"] for c in analysis["censored"]}
+    assert set(analysis["included"]) == included | censored
+    assert analysis["n_complete"] == len(included)
+    assert analysis["stage_failed"] is False
     assert analysis["horizon_fs"] == pytest.approx(1.0)
     assert (layout.stage_dir(7, "analysis") / "populations.csv").exists()
     logs = sorted(stage.glob("tasks/traj_*/steps.log"))

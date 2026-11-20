@@ -51,3 +51,41 @@ def test_outcome_changes():
     assert hr.outcome_changes(a, b) == [
         {"task": "t1", "current": "overlap_failure", "previous": "finished"}
     ]
+
+
+def test_the_analysis_numbers_follow_the_complete_rule():
+    # final review m1: under schema 2 the top level belongs to the estimator in use (censored by
+    # default); the report compares complete-rule numbers, so it reads estimators["complete"]
+    fit_c = {"t0_fs": 1.0, "t0_interval_fs": [0.5, 2.0], "tau_fs": 80.0, "tau_interval_fs": [9, 99]}
+    fit_x = {"t0_fs": 3.0, "t0_interval_fs": [2.0, 4.0], "tau_fs": 50.0, "tau_interval_fs": [4, 60]}
+    schema2 = {
+        "schema_version": 2,
+        "estimator": "censored",
+        "n_selected": 100,
+        "n_included": 100,
+        "small_ensemble": False,
+        "warnings": ["w"],
+        "fit": fit_x,
+        "estimators": {
+            "complete": {"n": 67, "small_ensemble": False, "fit": fit_c},
+            "censored": {"n": 100, "small_ensemble": False, "fit": fit_x},
+        },
+    }
+    a = hr.analysis_numbers(schema2)
+    assert a["n_included"] == 67 and a["tau_fs"] == 80.0 and a["t0_interval_fs"] == [0.5, 2.0]
+    assert a["n_selected"] == 100 and a["warnings"] == ["w"] and a["small_ensemble"] is False
+    assert a["estimator_read"] == "complete" and a["schema_version"] == 2
+    schema1 = {
+        "schema_version": 1,
+        "n_selected": 100,
+        "n_included": 67,
+        "small_ensemble": False,
+        "warnings": [],
+        "fit": fit_c,
+    }
+    b = hr.analysis_numbers(schema1)
+    assert b["n_included"] == 67 and b["tau_fs"] == 80.0 and b["estimator_read"] == "complete"
+    censored = schema2["estimators"]["censored"]
+    nothing = {**schema2, "estimators": {"complete": None, "censored": censored}}
+    c = hr.analysis_numbers(nothing)  # no complete trajectory
+    assert c["n_included"] == 0 and c["tau_fs"] is None

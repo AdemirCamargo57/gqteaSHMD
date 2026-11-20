@@ -311,18 +311,22 @@ def step(
     hop_from: int | None = None
     hop_to: int | None = None
     frustrated = False
+    e_total_before_hop: float | None = None
     target = choose_state(lam, probabilities, xi)
     if target is not None:
+        unadjusted: float | None = None
         if options.hop_energy == "previous":
             # E_tot of the step's starting state = the previous record's E_tot (item 11)
             e_total_previous = float(
                 diagonal_energies(snap0.hamiltonian, u0)[state.active]
             ) + kinetic_energy(v0, masses)
+            kinetic_before = kinetic_energy(v1, masses)
+            unadjusted = float(e_diag1[lam]) + kinetic_before
             delta_e = hop_delta_e(
                 "previous",
                 e_diag1[target],
                 e_diag1[lam],
-                kinetic_energy(v1, masses),
+                kinetic_before,
                 e_total_previous,
             )
         else:
@@ -341,6 +345,7 @@ def step(
         v1 = adjustment.velocity
         if adjustment.accepted:
             hop_from, hop_to, lam = lam, target, target
+            e_total_before_hop = unadjusted
         else:
             frustrated = True
 
@@ -390,6 +395,7 @@ def step(
         c_mch=np.array(mch_coefficients(u1, c1), copy=True),
         active_mch=mch_state(u1, lam),
         u=None if u1 is None else np.array(u1, copy=True),
+        e_total_before_hop=e_total_before_hop,
     )
     return new_state, record
 

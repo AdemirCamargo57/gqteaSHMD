@@ -28,3 +28,12 @@ def summary_eV(values: Sequence[float]) -> dict[str, float | None]:
         "p95": float(np.percentile(v, 95)),
         "max": float(v.max()),
     }
+
+
+def first_jump_index(e_total_hartree: np.ndarray, threshold_eV: float) -> int | None:
+    """Index of the first record whose |E_tot - E_tot(previous record)| exceeds threshold_eV."""
+    e = np.asarray(e_total_hartree, dtype=float)
+    if e.size < 2:
+        return None
+    above = np.flatnonzero(np.abs(np.diff(e)) * HARTREE_IN_EV > threshold_eV)
+    return int(above[0]) + 1 if above.size else None

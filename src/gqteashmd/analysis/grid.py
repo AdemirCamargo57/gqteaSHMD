@@ -89,6 +89,7 @@ class GridData:
     horizon_steps: int
     horizon_fs: float
     cut: tuple[str, ...]
+    observed: np.ndarray  # (n, G) bool: False where a censored trajectory has no data
 
 
 def on_grid(
@@ -98,11 +99,15 @@ def on_grid(
     dt_fs: float,
     n_total: int,
     n_states: int,
+    censored_at: Mapping[str, int] | None = None,
+    horizon: int | None = None,
 ) -> GridData:
-    h = horizon_steps(included, n_total)
+    h = horizon_steps(included, n_total) if horizon is None else int(horizon)
+    censored_at = censored_at or {}
     steps = np.arange(0, h + 1, output_every, dtype=np.int64)
     active = np.zeros((len(included), steps.size), dtype=np.int64)
     populations = np.zeros((len(included), steps.size, n_states))
+    observed = np.ones((len(included), steps.size), dtype=bool)
     ground = np.zeros(n_states)
     ground[0] = 1.0
     cut: list[str] = []
@@ -110,7 +115,11 @@ def on_grid(
         full = np.flatnonzero(t.ticks == 0)
         where = {int(t.grid_step[j]): int(j) for j in full}
         end = t.last_full_step
+        stop = censored_at.get(t.task)
         for k, s in enumerate(steps):
+            if stop is not None and s > stop:
+                observed[i, k] = False  # censored: no data used after its censoring step
+                continue
             j = where.get(int(s))
             if j is not None:
                 active[i, k] = int(t.active[j])
@@ -119,7 +128,7 @@ def on_grid(
                 populations[i, k] = ground
             else:
                 raise InconsistentData(f"{t.task}: no record at grid step {int(s)}")
-        if np.any((t.grid_step > h) | ((t.grid_step == h) & (t.ticks > 0))):
+        if stop is None and np.any((t.grid_step > h) | ((t.grid_step == h) & (t.ticks > 0))):
             cut.append(t.task)
         if not np.all(np.isfinite(populations[i])):
             raise InconsistentData(f"{t.task}: non-finite populations")
@@ -132,4 +141,5 @@ def on_grid(
         h,
         h * float(dt_fs),
         tuple(cut),
+        observed,
     )

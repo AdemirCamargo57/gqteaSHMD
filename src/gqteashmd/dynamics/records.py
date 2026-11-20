@@ -55,3 +55,6 @@ class StepRecord:
     c_mch: np.ndarray | None = None
     active_mch: int | None = None
     u: np.ndarray | None = None  # copy of U' (None = identity)
+    # hop_energy = "previous", accepted hop: E_diag'_lambda + K(v') before the velocity
+    # adjustment (the runner's energy-jump signal; not stored in steps.log or output.h5)
+    e_total_before_hop: float | None = None

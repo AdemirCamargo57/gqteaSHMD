@@ -1,11 +1,14 @@
-"""Stage 7: populations, a kinetic fit, hop and energy statistics (P8).
+"""Stage 7: populations, a kinetic fit, hop and energy statistics (P8; censored analysis).
 
-`run_task` reads every selected trajectory's output.h5, applies the inclusion rule and the
-common grid (P8 spec section 3), computes the observables with `gqteashmd.analysis` and writes
-every output in its task directory; it raises only for unreadable or inconsistent inputs
-(non-retryable TaskError naming the `--rerun-from` stage). A physics or statistics stop is
-recorded in analysis.json (plan ruling PR6); `finalize` adds the excluded-fraction warning,
-copies the files to the stage directory, writes analysis.json and report.md, then raises it.
+`run_task` reads every selected trajectory's output.h5, applies the two inclusion rules (the
+complete rule of P8 spec section 3 and the censored rule of the censored analysis spec, section
+2.1) on the common grid, computes both estimators with `gqteashmd.analysis` and writes every
+output in its task directory; the estimator in use (`[analysis] estimator`) fills the top-level
+keys and the files, the other one is reported beside it. It raises only for unreadable or
+inconsistent inputs (non-retryable TaskError naming the `--rerun-from` stage). A physics or
+statistics stop is recorded in analysis.json (plan ruling PR6); `finalize` adds the
+excluded-fraction warning, copies the files to the stage directory, writes analysis.json and
+report.md, then raises it.
 """
 
 from __future__ import annotations
@@ -19,7 +22,17 @@ from typing import Any
 
 import numpy as np
 
-from gqteashmd.analysis import artifacts, energy, grid, hops, kinetics, populations, report
+from gqteashmd.analysis import (
+    artifacts,
+    censoring,
+    energy,
+    estimators,
+    grid,
+    hops,
+    kinetics,
+    populations,
+    report,
+)
 from gqteashmd.config.schema import AnalysisSection, ShmdConfig
 from gqteashmd.core.states import states_from_counts
 from gqteashmd.errors import StageFailedError, TaskError
@@ -69,7 +82,8 @@ def _task_error(message: str) -> TaskError:
 
 class AnalysisStage(Stage):
     name = "analysis"
-    version = 2
+    # 3: the censored estimator (default) beside the complete rule (censored analysis spec)
+    version = 3
     depends_on = ("selection", "dynamics")
     config_sections = ("analysis",)
     required_modules: tuple[str, ...] = ("h5py>=3.9", "scipy>=1.11")
@@ -109,6 +123,7 @@ class AnalysisStage(Stage):
         n_total = round(dyn.tmax_fs / dyn.dt_fs)
         dt_out = dyn.output_every * dyn.dt_fs
         task_dir = Path(task_dir)
+        use_censored = section.estimator == "censored"
 
         selected = _read_selection(ctx.upstream_dir("selection") / "trajectories.json")
         dynamics_dir = ctx.upstream_dir("dynamics")
@@ -152,36 +167,48 @@ class AnalysisStage(Stage):
             for name, t in trajectories.items()
             if t is not None
         }
-        included, excluded = grid.select(
-            [e.task_id for e in selected],
+        tasks = [e.task_id for e in selected]
+        complete, excluded_complete = grid.select(
+            tasks,
             trajectories,
             jumps,
             energy_jump_eV=section.energy_jump_eV,
             exclude_energy_jumps=section.exclude_energy_jumps,
         )
-        for t in included:
+        used, censor_steps, censored, excluded_censored = censoring.select_censored(
+            tasks,
+            trajectories,
+            output_every=dyn.output_every,
+            n_total=n_total,
+            dt_fs=dyn.dt_fs,
+            energy_jump_eV=section.energy_jump_eV if section.exclude_energy_jumps else None,
+        )
+        # Both estimators are computed, so every trajectory either uses is checked. `used`
+        # holds every complete trajectory except a `finished` file without records, which
+        # must still fail its check.
+        checked = list({t.task: t for t in (*complete, *used)}.values())
+        for t in checked:
             _check_included(t, files[t.task])
+        h = grid.horizon_steps(complete, n_total)  # ruling PR7
+        jump_censored = {c.task for c in censored if c.reason == "energy_jump"}
+        censor_steps = {k: v for k, v in censor_steps.items() if v < h}  # ruling PR5
+        censored = [c for c in censored if c.task in censor_steps]
+        in_use = used if use_censored else complete
+        excluded = excluded_censored if use_censored else excluded_complete
 
         counts = Counter(t.outcome for t in trajectories.values() if t is not None)
         outcomes = {o.value: int(counts.get(o.value, 0)) for o in TrajectoryOutcome}
         outcomes["task_failed"] = sum(1 for t in trajectories.values() if t is None)
-        summary = _base_summary(ctx, section, selected, included, excluded, outcomes, dt_out)
+        summary = _base_summary(
+            ctx, section, selected, in_use, excluded, complete, censored, outcomes, dt_out
+        )
 
-        if not included:
-            seen = ", ".join(f"{k} {v}" for k, v in outcomes.items() if v) or "none"
-            error = (
-                f"No trajectory can be analysed: outcomes {seen}; only 'finished' and "
-                "'stopped_in_s0' trajectories enter the averages (USER_MANUAL 8.13)"
-            )
-            if any(e.reason == "energy_jump" for e in excluded):
-                error += (
-                    "; set [analysis] exclude_energy_jumps = false and run with "
-                    "--rerun-from analysis"
-                )
+        if not in_use:
+            error = _nothing_to_analyse(outcomes, excluded, use_censored)
             return _stop(task_dir, summary, error, 0, n_total)
 
-        deviation, worst = 0.0, included[0].task
-        for t in included:
+        deviation, worst = 0.0, checked[0].task
+        for t in checked:
             d = float(np.abs(t.populations.sum(axis=1) - 1.0).max()) if t.populations.size else 0.0
             if d > deviation:
                 deviation, worst = d, t.task
@@ -190,41 +217,55 @@ class AnalysisStage(Stage):
                 f"populations of {worst} sum to 1 within {deviation:.3e} only "
                 "(tolerance 1e-6): this indicates a program error"
             )
-            return _stop(task_dir, summary, error, len(included), n_total)
+            return _stop(task_dir, summary, error, len(in_use), n_total)
 
-        try:
-            g = grid.on_grid(
-                included,
-                output_every=dyn.output_every,
-                dt_fs=dyn.dt_fs,
-                n_total=n_total,
-                n_states=len(labels),
+        def _grid(trajs: Sequence[grid.Trajectory], at: Mapping[str, int] | None) -> grid.GridData:
+            try:
+                return grid.on_grid(
+                    trajs,
+                    output_every=dyn.output_every,
+                    dt_fs=dyn.dt_fs,
+                    n_total=n_total,
+                    n_states=len(labels),
+                    censored_at=at,
+                    horizon=h,
+                )
+            except grid.InconsistentData as exc:
+                raise _task_error(f"{exc}; {DYNAMICS_ADVICE}") from exc
+
+        seed = ctx.config.project.seed
+        g_complete = _grid(complete, None) if complete else None
+        g_censored = _grid(used, censor_steps)
+        est_complete = (
+            estimators.complete_estimate(
+                g_complete,
+                fit_index,
+                fit_population=section.fit_population,
+                rng=task_rng(seed, "analysis", 0),
+                n_bootstrap=section.n_bootstrap,
+                dt_out=dt_out,
             )
-        except grid.InconsistentData as exc:
-            raise _task_error(f"{exc}; {DYNAMICS_ADVICE}") from exc
+            if g_complete is not None
+            else None
+        )
+        est_censored = estimators.censored_estimate(
+            g_censored,
+            fit_index,
+            rng=task_rng(seed, "analysis", 1),  # ruling PR3
+            n_bootstrap=section.n_bootstrap,
+            dt_out=dt_out,
+        )
+        est = est_censored if use_censored else est_complete
+        assert est is not None  # `in_use` is not empty
+        g = g_censored if use_censored else g_complete
+        assert g is not None
+        n = est.n
+        fit_population = "classical" if use_censored else section.fit_population
 
-        n = len(included)
         warnings: list[str] = summary["warnings"]
         if n < SMALL_ENSEMBLE:
-            warnings.append(
-                f"only {n} trajectories are included (fewer than {SMALL_ENSEMBLE}): populations, "
-                "intervals and the fit are not statistically reliable (measured 95 % "
-                f"tau interval {SMALL_ENSEMBLE_COVERAGE})"
-            )
-        p_classical, n_counts = populations.classical_populations(g.active, len(labels))
-        p_lo, p_hi = populations.wilson_intervals(n_counts, n)
-        rho = populations.quantum_populations(g.populations)
-        idx = populations.bootstrap_indices(
-            task_rng(ctx.config.project.seed, "analysis", 0), n, section.n_bootstrap
-        )
-        rho_lo, rho_hi = populations.bootstrap_intervals(g.populations, idx)
-
-        if section.fit_population == "classical":
-            per = np.isin(g.active, fit_index).astype(float)
-        else:
-            per = g.populations[:, :, fit_index].sum(axis=-1)
-        target = per.mean(axis=0)
-        fitu = kinetics.bootstrap_fit(g.time_fs, per, idx, dt_out=dt_out)
+            warnings.append(_small_ensemble_warning(n, len(censored), use_censored))
+        fitu = est.fit
         fit = fitu.fit
         if fit.tau_fs is not None and fit.t0_fs is not None:
             curve = kinetics.model_curve(g.time_fs, fit.a, fit.t0_fs, fit.tau_fs)
@@ -238,27 +279,45 @@ class AnalysisStage(Stage):
                 f"fit: bootstrap_failures ({fitu.bootstrap_failures} of {section.n_bootstrap} "
                 "bootstrap resamples gave no fit and are left out of the intervals)"
             )
+        # final review I2, ruling F1: name the identity rows that carry probability and, with
+        # no complete trajectory, the held tail; the horizon and the fit are left as they are
+        if est_censored.empty_rows:
+            warnings.append(
+                f"the censored estimator held {est_censored.empty_rows} state probabilities over "
+                "intervals with no trajectory at risk (empty_rows = "
+                f"{est_censored.empty_rows}); the censored curve and its fit are not supported "
+                "by data there"
+            )
+        if not complete:
+            t_last = float(g_censored.time_fs[g_censored.observed.any(axis=0)].max())
+            warnings.append(
+                f"no trajectory is complete: the censored curve beyond {t_last:g} fs, the last "
+                "time any trajectory is observed, is held constant"
+            )
 
-        included_tasks = {t.task for t in included}
+        # hops, drifts and consistency stay over the complete trajectories (ruling PR4)
+        complete_tasks = {t.task for t in complete}
         events: list[hops.HopEvent] = []
         for entry in selected:
             traj = trajectories[entry.task_id]
             if traj is not None:
                 events += hops.hop_events(
-                    traj, included=traj.task in included_tasks, horizon_fs=g.horizon_fs
+                    traj, included=traj.task in complete_tasks, horizon_fs=g.horizon_fs
                 )
-        hop_stats = hops.hop_statistics(events, included, labels, g.horizon_fs)
+        hop_stats = hops.hop_statistics(events, complete, labels, g.horizon_fs)
 
         drifts = [
             energy.max_drift_eV(t.e_total[t.time_fs <= g.horizon_fs + _TIME_TOLERANCE_FS])
-            for t in included
+            for t in complete
         ]
         flagged = [
             {"task": name, "energy_jump_eV": jumps[name]}
             for name in (e.task_id for e in selected)
             if name in jumps and jumps[name] > section.energy_jump_eV
         ]
-        k = sum(1 for f in flagged if f["task"] in included_tasks)
+        # a trajectory censored before its jump contributes no data with the jump
+        in_use_tasks = {t.task for t in in_use} - jump_censored
+        k = sum(1 for f in flagged if f["task"] in in_use_tasks)
         if k:
             warnings.append(
                 f"{k} included trajectories have an energy jump above energy_jump_eV = "
@@ -266,23 +325,24 @@ class AnalysisStage(Stage):
                 "exclude_energy_jumps = true"
             )
 
+        consistency = None
+        if est_complete is not None:
+            values = populations.consistency(est_complete.classical, est_complete.quantum)
+            consistency = dict(zip(labels, values.tolist(), strict=True))
         summary.update(
             {
                 "cut": list(g.cut),
                 "horizon_fs": g.horizon_fs,
-                "fit": {
-                    "states": fit_states,
-                    "population": section.fit_population,
-                    "A": fit.a,
-                    "t0_fs": fit.t0_fs,
-                    "tau_fs": fit.tau_fs,
-                    "t0_interval_fs": fitu.t0_interval_fs,
-                    "tau_interval_fs": fitu.tau_interval_fs,
-                    "t0_std_fs": fitu.t0_std_fs,
-                    "tau_std_fs": fitu.tau_std_fs,
-                    "rms": fit.rms,
-                    "flags": list(fit.flags),
-                    "bootstrap_failures": fitu.bootstrap_failures,
+                "fit": _fit_summary(est, fit_states, fit_population),
+                "estimators": {
+                    "complete": None
+                    if est_complete is None or g_complete is None
+                    else _estimate_summary(
+                        est_complete, g_complete, labels, fit_states, section.fit_population
+                    ),
+                    "censored": _estimate_summary(
+                        est_censored, g_censored, labels, fit_states, "classical"
+                    ),
                 },
                 "hops": hop_stats,
                 "energy": {
@@ -290,54 +350,61 @@ class AnalysisStage(Stage):
                     "jump_threshold_eV": section.energy_jump_eV,
                     "flagged": flagged,
                 },
-                "consistency": dict(
-                    zip(labels, populations.consistency(p_classical, rho).tolist(), strict=True)
-                ),
-                "table": _table(g.time_fs, labels, p_classical, rho),
+                "consistency": consistency,
+                "table": _table(g.time_fs, labels, est.classical, est.quantum),
             }
         )
 
         arrays: dict[str, Any] = {
             "time_fs": g.time_fs,
             "labels": labels,
-            "classical": p_classical,
-            "classical_lower": p_lo,
-            "classical_upper": p_hi,
-            "quantum": rho,
-            "quantum_lower": rho_lo,
-            "quantum_upper": rho_hi,
-            "fit_target": target,
+            "classical": est.classical,
+            "classical_lower": est.classical_lower,
+            "classical_upper": est.classical_upper,
+            "quantum": est.quantum,
+            "quantum_lower": est.quantum_lower,
+            "quantum_upper": est.quantum_upper,
+            "fit_target": est.target,
             "fit_curve": curve,
         }
+        extra, extra_blocks = _other_estimator(est_complete if use_censored else est_censored)
         artifacts.write_populations_h5(
             task_dir / "populations.h5",
             **arrays,
             attrs={
+                "estimator": section.estimator,
                 "n_included": int(n),
+                "n_complete": len(complete),
+                "n_censored": len(censored),
                 "n_selected": len(selected),
                 "horizon_fs": float(g.horizon_fs),
                 "dt_out_fs": float(dt_out),
-                "fit_population": section.fit_population,
+                "fit_population": fit_population,
                 "fit_states": [str(s) for s in fit_states],
             },
+            extra=extra,
         )
         comments = [
             "gqteashmd analysis: classical (P) and quantum (rho) populations with 95 % "
             "intervals, the fit target and the fitted curve",
             "units: time_fs in fs; populations are fractions (0-1)",
+            f"estimator = {section.estimator}",
             f"n_included = {n}",
             f"horizon_fs = {g.horizon_fs:.6f}",
-            f"fit_population = {section.fit_population}",
+            f"fit_population = {fit_population}",
             f"fit_states = {' '.join(fit_states)}",
         ]
         write_text_atomic(
             task_dir / "populations.csv",
-            artifacts.format_populations_csv(**arrays, comments=comments),
+            artifacts.format_populations_csv(
+                **arrays, comments=comments, extra_blocks=extra_blocks
+            ),
         )
         write_text_atomic(task_dir / "hops.csv", artifacts.format_hops_csv(events, labels))
         write_json_atomic(task_dir / "analysis.json", report.json_safe(summary))
         return {
             "stage_failed": False,
+            "estimator": section.estimator,
             "n_total": int(n_total),
             "n_included": int(n),
             "horizon_fs": float(g.horizon_fs),
@@ -349,13 +416,26 @@ class AnalysisStage(Stage):
         task_dir = ctx.layout.task_dir(ctx.stage_dir, TASK)
         summary = read_json(task_dir / "analysis.json")
         n_selected = int(summary["n_selected"])
-        fraction = (n_selected - int(summary["n_included"])) / n_selected if n_selected else 0.0
         limit = ctx.config.analysis.warn_excluded_fraction
-        if fraction > limit:
-            summary["warnings"].append(
-                f"{fraction:.0%} of the selected trajectories are excluded (more than "
-                f"warn_excluded_fraction = {limit}): possible selection bias, see 'excluded'"
-            )
+        if summary["estimator"] == "censored":
+            n_not_complete = n_selected - (int(summary["n_included"]) - int(summary["n_censored"]))
+            fraction = n_not_complete / n_selected if n_selected else 0.0
+            if fraction > limit:
+                summary["warnings"].append(
+                    f"{fraction:.0%} of the selected trajectories are not complete (more than "
+                    f"warn_excluded_fraction = {limit}): {summary['n_censored']} censored, "
+                    f"{len(summary['excluded'])} without data; the censored estimator assumes "
+                    "that a censored trajectory would have gone on like those still running in "
+                    "its state (USER_MANUAL 8.13)"
+                )
+        else:
+            n_included = int(summary["n_included"])
+            fraction = (n_selected - n_included) / n_selected if n_selected else 0.0
+            if fraction > limit:
+                summary["warnings"].append(
+                    f"{fraction:.0%} of the selected trajectories are excluded (more than "
+                    f"warn_excluded_fraction = {limit}): possible selection bias, see 'excluded'"
+                )
         for name in FILES:  # the stage directory mirrors the task: no stale copy survives
             source = task_dir / name
             if source.exists():
@@ -423,8 +503,9 @@ def _check_consistent(
 
 
 def _check_included(t: grid.Trajectory, path: Path) -> None:
-    """Checks of an included trajectory (spec section 8). An excluded one may have no record
-    at all (a failure at step 0, P7b ruling R6)."""
+    """Checks of an included (complete or censored) trajectory (P8 spec section 8; censored
+    analysis spec 2.1). An excluded one may have no record at all (a failure at step 0, P7b
+    ruling R6)."""
     if not bool(np.any((t.grid_step == 0) & (t.ticks == 0))):
         raise _task_error(
             f"{path}: records have no record at t = 0 (outcome {t.outcome!r}); {DYNAMICS_ADVICE}"
@@ -457,23 +538,63 @@ def _trajectory(task: str, data: TrajectoryData) -> grid.Trajectory:
     )
 
 
+def _nothing_to_analyse(
+    outcomes: Mapping[str, int], excluded: Sequence[grid.Excluded], use_censored: bool
+) -> str:
+    seen = ", ".join(f"{k} {v}" for k, v in outcomes.items() if v) or "none"
+    if use_censored:
+        return (
+            f"No trajectory can be analysed: outcomes {seen}; no selected trajectory has a "
+            "record (USER_MANUAL 8.13)"
+        )
+    error = (
+        f"No trajectory can be analysed: outcomes {seen}; only 'finished' and "
+        "'stopped_in_s0' trajectories enter the averages (USER_MANUAL 8.13)"
+    )
+    if any(e.reason == "energy_jump" for e in excluded):
+        error += "; set [analysis] exclude_energy_jumps = false and run with --rerun-from analysis"
+    return error
+
+
+def _small_ensemble_warning(n: int, n_censored: int, use_censored: bool) -> str:
+    if use_censored:
+        return (
+            f"only {n} trajectories are used ({n - n_censored} complete, {n_censored} censored; "
+            f"fewer than {SMALL_ENSEMBLE}): populations, intervals and the fit are not "
+            f"statistically reliable (measured 95 % tau interval {SMALL_ENSEMBLE_COVERAGE}, "
+            "for complete ensembles)"
+        )
+    return (
+        f"only {n} trajectories are included (fewer than {SMALL_ENSEMBLE}): populations, "
+        "intervals and the fit are not statistically reliable (measured 95 % "
+        f"tau interval {SMALL_ENSEMBLE_COVERAGE})"
+    )
+
+
 def _base_summary(
     ctx: StageContext,
     section: AnalysisSection,
     selected: Sequence[SelectedTrajectory],
-    included: Sequence[grid.Trajectory],
+    in_use: Sequence[grid.Trajectory],
     excluded: Sequence[grid.Excluded],
+    complete: Sequence[grid.Trajectory],
+    censored: Sequence[censoring.Censored],
     outcomes: Mapping[str, int],
     dt_out: float,
 ) -> dict[str, Any]:
-    """Every key of analysis.json; `None` for what is not computed (yet)."""
+    """Every key of analysis.json; `None` for what is not computed (yet). The top-level
+    `n_included`, `included`, `excluded`, `small_ensemble`, `fit` and `table` belong to the
+    estimator in use; `estimators` holds both (ruling PR4)."""
     return {
-        "schema_version": 1,
+        "schema_version": 2,
+        "estimator": section.estimator,
         "n_selected": len(selected),
-        "n_included": len(included),
-        "small_ensemble": len(included) < SMALL_ENSEMBLE,
+        "n_included": len(in_use),
+        "n_complete": len(complete),
+        "n_censored": len(censored),
+        "small_ensemble": len(in_use) < SMALL_ENSEMBLE,
         "outcomes": dict(outcomes),
-        "included": [t.task for t in included],
+        "included": [t.task for t in in_use],
         "excluded": [
             {
                 "task": e.task,
@@ -483,10 +604,20 @@ def _base_summary(
             }
             for e in excluded
         ],
+        "censored": [
+            {
+                "task": c.task,
+                "outcome": c.outcome,
+                "reason": c.reason,
+                "censored_at_fs": c.time_fs,
+            }
+            for c in censored
+        ],
         "cut": None,
         "horizon_fs": None,
         "dt_out_fs": dt_out,
         "fit": None,
+        "estimators": None,
         "hops": None,
         "energy": None,
         "consistency": None,
@@ -501,6 +632,68 @@ def _base_summary(
     }
 
 
+def _fit_summary(
+    est: estimators.Estimate, fit_states: Sequence[str], population: str
+) -> dict[str, Any]:
+    fitu, fit = est.fit, est.fit.fit
+    return {
+        "states": list(fit_states),
+        "population": population,
+        "A": fit.a,
+        "t0_fs": fit.t0_fs,
+        "tau_fs": fit.tau_fs,
+        "t0_interval_fs": fitu.t0_interval_fs,
+        "tau_interval_fs": fitu.tau_interval_fs,
+        "t0_std_fs": fitu.t0_std_fs,
+        "tau_std_fs": fitu.tau_std_fs,
+        "rms": fit.rms,
+        "flags": list(fit.flags),
+        "bootstrap_failures": fitu.bootstrap_failures,
+    }
+
+
+def _estimate_summary(
+    est: estimators.Estimate,
+    g: grid.GridData,
+    labels: Sequence[str],
+    fit_states: Sequence[str],
+    population: str,
+) -> dict[str, Any]:
+    out = {
+        "n": est.n,
+        "small_ensemble": est.n < SMALL_ENSEMBLE,
+        "fit": _fit_summary(est, fit_states, population),
+        "table": _table(g.time_fs, labels, est.classical, est.quantum),
+    }
+    if est.name == "censored":
+        out["empty_rows"] = est.empty_rows
+        out["quantum_rule"] = "at_risk_average"
+    return out
+
+
+def _other_estimator(
+    other: estimators.Estimate | None,
+) -> tuple[dict[str, np.ndarray], list[tuple[str, np.ndarray, np.ndarray, np.ndarray]]]:
+    """The other estimator's curves for the files, under its name as prefix (ruling PR6);
+    nothing when it has no trajectory."""
+    if other is None:
+        return {}, []
+    prefix = other.name  # "complete" or "censored"
+    extra = {
+        f"{prefix}_classical": other.classical,
+        f"{prefix}_classical_lower": other.classical_lower,
+        f"{prefix}_classical_upper": other.classical_upper,
+        f"{prefix}_quantum": other.quantum,
+        f"{prefix}_quantum_lower": other.quantum_lower,
+        f"{prefix}_quantum_upper": other.quantum_upper,
+    }
+    extra_blocks = [
+        (f"{prefix}_P", other.classical, other.classical_lower, other.classical_upper),
+        (f"{prefix}_rho", other.quantum, other.quantum_lower, other.quantum_upper),
+    ]
+    return extra, extra_blocks
+
+
 def _stop(
     task_dir: Path, summary: dict[str, Any], error: str, n_included: int, n_total: int
 ) -> dict[str, Any]:
@@ -512,7 +705,12 @@ def _stop(
     summary["stage_failed"] = True
     summary["error"] = error
     write_json_atomic(task_dir / "analysis.json", report.json_safe(summary))
-    return {"stage_failed": True, "n_total": int(n_total), "n_included": n_included}
+    return {
+        "stage_failed": True,
+        "estimator": str(summary["estimator"]),
+        "n_total": int(n_total),
+        "n_included": n_included,
+    }
 
 
 def _table(

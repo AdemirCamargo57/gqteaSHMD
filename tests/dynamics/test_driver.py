@@ -801,3 +801,37 @@ def test_previous_hop_energy_with_spin_orbit_and_eselect(rule, pinned, eselect):
         assert worst <= 1e-10, worst
     else:
         assert worst > 1e-10, worst
+
+
+@pytest.mark.parametrize("rule", ["previous", "current"])
+def test_e_total_before_hop_is_the_unadjusted_energy(monkeypatch, rule):
+    """Under "previous" an accepted hop records E_lambda(q') + K(v') before the adjustment
+    (recomputed here from the velocity passed to adjust_velocity); otherwise the field is None."""
+    from gqteashmd.dynamics import driver as driver_module
+
+    model = TullySimpleAvoidedCrossing()
+    options = DynamicsOptions(dt_au=1.0, hopping="sharc", hop_energy=rule)
+    state = _start(model, x0=-4.0, k=20.0)
+    seen = []
+    original = driver_module.adjust_velocity
+
+    def spy(velocity, masses, delta_e, **kwargs):
+        seen.append(velocity.copy())
+        return original(velocity, masses, delta_e, **kwargs)
+
+    monkeypatch.setattr(driver_module, "adjust_velocity", spy)
+    _, _, records = _run(model, state, options, ReplaySource([0.0] * 800), max_steps=800)
+    attempts = [i for i, r in enumerate(records) if r.hop_to is not None or r.frustrated]
+    assert len(attempts) == len(seen) >= 2
+    accepted = 0
+    for i, v_before in zip(attempts, seen, strict=True):
+        r = records[i]
+        if r.hop_to is None or rule == "current":
+            assert r.e_total_before_hop is None
+            continue
+        kinetic = 0.5 * float(np.sum(model.masses * v_before * v_before))
+        expected = float(r.energies[r.hop_from]) + kinetic
+        assert r.e_total_before_hop == pytest.approx(expected, abs=1e-12)
+        accepted += 1
+    assert accepted >= (2 if rule == "previous" else 0)
+    assert all(r.e_total_before_hop is None for r in records if r.hop_to is None)
