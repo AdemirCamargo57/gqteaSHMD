@@ -551,7 +551,7 @@ Until then, an input file that contains one of these sections or keys is rejecte
 | `gqteashmd status INPUT` | Shows whether a controller is running, and per stage the status, the task counts (done/failed/pending/running) and the last message. It opens the progress database read-only and changes nothing, so it is safe at any time |
 | `gqteashmd stop INPUT` | Asks the running controller to stop gracefully |
 | `gqteashmd single-point INPUT [--json FILE] [--log FILE]` | Computes the electronic structure at the input geometry (§5.3) |
-| `gqteashmd model-dynamics INPUT [--json FILE]` | Runs a surface-hopping ensemble on one of Tully's 1D models and prints the branching probabilities (§5.7) |
+| `gqteashmd model-dynamics INPUT [--json FILE]` | Runs a surface-hopping ensemble on one of Tully's 1D models (branching probabilities) or on an LVC model (population ensemble) (§5.7, §5.7.1) |
 | `gqteashmd --version` | Prints the version and, when known, the commit the installation comes from: `gqteashmd 0.1.0 (commit 1234abc)`, with `, dirty` when the source tree had uncommitted changes |
 
 ### 5.1 Exit codes

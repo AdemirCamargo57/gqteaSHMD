@@ -1,6 +1,6 @@
 # Changelog
 
-All notable changes to gqteashmd. Versions follow SemVer 0.x (master plan); the program is
+All notable changes to gqteashmd. Versions follow SemVer 0.x; the program is
 Linux only.
 
 ## Unreleased
@@ -31,8 +31,9 @@ by one input file, with PySCF as the electronic-structure program.
   the wheel's build stamp (USER_MANUAL 6, 7).
 
 ### Validation
-Asserted results are tests that fail when the bound is missed; report results are measurements
-recorded without a pass rule.
+Asserted results are tests that fail when the bound is missed; pre-registered results are pass
+rules fixed before the run and checked by a tool run by hand, not by a test; report results are
+measurements recorded without a pass rule.
 - Energies, gradients and NACs against SHARC 4.1 (`SHARC_PYSCF.py`), ethylene
   SA2-CASSCF(2,2)/6-31G*: 1.4e-8 Eh, 1.4e-8 Eh/bohr, 9.1e-8 1/bohr up to sign. Finite-difference
   gradients: 1.8e-7 Eh/bohr (SA-CASSCF(2,2)/6-31G, ethylene) and 5.7e-8 Eh/bohr
@@ -44,20 +45,23 @@ recorded without a pass rule.
   thermal distribution (a strict xfail) (8.8).
 - Excitations and selection against `SHARC_PYSCF.py` and `excite.py` (dE <= 8.7e-8 Eh; the
   selection weight measured as f/dE^2). Asserted (8.9).
-- Dynamics core: FSSH against exact wavepackets on Tully's models and LVC models, single
-  trajectories against SHARC 4.1 (nuclear motion 7.5e-11 bohr; LVC single points 2.5e-11).
-  Asserted; ensembles against SHARC are reports (8.14, 8.15).
+- Dynamics core: FSSH and local diabatization against exact wavepackets on Tully's models
+  (asserted); FSSH against an exact 2D LVC solver (report: largest difference 0.049 in the
+  quantum and 0.072 in the classical populations); single trajectories against SHARC 4.1
+  (nuclear motion 7.5e-11 bohr; LVC single points 2.5e-11; asserted). Ensembles against SHARC
+  are reports (8.14, 8.15).
 - The `dynamics` stage: restart and extension bit-identical with an analytic backend, to
   round-off with PySCF; a SHARC swap test (sharc.x driving our backend) dq 2.1e-7 bohr over 41
   steps. Asserted (8.16).
 - The SHARC ensemble comparison (ethylene SA3-CASSCF(2,2)/6-31G*, 100 trajectories): the swap
-  ensemble passes all four pre-registered rules (48 paired; asserted); our population functions
-  agree with SHARC's `populations.py` (asserted); the direct comparison is inconclusive (13
+  ensemble passes all four rules (48 paired; pre-registered, run by hand); our population
+  functions agree with SHARC's `populations.py` on 100 SHARC trajectories (pre-registered, run
+  by hand); the direct comparison is inconclusive (13
   paired, report) (8.17).
 - The hop energy option: with `hop_energy = "previous"` a replayed trajectory agrees with SHARC
   over 20 steps after its hop (asserted, one trajectory) (8.18).
 - The censored estimator: unbiased and covering on a synthetic Markov model (asserted); least
-  biased of three under artificial random losses (pre-registered verdict) (8.19).
+  biased of three under artificial random losses (pre-registered, run by hand) (8.19).
 
 ### Known limitations
 - Singlets only from PySCF; no triplets or spin-orbit coupling for molecules (O7).
