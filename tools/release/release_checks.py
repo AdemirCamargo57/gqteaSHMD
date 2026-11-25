@@ -45,16 +45,22 @@ def evaluate(
     commit: str,
     version_line: str,
     conda_list: list[dict[str, Any]],
+    dev_conda_list: list[dict[str, Any]],
     provenance: dict[str, Any] | None,
     analysis_exists: bool,
     run_exit: int,
 ) -> list[dict[str, Any]]:
     entry = _last_run(provenance)
     pip = pip_installed_runtime(conda_list)
+    dev_pip = pip_installed_runtime(dev_conda_list)
     line = version_line.strip()
     items = [
         ("version_line", line == expected_version_line(version, commit), line),
+        # the fresh environment, built from the lock file: a lock that pulled pip packages
         ("runtime_from_conda", not pip, pip),
+        # the tested environment (gqteashmd-dev), which the lock file is exported from: a runtime
+        # dependency installed there by pip is missing from the lock
+        ("dev_runtime_from_conda", not dev_pip, dev_pip),
         ("run_exit_code", run_exit == 0, run_exit),
         ("analysis_json", analysis_exists, analysis_exists),
         ("provenance_version", entry.get("gqteashmd") == version, entry.get("gqteashmd")),
@@ -86,17 +92,20 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--commit", required=True)
     parser.add_argument("--version-line", required=True)
     parser.add_argument("--conda-list", type=Path, required=True)
+    parser.add_argument("--dev-conda-list", type=Path, required=True)
     parser.add_argument("--provenance", type=Path, required=True)
     parser.add_argument("--analysis", type=Path, required=True)
     parser.add_argument("--run-exit", type=int, required=True)
     parser.add_argument("--out", type=Path, required=True)
     args = parser.parse_args(argv)
     conda_list = _read_json(args.conda_list)
+    dev_conda_list = _read_json(args.dev_conda_list)
     checks = evaluate(
         version=args.version,
         commit=args.commit,
         version_line=args.version_line,
         conda_list=conda_list if isinstance(conda_list, list) else [],
+        dev_conda_list=dev_conda_list if isinstance(dev_conda_list, list) else [],
         provenance=_read_json(args.provenance),
         analysis_exists=args.analysis.is_file(),
         run_exit=args.run_exit,

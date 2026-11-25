@@ -48,6 +48,9 @@ echo "create $base/env from $lock"
 "$conda" create --yes --quiet -p "$base/env" --file "$lock" >/dev/null
 "$conda" run -p "$base/env" pip install --no-deps --quiet "$wheel"
 "$conda" list -p "$base/env" --json > "$base/conda_list.json"
+# the tested environment, which the lock file was exported from: pip-installed runtime
+# dependencies there would be missing from the lock
+"$conda" list -n gqteashmd-dev --json > "$base/dev_conda_list.json"
 
 # 4 and 5. the version line and a run, from outside the repository
 mkdir -p "$base/project"
@@ -64,7 +67,7 @@ set -e
 # 6. every check into report.json, then PASS or FAIL
 python "$repo/tools/release/release_checks.py" \
     --version "$version" --commit "$head" --version-line "$version_line" \
-    --conda-list "$base/conda_list.json" \
+    --conda-list "$base/conda_list.json" --dev-conda-list "$base/dev_conda_list.json" \
     --provenance "$base/project/run/.gqteashmd/provenance.json" \
     --analysis "$base/project/run/07_analysis/analysis.json" \
     --run-exit "$run_exit" --out "$base/report.json"

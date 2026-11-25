@@ -38,6 +38,7 @@ def _evaluate(**changes):
         "commit": COMMIT,
         "version_line": f"gqteashmd {VERSION} (commit 0123456)\n",
         "conda_list": CONDA,
+        "dev_conda_list": CONDA,
         "provenance": _provenance(),
         "analysis_exists": True,
         "run_exit": 0,
@@ -62,6 +63,7 @@ def test_a_good_install_passes_every_check():
     assert set(results) == {
         "version_line",
         "runtime_from_conda",
+        "dev_runtime_from_conda",
         "run_exit_code",
         "analysis_json",
         "provenance_version",
@@ -76,6 +78,10 @@ def test_a_good_install_passes_every_check():
     [
         ({"version_line": "gqteashmd 0.1.0 (commit 0123456, dirty)"}, "version_line"),
         ({"conda_list": [*CONDA, {"name": "h5py", "channel": "pypi"}]}, "runtime_from_conda"),
+        (
+            {"dev_conda_list": [*CONDA, {"name": "h5py", "channel": "pypi"}]},
+            "dev_runtime_from_conda",
+        ),
         ({"run_exit": 4}, "run_exit_code"),
         ({"analysis_exists": False}, "analysis_json"),
         ({"provenance": _provenance(gqteashmd="0.1.0.dev0")}, "provenance_version"),
@@ -103,6 +109,8 @@ def test_no_provenance_fails_the_provenance_checks():
 def test_main_writes_the_report_and_returns_the_verdict(tmp_path):
     conda = tmp_path / "conda.json"
     conda.write_text(json.dumps(CONDA))
+    dev = tmp_path / "dev.json"
+    dev.write_text(json.dumps(CONDA))
     provenance = tmp_path / "provenance.json"
     provenance.write_text(json.dumps(_provenance()))
     analysis = tmp_path / "analysis.json"
@@ -111,13 +119,13 @@ def test_main_writes_the_report_and_returns_the_verdict(tmp_path):
     args = [
         "--version", VERSION, "--commit", COMMIT,
         "--version-line", f"gqteashmd {VERSION} (commit 0123456)",
-        "--conda-list", str(conda), "--provenance", str(provenance),
+        "--conda-list", str(conda), "--dev-conda-list", str(dev), "--provenance", str(provenance),
         "--analysis", str(analysis), "--run-exit", "0", "--out", str(out),
     ]  # fmt: skip
     assert rc.main(args) == 0
     report = json.loads(out.read_text())
     assert report["passed"] is True and report["version"] == VERSION
-    assert report["commit"] == COMMIT and len(report["checks"]) == 8
+    assert report["commit"] == COMMIT and len(report["checks"]) == 9
     analysis.unlink()
     assert rc.main(args) == 1
     assert json.loads(out.read_text())["passed"] is False
