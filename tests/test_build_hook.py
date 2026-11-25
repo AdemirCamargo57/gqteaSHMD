@@ -86,6 +86,16 @@ def test_a_wheel_without_git_has_no_commit(tmp_path):
     assert stamp["COMMIT"] is None and stamp["DIRTY"] is None
 
 
+def test_a_tree_below_the_top_of_a_repository_gets_no_commit(tmp_path):
+    # the tree is not the top level of the enclosing repository, so no commit is stamped
+    outer = tmp_path / "outer"
+    outer.mkdir()
+    tree = _tree(outer)
+    _commit(outer)
+    stamp = _stamp(_build(tree, "wheel"))
+    assert stamp["COMMIT"] is None and stamp["DIRTY"] is None
+
+
 def test_an_editable_build_has_no_stamp(tmp_path):
     tree = _tree(tmp_path)
     _commit(tree)

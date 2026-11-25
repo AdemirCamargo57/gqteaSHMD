@@ -79,6 +79,12 @@ def evaluate(
     return [{"check": name, "passed": bool(ok), "value": value} for name, ok, value in items]
 
 
+def _printed_value(check: dict[str, Any]) -> str:
+    if check["check"] == "provenance_clean":
+        return f"git_dirty={check['value']}"
+    return str(check["value"])
+
+
 def _read_json(path: Path) -> Any:
     try:
         return json.loads(path.read_text(encoding="utf-8"))
@@ -114,7 +120,7 @@ def main(argv: list[str] | None = None) -> int:
     report = {"version": args.version, "commit": args.commit, "passed": passed, "checks": checks}
     args.out.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
     for c in checks:
-        print(f"{'ok  ' if c['passed'] else 'FAIL'} {c['check']}: {c['value']}")
+        print(f"{'ok  ' if c['passed'] else 'FAIL'} {c['check']}: {_printed_value(c)}")
     print("PASS" if passed else "FAIL")
     return 0 if passed else 1
 

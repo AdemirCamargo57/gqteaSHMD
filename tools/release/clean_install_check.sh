@@ -8,6 +8,10 @@
 # analysis and checks the version line and provenance. Everything goes under
 # ${RELEASE_CHECK_ROOT:-$HOME/release_check}/VERSION. Exit 0 and PASS when every check passes.
 set -euo pipefail
+# a failing set-up step (clone, build, create, install) prints a FAIL line; the failures the
+# script tolerates are on the left of `||` (`|| version_line=""`, `|| run_exit=$?`), where bash
+# does not run the ERR trap (a `set +e` block would not suppress it)
+trap 'echo "FAIL: set-up step failed at line $LINENO" >&2' ERR
 
 version="${1:?usage: clean_install_check.sh VERSION [LOCK_FILE]}"
 repo="$(git rev-parse --show-toplevel)"
@@ -59,12 +63,12 @@ cd "$base/project"
 version_line="$("$conda" run -p "$base/env" gqteashmd --version)" || version_line=""
 echo "version line: $version_line"
 echo "run water_check.toml (log: $base/project/run.log)"
-set +e
-"$conda" run -p "$base/env" gqteashmd run water_check.toml > run.log 2>&1
-run_exit=$?
-set -e
+run_exit=0
+"$conda" run -p "$base/env" gqteashmd run water_check.toml > run.log 2>&1 || run_exit=$?
 
-# 6. every check into report.json, then PASS or FAIL
+# 6. every check into report.json, then PASS or FAIL; the checker's own exit code is the
+#    verdict and it prints its own FAIL, so the set-up trap is off
+trap - ERR
 python "$repo/tools/release/release_checks.py" \
     --version "$version" --commit "$head" --version-line "$version_line" \
     --conda-list "$base/conda_list.json" --dev-conda-list "$base/dev_conda_list.json" \
