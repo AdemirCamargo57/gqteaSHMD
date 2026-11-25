@@ -34,8 +34,9 @@ by one input file, with PySCF as the electronic-structure program.
 Asserted results are tests that fail when the bound is missed; report results are measurements
 recorded without a pass rule.
 - Energies, gradients and NACs against SHARC 4.1 (`SHARC_PYSCF.py`), ethylene
-  SA2-CASSCF(2,2)/6-31G*: 1.4e-8 Eh, 1.4e-8 Eh/bohr, 9.1e-8 1/bohr up to sign; finite-difference
-  gradients 1.8e-7 (CASSCF) and 5.7e-8 Eh/bohr (TDA-B3LYP). Asserted (USER_MANUAL 8.6).
+  SA2-CASSCF(2,2)/6-31G*: 1.4e-8 Eh, 1.4e-8 Eh/bohr, 9.1e-8 1/bohr up to sign. Finite-difference
+  gradients: 1.8e-7 Eh/bohr (SA-CASSCF(2,2)/6-31G, ethylene) and 5.7e-8 Eh/bohr
+  (TDA-B3LYP/STO-3G, `grid_level` 5). Asserted (USER_MANUAL 8.6).
 - Harmonic frequencies against ORCA 6.1.1 (water RHF/6-31G*, within 0.052 cm^-1) and PySCF
   `thermo` (1e-6 cm^-1); SHARC's `wigner.py` reads our Molden file. Asserted (8.7).
 - Wigner sampling against SHARC's `wigner.py` at 0 and 1000 K (means within 1.6, standard
