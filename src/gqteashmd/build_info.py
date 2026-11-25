@@ -29,9 +29,15 @@ class CommitInfo:
 UNKNOWN = CommitInfo(None, None, None, None)
 
 
-def _checkout_root() -> Path:
+def _in_src_layout(module_file: Path) -> bool:
+    """True for `<root>/src/gqteashmd/<module>`: a source checkout, not e.g. `pip --target`."""
+    return module_file.resolve().parents[1].name == "src"
+
+
+def _checkout_root() -> Path | None:
     """The repository root if this module is imported from a source checkout (src layout)."""
-    return Path(__file__).resolve().parents[2]
+    here = Path(__file__)
+    return here.resolve().parents[2] if _in_src_layout(here) else None
 
 
 def _git(root: Path, *args: str) -> str | None:
@@ -46,7 +52,7 @@ def _git(root: Path, *args: str) -> str | None:
 
 def _live_checkout() -> CommitInfo | None:
     root = _checkout_root()
-    if not (root / ".git").exists():
+    if root is None or not (root / ".git").exists():
         return None
     commit = _git(root, "rev-parse", "HEAD")
     if not commit:

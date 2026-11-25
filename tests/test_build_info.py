@@ -24,6 +24,23 @@ def _no_stamp(monkeypatch):
     monkeypatch.setitem(sys.modules, "gqteashmd._build", None)
 
 
+@pytest.mark.parametrize(
+    ("parts", "expected"),
+    [
+        (("src", "gqteashmd", "build_info.py"), True),
+        (("vendor", "gqteashmd", "build_info.py"), False),
+    ],
+)
+def test_only_a_src_layout_is_a_checkout(tmp_path, parts, expected):
+    module = tmp_path.joinpath(*parts)
+    assert build_info._in_src_layout(module) is expected
+
+
+def test_outside_a_src_layout_the_checkout_is_not_read(monkeypatch, tmp_path):
+    monkeypatch.setattr(build_info, "_checkout_root", lambda: None)
+    assert build_info._live_checkout() is None
+
+
 def _repo(path):
     git = ["git", "-C", str(path), "-c", "user.name=t", "-c", "user.email=t@example.invalid"]
     subprocess.run(["git", "init", "-q", str(path)], check=True)
