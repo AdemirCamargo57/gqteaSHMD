@@ -53,7 +53,7 @@ echo "create $base/env from $lock"
 mkdir -p "$base/project"
 cp "$repo/tools/release/water_check.toml" "$repo/tools/release/water.xyz" "$base/project/"
 cd "$base/project"
-version_line="$("$conda" run -p "$base/env" gqteashmd --version)"
+version_line="$("$conda" run -p "$base/env" gqteashmd --version)" || version_line=""
 echo "version line: $version_line"
 echo "run water_check.toml (log: $base/project/run.log)"
 set +e
