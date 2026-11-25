@@ -1,8 +1,16 @@
+import re
+from importlib import metadata
+
 import gqteashmd
 
+# a release (0.1.0) or a development version (0.2.0.dev0)
+VERSION_RE = re.compile(r"\d+\.\d+\.\d+(\.dev\d+)?")
 
-def test_version_is_defined():
-    assert gqteashmd.__version__ == "0.1.0.dev0"
+
+def test_the_version_is_a_release_or_dev_version_and_matches_the_install():
+    assert VERSION_RE.fullmatch(gqteashmd.__version__)
+    # differs after a version change until `pip install -e . --no-deps` is run again
+    assert metadata.version("gqteashmd") == gqteashmd.__version__
 
 
 def test_importing_the_cli_and_worker_does_not_import_pyscf():

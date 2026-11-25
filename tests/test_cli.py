@@ -360,3 +360,23 @@ def test_ctrl_c_after_taking_the_lock_exits_5_and_frees_the_lock(project, monkey
     layout = ProjectLayout(load_config(project).config.project.directory)
     with ProjectLock(layout.lock_file):
         pass
+
+
+def test_version_prints_the_version_and_the_commit(monkeypatch, capsys):
+    from gqteashmd import build_info
+
+    monkeypatch.setattr(build_info, "version_text", lambda: "gqteashmd 9.9 (commit abcdef0)")
+    with pytest.raises(SystemExit) as exc:
+        main(["--version"])
+    assert exc.value.code == 0
+    assert capsys.readouterr().out == "gqteashmd 9.9 (commit abcdef0)\n"
+
+
+def test_other_commands_do_not_look_up_the_commit(tmp_path, monkeypatch):
+    from gqteashmd import build_info
+
+    def fail():
+        raise AssertionError("commit_info called")
+
+    monkeypatch.setattr(build_info, "commit_info", fail)
+    assert main(["init", str(tmp_path / "input.toml")]) == 0
