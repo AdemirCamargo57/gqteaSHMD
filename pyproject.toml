@@ -20,6 +20,9 @@ gqteashmd = "gqteashmd.cli:main"
 [tool.hatch.build.targets.wheel]
 packages = ["src/gqteashmd"]
 
+[tool.hatch.build.targets.wheel.hooks.custom]
+# hatch_build.py: the build stamp gqteashmd/_build.py (release spec 2.2)
+
 [tool.hatch.version]
 path = "src/gqteashmd/__init__.py"
 
