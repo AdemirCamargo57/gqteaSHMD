@@ -2,6 +2,7 @@
 
 import json
 import logging
+import types
 
 import h5py
 import numpy as np
@@ -471,7 +472,7 @@ def test_enabled_needs_a_dynamics_table(tmp_path, write_input):
 
 def test_stage_attributes():
     stage = AnalysisStage()
-    assert stage.name == "analysis" and stage.version == 3
+    assert stage.name == "analysis" and stage.version == 4
     assert stage.depends_on == ("selection", "dynamics")
     assert stage.config_sections == ("analysis",)
     assert stage.required_modules == ("h5py>=3.9", "scipy>=1.11")
@@ -562,7 +563,7 @@ def test_censored_estimator_uses_a_lost_trajectory_up_to_its_end(tmp_path, write
     ctx = _context(tmp_path, write_input, trajs, estimator="censored")
     run_stage(ctx)
     data = _analysis(ctx)
-    assert data["schema_version"] == 2 and data["estimator"] == "censored"
+    assert data["schema_version"] == 3 and data["estimator"] == "censored"
     assert data["n_complete"] == 2 and data["n_censored"] == 1 and data["n_included"] == 3
     assert data["censored"] == [
         {
@@ -572,7 +573,7 @@ def test_censored_estimator_uses_a_lost_trajectory_up_to_its_end(tmp_path, write
             "censored_at_fs": 1.0,
         }
     ]
-    assert set(data["estimators"]) == {"complete", "censored"}
+    assert set(data["estimators"]) == {"complete", "censored", "hold_in_s0"}
     assert data["estimators"]["complete"]["n"] == 2
     assert data["estimators"]["censored"]["n"] == 3
     # at t = 1.0 fs: traj 0 in S1, traj 1 in S1, traj 2 in S0 -> P(S0) = 1/3; after that the
@@ -654,37 +655,101 @@ def test_a_trajectory_lost_after_the_horizon_counts_as_complete(tmp_path, write_
     assert data["estimators"]["complete"]["n"] == 1
 
 
-def test_without_a_complete_trajectory_the_censored_estimator_still_runs(tmp_path, write_input):
-    # no finished trajectory: the horizon is tmax (grid.horizon_steps), the complete block is
-    # null and the files carry no complete_ columns (ruling PR6)
+def test_without_a_complete_trajectory_the_horizon_is_capped(tmp_path, write_input):
+    # no finished trajectory: the horizon is the last observed grid step, 1.5 fs (traj_00001,
+    # energy_drift, records up to grid step 3), not tmax; traj_00001 is then observed through
+    # the horizon and counts as complete there (ruling PR5); the complete block stays null
     trajs = [("overlap_failure", [1, 0, 0], {}), ("energy_drift", [1, 1, 1, 1], {})]
     ctx = _context(tmp_path, write_input, trajs, estimator="censored")
     run_stage(ctx)
     data = _analysis(ctx)
-    assert data["horizon_fs"] == pytest.approx(2.0)
-    assert data["n_complete"] == 0 and data["n_censored"] == 2 and data["n_included"] == 2
+    assert data["horizon_fs"] == pytest.approx(1.5) and data["horizon_capped"] is True
+    assert data["n_complete"] == 0 and data["n_censored"] == 1 and data["n_included"] == 2
     assert data["estimators"]["complete"] is None and data["consistency"] is None
-    assert data["estimators"]["censored"]["empty_rows"] > 0  # nobody at risk at the end
     assert data["hops"]["pairs"] == {}
     with h5py.File(ctx.stage_dir / "populations.h5", "r") as f:
         assert not any(name.startswith("complete_") for name in f)
         assert f.attrs["estimator"] == "censored" and f.attrs["n_complete"] == 0
+        assert f["time_fs"][()][-1] == pytest.approx(1.5)
     assert "complete_P_S0" not in (ctx.stage_dir / "populations.csv").read_text()
-    # final review I2: the held probabilities and the held tail are named (ruling F1)
+    assert CAPPED_WARNING.format(t="1.5") in data["warnings"]
+    assert not any("is held constant" in w for w in data["warnings"])
+    # traj_00000 is in S0 at its censoring step (1.0 fs) and nobody is at risk in S0 after it
     n_empty = data["estimators"]["censored"]["empty_rows"]
-    assert EMPTY_ROWS_WARNING.format(n=n_empty) in data["warnings"]
-    # traj_00001 (energy_drift) is observed up to its last record, grid step 3 = 1.5 fs
-    assert NO_COMPLETE_WARNING.format(t="1.5") in data["warnings"]
-    assert f"- empty_rows: {n_empty}\n" in (ctx.stage_dir / "report.md").read_text()
+    assert n_empty == 1 and EMPTY_ROWS_WARNING.format(n=n_empty) in data["warnings"]
 
 
+def test_a_cap_at_zero_stops_the_stage(tmp_path, write_input):
+    trajs = [("overlap_failure", [1], {}), ("energy_drift", [1], {})]
+    ctx = _context(tmp_path, write_input, trajs, estimator="censored")
+    with pytest.raises(StageFailedError, match="none is observed after t = 0"):
+        run_stage(ctx)
+    data = _analysis(ctx)
+    assert data["stage_failed"] is True and data["horizon_capped"] is True
+    assert data["error"] == analysis_module.NO_DATA_AFTER_START
+
+
+def test_with_a_complete_trajectory_the_horizon_is_not_capped(tmp_path, write_input):
+    trajs = [(FIN, [1, 1, 1, 1, 1], {}), ("overlap_failure", [1, 0, 0], {})]
+    ctx = _context(tmp_path, write_input, trajs, estimator="censored")
+    run_stage(ctx)
+    data = _analysis(ctx)
+    assert data["horizon_capped"] is False and data["horizon_fs"] == pytest.approx(2.0)
+
+
+def test_the_capped_horizon_never_exceeds_tmax(tmp_path, write_input):
+    # final review I1: tmax_fs = 2.0 (n_total 4), e.g. after lowering it; both lost
+    # trajectories have records beyond it (grid steps 6 and 5), so the cap is clamped to
+    # n_total and both are observed through the horizon, i.e. complete there (ruling PR5)
+    trajs = [("overlap_failure", [1, 1, 1, 1, 1, 1, 0], {}), ("energy_drift", [1] * 6, {})]
+    ctx = _context(tmp_path, write_input, trajs, estimator="censored")
+    run_stage(ctx)
+    data = _analysis(ctx)
+    assert data["horizon_fs"] == pytest.approx(2.0) and data["horizon_capped"] is True
+    assert data["n_censored"] == 0 and data["censored"] == [] and data["n_included"] == 2
+    assert CAPPED_WARNING.format(t="2") in data["warnings"]
+
+
+def _estimate(tau_fs):
+    return types.SimpleNamespace(
+        fit=types.SimpleNamespace(fit=types.SimpleNamespace(tau_fs=tau_fs))
+    )
+
+
+def test_tau_range_takes_the_extremes_of_the_fitted_estimators():
+    blocks = {
+        "complete": _estimate(80.0),
+        "censored": _estimate(62.5),
+        "hold_in_s0": _estimate(70.0),
+        "other": _estimate(None),  # not fitted: ignored
+    }
+    assert analysis_module._tau_range(blocks) == {
+        "min": 62.5,
+        "max": 80.0,
+        "min_estimator": "censored",
+        "max_estimator": "complete",
+    }
+
+
+@pytest.mark.parametrize(
+    "blocks",
+    [
+        {},
+        {"censored": _estimate(62.5)},
+        {"complete": None, "censored": _estimate(62.5), "hold_in_s0": _estimate(None)},
+    ],
+)
+def test_tau_range_needs_two_fitted_estimators(blocks):
+    assert analysis_module._tau_range(blocks) is None
+
+
+CAPPED_WARNING = (
+    "no trajectory is complete: the analysis horizon is capped at {t} fs, the last time any "
+    "trajectory is observed"
+)
 EMPTY_ROWS_WARNING = (
     "the censored estimator held {n} state probabilities over intervals with no trajectory at "
     "risk (empty_rows = {n}); the censored curve and its fit are not supported by data there"
-)
-NO_COMPLETE_WARNING = (
-    "no trajectory is complete: the censored curve beyond {t} fs, the last time any trajectory "
-    "is observed, is held constant"
 )
 
 
@@ -850,3 +915,44 @@ def test_the_complete_estimator_reproduces_main(tmp_path, write_input, populatio
             assert f["fit_target"][()].tolist() == BASELINE_P_S1
         else:
             assert close(f["fit_target"][()].tolist(), BASELINE_RHO_S1)
+
+
+def test_the_hold_in_s0_block_and_the_lifetime_range(tmp_path, write_input):
+    trajs = [
+        (FIN, [1, 1, 1, 1, 1], {}),
+        (FIN, [1, 1, 1, 0, 0], {}),
+        ("overlap_failure", [1, 1, 1], {}),  # lost in S1 at 1.0 fs: held in S0 after it
+    ]
+    ctx = _context(tmp_path, write_input, trajs, estimator="censored")
+    run_stage(ctx)
+    data = _analysis(ctx)
+    block = data["estimators"]["hold_in_s0"]
+    assert block["n"] == 3 and block["rule"] == analysis_module.HOLD_RULE
+    row = next(r for r in block["table"] if r["time_fs"] == 1.5)
+    assert row["P"]["S0"] == pytest.approx(2 / 3)  # traj_00001 decayed, traj_00002 held
+    names = [n for n in ("complete", "censored", "hold_in_s0") if data["estimators"][n]]
+    taus = {n: data["estimators"][n]["fit"]["tau_fs"] for n in names}
+    taus = {n: t for n, t in taus.items() if t is not None}
+    r = data["tau_range_fs"]
+    if len(taus) >= 2:
+        assert r["min"] == min(taus.values()) and r["max"] == max(taus.values())
+        assert taus[r["min_estimator"]] == r["min"] and taus[r["max_estimator"]] == r["max"]
+    else:
+        assert r is None
+    header = next(
+        line
+        for line in (ctx.stage_dir / "populations.csv").read_text().splitlines()
+        if not line.startswith("#")
+    ).split(",")
+    assert "hold_in_s0_P_S0" in header and "hold_in_s0_rho_S1_upper" in header
+    with h5py.File(ctx.stage_dir / "populations.h5", "r") as f:
+        assert "hold_in_s0_classical" in f and "hold_in_s0_quantum_upper" in f
+    assert "## Lifetime range" in (ctx.stage_dir / "report.md").read_text()
+
+
+def test_without_a_censored_trajectory_there_is_no_hold_in_s0_block(tmp_path, write_input):
+    ctx = _context(tmp_path, write_input, _varied_trajectories(), estimator="censored")
+    run_stage(ctx)
+    data = _analysis(ctx)
+    assert data["estimators"]["hold_in_s0"] is None
+    assert "hold_in_s0_P_S0" not in (ctx.stage_dir / "populations.csv").read_text()

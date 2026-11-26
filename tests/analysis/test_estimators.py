@@ -2,7 +2,7 @@
 
 import numpy as np
 
-from gqteashmd.analysis import estimators, kinetics, populations
+from gqteashmd.analysis import estimators, grid, kinetics, populations
 from gqteashmd.analysis.grid import GridData
 
 
@@ -67,3 +67,41 @@ def test_censored_quantum_is_the_at_risk_average():
         _grid(active, observed), [1, 2], rng=np.random.default_rng(1), n_bootstrap=100, dt_out=0.5
     )
     np.testing.assert_allclose(est.quantum[2], [1.0, 0.0, 0.0])  # only trajectory 0 at t_2
+
+
+def _held_example():
+    active = np.array([[1, 1, 0, 0], [1, 0, 0, 0], [1, 1, 1, 1]])
+    observed = np.array([[True, True, True, False], [True, True, False, False], [True] * 4])
+    pops = np.eye(2)[active].astype(float)
+    return grid.GridData(
+        np.arange(4),
+        0.5 * np.arange(4),
+        active,
+        pops,
+        ("a", "b", "c"),
+        3,
+        1.5,
+        (),
+        observed,
+    )
+
+
+def test_hold_in_s0_grid_puts_the_unobserved_steps_in_s0():
+    held = estimators.hold_in_s0_grid(_held_example())
+    np.testing.assert_array_equal(held.active, [[1, 1, 0, 0], [1, 0, 0, 0], [1, 1, 1, 1]])
+    assert held.observed.all()
+    np.testing.assert_array_equal(held.populations[1, 3], [1.0, 0.0])
+
+
+def test_hold_in_s0_estimate_is_the_complete_arithmetic_on_the_held_grid():
+    g = _held_example()
+    kw = {"fit_population": "classical", "n_bootstrap": 100, "dt_out": 0.5}
+    hold = estimators.hold_in_s0_estimate(g, [1], rng=np.random.default_rng(3), **kw)
+    direct = estimators.complete_estimate(
+        estimators.hold_in_s0_grid(g), [1], rng=np.random.default_rng(3), **kw
+    )
+    assert hold.name == "hold_in_s0" and direct.name == "complete"
+    np.testing.assert_array_equal(hold.classical, direct.classical)
+    np.testing.assert_array_equal(hold.classical_lower, direct.classical_lower)
+    assert hold.fit.fit.tau_fs == direct.fit.fit.tau_fs
+    np.testing.assert_allclose(hold.classical[:, 0], [0.0, 1 / 3, 2 / 3, 2 / 3])

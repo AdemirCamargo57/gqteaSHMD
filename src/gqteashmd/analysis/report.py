@@ -136,6 +136,28 @@ def analysis_markdown(summary: Mapping[str, Any]) -> str:
     for key in ("tau_fs", "tau_interval_fs", "t0_fs", "t0_interval_fs"):
         out.append(f"- {key}: {_n(other_fit.get(key))}")
 
+    blocks = s.get("estimators") or {}
+    out += ["", "## Lifetime range"]
+    for name in ("complete", "censored", "hold_in_s0"):
+        block = blocks.get(name)
+        if not block:
+            out.append(f"- {name}: -")
+            continue
+        f = block.get("fit") or {}
+        out.append(
+            f"- {name}: tau {_n(f.get('tau_fs'))} fs {_n(f.get('tau_interval_fs'))}, "
+            f"t0 {_n(f.get('t0_fs'))} fs {_n(f.get('t0_interval_fs'))}"
+        )
+    r = s.get("tau_range_fs")
+    if r:
+        out.append(
+            f"- range: {_n(r.get('min'))}-{_n(r.get('max'))} fs "
+            f"({r.get('min_estimator')} to {r.get('max_estimator')})"
+        )
+    else:
+        out.append("- range: -")
+    out.append("Which estimate is closest to the truth is not known (USER_MANUAL 8.19).")
+
     hops = s.get("hops") or {}
     out += ["", "## Hops (complete trajectories)"]
     out.append(f"- pairs: {_items(hops.get('pairs'))}")
