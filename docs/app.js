@@ -1,6 +1,6 @@
 /* gqteashmd site: latest-release button, tabs, and the hero trajectory player. */
 
-/* ---------- Latest release: point the button at the wheel ---------- */
+/* ---------- Latest release: point the button at the release page (it holds the wheel and the lock file) ---------- */
 (function () {
   var REPO = "AdemirCamargo57/gqteaSHMD";
   var btn = document.getElementById("download-btn");
@@ -193,6 +193,7 @@
     if (k === h) text = labels[data.active[h - 1]] + " → " + state;
     readout.textContent = "t = " + data.time_fs[k].toFixed(1) + " fs · " + text;
     readout.setAttribute("data-state", state);
+    slider.setAttribute("aria-valuetext", readout.textContent);
     draw();
   }
 
@@ -204,6 +205,7 @@
   }
 
   function tick(t) {
+    if (!data) return;
     if (!playing || !visible) { last = 0; return; }
     var dt = last ? Math.min(t - last, 50) : 16;
     last = t;
@@ -226,6 +228,7 @@
     marker.style.left = (100 * data.time_fs[data.hop_index] / tEnd) + "%";
     if (fallback) fallback.hidden = true;
     panel.hidden = false;
+    canvas.hidden = false;
     show(0);
     setPlaying(playing);
   }

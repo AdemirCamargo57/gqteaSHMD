@@ -50,7 +50,7 @@
       </div>
 
       <figure class="hero-figure">
-        <canvas id="trajectory" width="560" height="520" role="img" aria-label="Ball-and-stick model of ethylene moving along one surface-hopping trajectory: the carbon-carbon bond twists and the molecule hops from the S1 to the S0 state at 28 femtoseconds"></canvas>
+        <canvas id="trajectory" hidden width="560" height="520" role="img" aria-label="Ball-and-stick model of ethylene moving along one surface-hopping trajectory: the carbon-carbon bond twists and the molecule hops from the S1 to the S0 state at 28 femtoseconds"></canvas>
         <p id="trajectory-fallback" class="player-fallback">The trajectory player needs JavaScript and the file <code>trajectory.json</code>.</p>
         <div id="player" class="player" hidden>
           <button type="button" id="player-toggle" class="player-toggle">Pause</button>
@@ -58,7 +58,7 @@
             <input type="range" id="player-time" min="0" max="200" step="1" value="0" aria-label="Time along the trajectory">
             <span id="player-hop" class="player-hop" aria-hidden="true">hop</span>
           </div>
-          <output id="player-readout" class="player-readout" for="player-time">t = 0.0 fs · S1</output>
+          <output id="player-readout" aria-live="off" class="player-readout" for="player-time">t = 0.0 fs · S1</output>
         </div>
         <figcaption>Ethylene after excitation to S1: one trajectory, chosen as a clear example of a finished trajectory with one hop, of a 100-trajectory gqteashmd ensemble (SA3-CASSCF(2,2)/6-31G*, 0.5 fs steps). The C=C bond twists and the molecule hops to S0 at 28 fs. Drag to rotate.</figcaption>
       </figure>

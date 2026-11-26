@@ -9,6 +9,7 @@
   --honey: #f2b21b;
   --honey-hover: #e0a000;
   --on-honey: #1a2b3f;
+  --pop-s2: #a87300;
   --code-bg: #e3e9ee;
   --focus: #2a52bd;
 
@@ -28,6 +29,7 @@
     --link: #93b2ff;
     --code-bg: #22354a;
     --focus: #93b2ff;
+    --pop-s2: var(--honey);
   }
 }
 :root[data-theme="dark"] {
@@ -40,6 +42,7 @@
   --link: #93b2ff;
   --code-bg: #22354a;
   --focus: #93b2ff;
+  --pop-s2: var(--honey);
 }
 
 *, *::before, *::after { box-sizing: border-box; }
@@ -129,6 +132,7 @@ h3 { font-size: 1.2rem; }
   cursor: grab; touch-action: pan-y;
 }
 .hero-figure canvas:active { cursor: grabbing; }
+.hero-figure canvas[hidden] { display: none; }
 .hero-figure figcaption {
   font-family: var(--sans); font-size: 0.85rem; color: var(--muted);
   text-align: center; margin-top: 4px;
@@ -341,10 +345,10 @@ pre code { background: none; padding: 0; font-size: inherit; }
 .pop-line { fill: none; stroke-width: 2.5; }
 .pop-band.pop-s0 { fill: var(--ink); }
 .pop-band.pop-s1 { fill: var(--link); }
-.pop-band.pop-s2 { fill: var(--honey); }
+.pop-band.pop-s2 { fill: var(--pop-s2); }
 .pop-line.pop-s0 { stroke: var(--ink); }
 .pop-line.pop-s1 { stroke: var(--link); }
-.pop-line.pop-s2 { stroke: var(--honey); }
+.pop-line.pop-s2 { stroke: var(--pop-s2); }
 .pop-fit { fill: none; stroke: var(--muted); stroke-width: 2; stroke-dasharray: 6 5; }
 
 /* Result badges (How it was checked) */
