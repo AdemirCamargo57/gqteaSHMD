@@ -4,7 +4,9 @@ Automated surface-hopping molecular dynamics, from one input file:
 geometry optimization → frequencies → Wigner sampling → initial excitations → trajectories →
 populations and lifetimes. Electronic structure: PySCF. Linux only (Oracle Linux 9; WSL2 works).
 
-**Status:** release 0.1.0, the first release ([CHANGELOG.md](CHANGELOG.md)). Singlet dynamics
+**Website:** https://ademircamargo57.github.io/gqteaSHMD/
+
+**Status:** latest release 0.1.0, the first release ([CHANGELOG.md](CHANGELOG.md)); `main` is the development snapshot after it. Singlet dynamics
 with PySCF; triplets and spin-orbit coupling only on analytic and LVC models.
 
 ## Install a release

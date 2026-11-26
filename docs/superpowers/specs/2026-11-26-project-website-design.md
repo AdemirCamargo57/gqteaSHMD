@@ -3,6 +3,8 @@
 **Status:** design approved section by section by the owner on 2026-11-26; this spec awaits the owner's review.
 **Branch:** `feat/project-website` (from `main` `280a612`).
 
+**Erratum (implementation, 2026-11-26):** the release button points at the latest release page (`rel.html_url`), not at the `.whl` asset as section 2 item 2 says: installing needs two files, the wheel and `environment.lock.txt`, so the button leads to the page that holds both, and the line below it names both (controller ruling during Task 2).
+
 ## 0. Owner decisions (2026-11-26, multiple choice)
 
 1. **Model:** the page follows the style and structure of the gqteaWinToga site (https://ademircamargo57.github.io/gqteaWinToga/): one `index.html`, `style.css`, `app.js`, served by GitHub Pages from `docs/` on `main`.
