@@ -60,7 +60,7 @@
           </div>
           <output id="player-readout" class="player-readout" for="player-time">t = 0.0 fs · S1</output>
         </div>
-        <figcaption>Ethylene after excitation to S1: one trajectory of a 100-trajectory gqteashmd ensemble (SA3-CASSCF(2,2)/6-31G*, 0.5 fs steps). The C=C bond twists and the molecule hops to S0 at 28 fs. Drag to rotate.</figcaption>
+        <figcaption>Ethylene after excitation to S1: one trajectory, chosen as a clear example of a finished trajectory with one hop, of a 100-trajectory gqteashmd ensemble (SA3-CASSCF(2,2)/6-31G*, 0.5 fs steps). The C=C bond twists and the molecule hops to S0 at 28 fs. Drag to rotate.</figcaption>
       </figure>
     </div>
   </section>
@@ -85,7 +85,7 @@
             <li>One strict TOML input file; units in the key names (<code>dt_fs</code>, <code>temperature_K</code>); <code>gqteashmd validate</code> lists every problem at once</li>
             <li>Checks before a run: the project location, free disk space, the required Python packages and the hardware you declared</li>
             <li>Parallel tasks on one workstation, with cores, memory and threads set per stage</li>
-            <li>Crash-safe resume: a killed or rebooted run continues from its finished tasks and the last restart of each trajectory</li>
+            <li>Crash-safe resume: a killed run, or one stopped by a clean restart, continues from its finished tasks and the last restart of each trajectory</li>
             <li><code>gqteashmd stop</code> and <code>gqteashmd status</code>; pauses for review after chosen stages (<code>pause_after</code>)</li>
             <li>Change detection: a changed input never mixes with old results; <code>--rerun-from STAGE</code> says what to recompute</li>
             <li>A provenance record of every run (versions, packages, machine) and, since 0.1.0, the commit of the installed build</li>
@@ -132,7 +132,7 @@
             <li>The censored estimator by default: a trajectory that ended early still counts up to its end (Aalen-Johansen), and the complete-trajectory rule is reported beside it</li>
             <li>A delayed mono-exponential fit (delay t0 and lifetime tau) with bootstrap intervals</li>
             <li>Hop statistics, first arrival in S0, energy drift and energy-jump diagnostics</li>
-            <li>A warning below 50 trajectories, the measured size for reliable lifetime intervals</li>
+            <li>A warning below 50 trajectories: in a synthetic test, the 95 % lifetime interval reached 90 % coverage from 50 trajectories on</li>
             <li>Results as CSV, HDF5, JSON and a Markdown report</li>
           </ul>
         </div>
@@ -145,9 +145,9 @@
       <div class="feature-text">
         <p class="feature-tag">First release, 0.1.0</p>
         <h2>One input file, one command</h2>
-        <p>The input on the right is the real input of the 100-trajectory ethylene ensemble shown on this page. Everything not written in it takes its documented default. <code>gqteashmd run input.toml</code> then runs every stage to the end.</p>
+        <p>The input on the right is the real input of the 100-trajectory ethylene ensemble shown on this page. Everything not written in it takes its documented default (the populations figure below was computed with the complete-trajectory rule, <code>estimator = "complete"</code>, not today's default). <code>gqteashmd run input.toml</code> then runs every stage to the end.</p>
         <ul class="feature-list">
-          <li><b>Survives crashes.</b> Kill the run, reboot the machine, run the same command again: finished tasks are kept and every trajectory continues from its last restart.</li>
+          <li><b>Survives crashes.</b> Kill the run or restart the machine, run the same command again: finished tasks are kept and every trajectory continues from its last restart, which is safe against a killed process, not against a power cut.</li>
           <li><b>Stops when asked.</b> <code>gqteashmd stop</code> ends a run gracefully, and <code>pause_after</code> stops it after a stage you want to check first.</li>
           <li><b>Never mixes old and new.</b> Each stage records a fingerprint of its inputs. A changed input stops the run and names the <code>--rerun-from</code> stage that recomputes what it affects.</li>
           <li><b>Records what ran.</b> Every run appends the program version, the commit of the installed build, the Python packages and the machine to <code>provenance.json</code>.</li>
@@ -254,7 +254,7 @@ dt_fs = 0.5
 <text class="pop-label" x="296" y="22">fit to S1 + S2</text>
 </svg>
 <!-- populations-svg:end -->
-        <figcaption>Populations of the 67 of 100 trajectories that ran to 100 fs, with 95 % intervals; the dashed line is the fitted delayed exponential (tau 80 fs). The other 33 ended early after a hop. The default censored estimator also uses them and gives a shorter lifetime (62 fs here); which value is closer to the truth is not known (see <a href="#limits">Known limitations</a>).</figcaption>
+        <figcaption>Populations of the 67 of 100 trajectories that ran to 100 fs, with 95 % intervals; the dashed line is the fitted delayed exponential (tau 80 fs, 95 % interval 58 to 110 fs). The other 33 ended early after a hop. The default censored estimator also uses them and gives a shorter lifetime (62 fs here); which value is closer to the truth is not known (see <a href="#limits">Known limitations</a>).</figcaption>
       </figure>
     </div>
   </section>
@@ -297,6 +297,7 @@ dt_fs = 0.5
         <li><span class="badge badge-pre">Pre-registered</span> a pass rule fixed before the run, checked by a tool run by hand</li>
         <li><span class="badge badge-report">Report</span> a measurement recorded without a pass rule</li>
       </ul>
+      <p class="section-intro">The numbers are the measured differences, not the test bounds. Several tests need SHARC 4.1 or ORCA and are run by hand, not in the automatic tests on GitHub.</p>
 
       <div class="card-grid">
         <article class="card">
@@ -327,7 +328,7 @@ dt_fs = 0.5
           <ul class="result-list">
             <li>FSSH and local diabatization against exact wavepackets on Tully's models <span class="badge badge-test">Test</span></li>
             <li>FSSH against an exact 2D LVC solver: largest differences 0.049 (quantum) and 0.072 (classical populations) <span class="badge badge-report">Report</span></li>
-            <li>Single trajectories against SHARC 4.1: nuclear motion within 7.5e-11 bohr <span class="badge badge-test">Test</span></li>
+            <li>Single trajectories on Tully's models against SHARC 4.1: nuclear motion within 7.5e-11 bohr <span class="badge badge-test">Test</span></li>
           </ul>
           <p class="card-link"><a href="https://github.com/AdemirCamargo57/gqteaSHMD/blob/main/USER_MANUAL.md#814-dynamics-core-models-determinism-restart-performance-and-validation">Manual</a> &middot; <a href="https://github.com/AdemirCamargo57/gqteaSHMD/blob/main/USER_MANUAL.md#815-lvc-models-spinorbit-coupling-and-the-diagonal-representation">LVC</a></p>
         </article>
@@ -352,7 +353,7 @@ dt_fs = 0.5
           <h3>The analysis</h3>
           <ul class="result-list">
             <li>The censored estimator is unbiased and its intervals cover on a synthetic Markov model <span class="badge badge-test">Test</span></li>
-            <li>The least biased of three estimators under artificial random losses <span class="badge badge-pre">Pre-registered</span></li>
+            <li>The least biased of three estimators under artificial random losses, which satisfy its assumption by construction <span class="badge badge-pre">Pre-registered</span></li>
           </ul>
           <p class="card-link"><a href="https://github.com/AdemirCamargo57/gqteaSHMD/blob/main/USER_MANUAL.md#819-the-censored-analysis-and-the-hop-step-energy-check-measurements">Manual</a></p>
         </article>
@@ -363,8 +364,8 @@ dt_fs = 0.5
         <ul>
           <li>Closed-shell singlets only: no triplets or spin-orbit coupling from PySCF (they exist only for the analytic and LVC models of <code>model-dynamics</code>). Linux only, on one workstation, without a batch scheduler.</li>
           <li>33 of the 100 ethylene trajectories end early after a hop, when the CASSCF calculation switches to another solution.</li>
-          <li>The lifetime is uncertain: the censored estimate is 62 fs, the complete-trajectory estimate 80 fs, and which is closer to the truth is not known.</li>
-          <li>The comparison with SHARC's own electronic-structure interface is inconclusive; a replayed trajectory disagrees with SHARC after its hop under the default hop energy rule; the lifetime fit has not been compared with SHARC's <code>make_fit.py</code>.</li>
+          <li>The lifetime is uncertain: the censored estimate is 62 fs and the complete-trajectory estimate 80 fs. The measured back-hop rates on these data argue against the censored estimator's assumption, so its shorter lifetime is not shown to be unbiased, and which value is closer to the truth is not known.</li>
+          <li>The comparison with SHARC's own electronic-structure interface is inconclusive; a replayed trajectory disagrees with SHARC after its hop under the default hop energy rule (with <code>hop_energy = "previous"</code> it agrees over the 20 steps after the hop); the lifetime fit has not been compared with SHARC's <code>make_fit.py</code>.</li>
           <li>No plots: the results come as CSV, HDF5, JSON and Markdown files.</li>
         </ul>
         <p>The full list is in the <a href="https://github.com/AdemirCamargo57/gqteaSHMD/blob/main/CHANGELOG.md">release notes</a> and the <a href="https://github.com/AdemirCamargo57/gqteaSHMD/blob/main/USER_MANUAL.md#10-known-limitations">manual</a>.</p>
