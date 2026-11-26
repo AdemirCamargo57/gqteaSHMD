@@ -696,8 +696,42 @@ def test_mixed_sa_casscf_has_the_right_spins_and_matches_a_direct_mix(water_mol,
     mc.conv_tol = 1e-10
     mc.conv_tol_grad = 1e-6
     mc.kernel()
+    # per-state energies are first order in the orbital gradient (conv_tol_grad 1e-6) and scatter
+    # by up to ~2.5e-7 Eh across BLAS kernels; the SA energy is variational, so it is held tighter
+    ours = [out.energies[s] for s in states]
+    assert np.mean(ours) == pytest.approx(np.mean(mc.e_states), abs=1e-8)
     for s, e in zip(states, mc.e_states, strict=True):
-        assert out.energies[s] == pytest.approx(e, abs=1e-8)
+        assert out.energies[s] == pytest.approx(e, abs=1e-6)
+
+
+def test_triplet_triplet_nacs_are_refused(water_mol, make_settings):
+    mol, mf = water_mol
+    states = states_from_counts(2, 2)
+    out = pyscf_casscf.run_casscf(mol, mf, _water_cas44(make_settings, 2), states, None)
+    t1, t2 = StateLabel(3, 1), StateLabel(3, 2)
+
+    def no_call():
+        raise AssertionError("nac_method was called")
+
+    out.mc.nac_method = no_call
+    with pytest.raises(ValueError, match="T1-T2: nonadiabatic coupling vectors between triplet"):
+        pyscf_casscf.casscf_nacs(
+            out.mc, {(StateLabel(1, 0), StateLabel(1, 1)), (t1, t2)}, states, 3
+        )
+
+
+def test_the_backend_refuses_a_triplet_triplet_nac_request(make_settings, monkeypatch):
+    from gqteashmd.core.units import ANGSTROM_TO_BOHR
+
+    def no_solve(*args, **kwargs):
+        raise AssertionError("the request was not refused before the solve")
+
+    monkeypatch.setattr(PySCFBackend, "_build_mol", no_solve)
+    coords = np.array([[0, 0, 0.1173], [0, 0.7572, -0.4692], [0, -0.7572, -0.4692]])
+    backend = _backend(("O", "H", "H"), _water_cas44(make_settings, 2))
+    pair = (StateLabel(3, 1), StateLabel(3, 2))
+    with pytest.raises(ValueError, match="T1-T2: .*use coupling = 'overlap'"):
+        backend.compute(Request(coords * ANGSTROM_TO_BOHR, nacs=frozenset({pair})))
 
 
 def test_singlet_triplet_nacs_and_triplet_dipoles_are_zero(water_mol, make_settings):

@@ -20,6 +20,11 @@ from gqteashmd.overlaps.determinants import DeterminantExpansion
 
 SPIN_TOLERANCE = 1e-3  # |<S^2> - target| above this means a root has the wrong spin
 
+TRIPLET_NAC_MESSAGE = (
+    "nonadiabatic coupling vectors between triplet states are not available: PySCF's SA-CASSCF "
+    "couplings do not support a mixed-spin state average; use coupling = 'overlap'"
+)
+
 REFERENCE_RUNG = "reference orbitals"
 REFERENCE_TIE_EH = 1e-8  # SA energies within this of the lowest are ties: the first guess wins
 REFERENCE_OVERLAP_WARNING = 0.9  # warn below this active-orbital singular value (no effect)
@@ -374,12 +379,17 @@ def casscf_nacs(
 ) -> dict[tuple[StateLabel, StateLabel], np.ndarray]:
     """d_IJ = <Psi_I|dPsi_J/dR> (1/bohr), including the CSF term (PySCF's default convention).
 
-    A singlet-triplet pair is zero by spin symmetry, without a PySCF call; the PySCF solver is
-    built only when a pair of one multiplicity is requested.
+    A singlet-triplet pair is zero by spin symmetry, without a PySCF call; a triplet-triplet
+    pair is a ValueError before any call (PySCF 2.14 fails on it with a mixed-spin average); the
+    PySCF solver is built only when a singlet-singlet pair is requested.
     """
     nacs: dict[tuple[StateLabel, StateLabel], np.ndarray] = {}
+    wanted = sorted(pairs)
+    for a, b in wanted:
+        if a.multiplicity == 3 and b.multiplicity == 3:
+            raise ValueError(f"{a}-{b}: {TRIPLET_NAC_MESSAGE}")
     solver = None
-    for a, b in sorted(pairs):
+    for a, b in wanted:
         if a.multiplicity != b.multiplicity:
             nacs[(a, b)] = np.zeros((natom, 3))
             continue

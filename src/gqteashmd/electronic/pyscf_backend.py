@@ -442,6 +442,12 @@ class PySCFBackend(ElectronicBackend):
                 f"Nonadiabatic coupling vectors are not available for method = "
                 f"'{self._settings.method}'; request overlaps instead."
             )
+        triplet_pairs = sorted(
+            (a, b) for a, b in nacs if a.multiplicity == 3 and b.multiplicity == 3
+        )
+        if triplet_pairs:
+            a, b = triplet_pairs[0]
+            raise ValueError(f"{a}-{b}: {pyscf_casscf.TRIPLET_NAC_MESSAGE}")
         unknown = sorted(str(s) for s in set(gradients) - set(self._states))
         if unknown:
             raise ValueError(f"Gradients requested for unknown state(s): {', '.join(unknown)}")
