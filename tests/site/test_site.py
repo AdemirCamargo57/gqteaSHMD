@@ -162,8 +162,14 @@ def test_the_population_figure_and_its_caption():
     n = int(re.search(r'data-n-included="(\d+)"', block).group(1))
     total = int(re.search(r'data-n-selected="(\d+)"', block).group(1))
     tau = float(re.search(r'data-tau-fs="([\d.]+)"', block).group(1))
-    assert f"Populations of the {n} of {total} trajectories" in text
-    assert f"tau {round(tau)} fs" in text
+    lo, hi = (
+        float(v) for v in re.search(r'data-tau-interval-fs="([\d.]+) ([\d.]+)"', block).groups()
+    )
+    caption = text.split(END)[1].split("<figcaption>")[1].split("</figcaption>")[0]
+    assert f"Populations of the {n} of {total} trajectories" in caption
+    assert f"tau {round(tau)} fs" in caption
+    assert f"95 % interval {round(lo)} to {round(hi)} fs" in caption
+    assert f"The other {total - n} ended early" in caption
 
 
 def test_no_local_path_in_the_site_files():

@@ -64,7 +64,16 @@ def _columns(n: int = 5) -> dict[str, np.ndarray]:
     return cols
 
 
-ANALYSIS = {"n_included": 67, "n_selected": 100, "fit": {"tau_fs": 80.13602924, "t0_fs": 12.8353}}
+ANALYSIS = {
+    "n_included": 67,
+    "n_selected": 100,
+    "fit": {
+        "tau_fs": 80.13602924,
+        "t0_fs": 12.8353,
+        "tau_interval_fs": [57.62081651, 110.05550736],
+        "states": ["S1", "S2"],
+    },
+}
 
 
 def test_trajectory_record(tmp_path):
@@ -111,12 +120,24 @@ def test_population_svg():
     assert svg.startswith("<svg ") and svg.endswith("</svg>")
     assert 'data-n-included="67"' in svg and 'data-n-selected="100"' in svg
     assert 'data-tau-fs="80.136"' in svg and 'data-t0-fs="12.835"' in svg
+    assert 'data-tau-interval-fs="57.621 110.056"' in svg
     assert "67 of 100 trajectories" in svg
     for state in ("s0", "s1", "s2"):
         assert f'class="pop-band pop-{state}"' in svg
         assert f'class="pop-line pop-{state}"' in svg
     assert 'class="pop-fit"' in svg
     assert 'role="img"' in svg and '<title id="pop-title">' in svg
+
+
+def test_population_svg_refuses_another_estimator():
+    with pytest.raises(ValueError, match="estimator = 'censored'"):
+        mf.population_svg(_columns(), {**ANALYSIS, "estimator": "censored"})
+
+
+def test_population_svg_refuses_other_fit_states():
+    fit = {**ANALYSIS["fit"], "states": ["S1"]}
+    with pytest.raises(ValueError, match=r"\['S1'\]"):
+        mf.population_svg(_columns(), {**ANALYSIS, "fit": fit})
 
 
 def test_splice_replaces_between_the_markers():

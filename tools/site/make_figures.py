@@ -76,6 +76,15 @@ def read_populations(path: Path) -> dict[str, np.ndarray]:
 
 def population_svg(columns: dict[str, np.ndarray], analysis: dict[str, Any]) -> str:
     """The populations figure: bands, lines, the fitted curve, axes, a legend row on top."""
+    estimator = analysis.get("estimator", "complete")
+    if estimator != "complete":
+        raise ValueError(
+            "the figure shows the complete-trajectory populations; "
+            f"this analysis used estimator = {estimator!r}"
+        )
+    states = analysis["fit"]["states"]
+    if states != ["S1", "S2"]:
+        raise ValueError(f"the legend says 'fit to S1 + S2'; this analysis fitted {states}")
     t = np.asarray(columns["time_fs"], dtype=float)
     t_max = float(t[-1])
     plot_w = WIDTH - LEFT - RIGHT
@@ -92,6 +101,7 @@ def population_svg(columns: dict[str, np.ndarray], analysis: dict[str, Any]) -> 
 
     fit = analysis["fit"]
     n, total = int(analysis["n_included"]), int(analysis["n_selected"])
+    lo, hi = fit["tau_interval_fs"]
     title = (
         f"Classical populations of S0, S1 and S2 from 0 to {t_max:g} fs for {n} of {total} "
         f"trajectories, with 95 % intervals; dashed: the fitted delayed exponential of "
@@ -100,7 +110,8 @@ def population_svg(columns: dict[str, np.ndarray], analysis: dict[str, Any]) -> 
     out = [
         f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {WIDTH} {HEIGHT}" role="img" '
         f'aria-labelledby="pop-title" data-n-included="{n}" data-n-selected="{total}" '
-        f'data-tau-fs="{fit["tau_fs"]:.3f}" data-t0-fs="{fit["t0_fs"]:.3f}">',
+        f'data-tau-fs="{fit["tau_fs"]:.3f}" data-t0-fs="{fit["t0_fs"]:.3f}" '
+        f'data-tau-interval-fs="{lo:.3f} {hi:.3f}">',
         f'<title id="pop-title">{html.escape(title)}</title>',
     ]
     for p in (0.0, 0.25, 0.5, 0.75, 1.0):
