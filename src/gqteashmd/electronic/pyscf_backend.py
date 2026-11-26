@@ -469,8 +469,8 @@ class PySCFBackend(ElectronicBackend):
         nacs: frozenset[tuple[StateLabel, StateLabel]],
     ) -> tuple[dict[StateLabel, np.ndarray], dict[tuple[StateLabel, StateLabel], np.ndarray]]:
         if self._settings.method == "casscf":
-            grads = pyscf_casscf.casscf_gradients(live.solver, gradients)
-            raw = pyscf_casscf.casscf_nacs(live.solver, nacs)
+            grads = pyscf_casscf.casscf_gradients(live.solver, gradients, self._states)
+            raw = pyscf_casscf.casscf_nacs(live.solver, nacs, self._states, live.mol.natm)
         else:
             grads = pyscf_response.response_gradients(
                 live.mf, live.solver, gradients, self._settings.method

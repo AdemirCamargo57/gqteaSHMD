@@ -39,3 +39,16 @@ def make_settings():
 @pytest.fixture
 def reference_dir() -> Path:
     return DATA / "reference"
+
+
+@pytest.fixture
+def water_mol():
+    """(Mole, converged RHF) for water at tests/conftest.py:WATER_XYZ, STO-3G."""
+    from pyscf import gto, scf
+
+    mol = gto.M(
+        atom="O 0 0 0.1173; H 0 0.7572 -0.4692; H 0 -0.7572 -0.4692",
+        basis="sto-3g",
+        verbose=0,
+    )
+    return mol, scf.RHF(mol).run(conv_tol=1e-11)

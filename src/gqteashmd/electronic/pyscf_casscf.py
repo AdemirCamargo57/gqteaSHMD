@@ -18,7 +18,7 @@ from gqteashmd.electronic.pyscf_errors import wrap_failure
 from gqteashmd.errors import ElectronicStructureError
 from gqteashmd.overlaps.determinants import DeterminantExpansion
 
-SPIN_TOLERANCE = 1e-3  # |<S^2>| above this means a root is not a singlet
+SPIN_TOLERANCE = 1e-3  # |<S^2> - target| above this means a root has the wrong spin
 
 REFERENCE_RUNG = "reference orbitals"
 REFERENCE_TIE_EH = 1e-8  # SA energies within this of the lowest are ties: the first guess wins
@@ -88,7 +88,7 @@ class Reference:
     sa_energy: float
     n_guesses: int  # size of the guess set
     n_solved: int  # guesses actually solved (1 when the default counts)
-    n_counted: int  # solved guesses that converged with all-singlet roots
+    n_counted: int  # solved guesses that converged with every root of the expected spin
 
     def meta(self) -> dict[str, Any]:
         return {
@@ -130,11 +130,55 @@ def check_active_space(mol: Any, settings: ElectronicSection) -> None:
         )
 
 
-def _solver(mol: Any, mf: Any, settings: ElectronicSection, n_states: int, rung: Rung) -> Any:
+def state_counts(states: Sequence[StateLabel]) -> tuple[int, int]:
+    """(singlets, triplets) among `states`."""
+    return (
+        sum(1 for s in states if s.multiplicity == 1),
+        sum(1 for s in states if s.multiplicity == 3),
+    )
+
+
+def mixed_solver(
+    mol: Any, mf: Any, settings: ElectronicSection, n_singlets: int, n_triplets: int, rung: Rung
+) -> Any:
+    """Equal-weight SA-CASSCF over singlets and triplets with one orbital set (spec 3.2).
+
+    The roots are the singlets, then the triplets (Ms = +1 in the active space); mc.ci and
+    mc.e_states follow that order.
+    """
     from pyscf import fci, mcscf
 
     cas = settings.casscf
     assert cas is not None
+    singlet = fci.solver(mol, singlet=True)
+    singlet.nroots = n_singlets
+    singlet.spin = 0
+    triplet = fci.solver(mol, singlet=False)
+    triplet.nroots = n_triplets
+    triplet.spin = 2  # Ms = +1 in the active space
+    if rung.spin_shift:
+        singlet = fci.addons.fix_spin_(singlet, shift=rung.spin_shift, ss=0)
+        triplet = fci.addons.fix_spin_(triplet, shift=rung.spin_shift, ss=2)
+    n = n_singlets + n_triplets
+    mc = mcscf.CASSCF(mf, cas.ncas, cas.nelecas)
+    mc = mcscf.state_average_mix_(mc, [singlet, triplet], [1.0 / n] * n)
+    mc.conv_tol = cas.conv_tol
+    mc.conv_tol_grad = cas.conv_tol_grad
+    mc.max_cycle_macro = mc.max_cycle_macro * rung.macro_factor
+    return mc
+
+
+def _solver(
+    mol: Any, mf: Any, settings: ElectronicSection, states: Sequence[StateLabel], rung: Rung
+) -> Any:
+    n_singlets, n_triplets = state_counts(states)
+    if n_triplets:
+        return mixed_solver(mol, mf, settings, n_singlets, n_triplets, rung)
+    from pyscf import fci, mcscf
+
+    cas = settings.casscf
+    assert cas is not None
+    n_states = n_singlets
     mc = mcscf.CASSCF(mf, cas.ncas, cas.nelecas)
     mc.fcisolver = fci.solver(mol, singlet=True)  # singlet-only CI (excludes triplets)
     mc = mc.state_average_([1.0 / n_states] * n_states)
@@ -146,15 +190,33 @@ def _solver(mol: Any, mf: Any, settings: ElectronicSection, n_states: int, rung:
     return mc
 
 
-def _spins(mc: Any, states: tuple[StateLabel, ...]) -> tuple[dict[StateLabel, float], list[str]]:
+def _root_nelec(mc: Any, label: StateLabel) -> tuple[int, int]:
+    """Active (alpha, beta) electrons of a root: Ms = 0 for singlets, Ms = +1 for triplets."""
+    n_alpha, n_beta = (int(n) for n in mc.nelecas)
+    if label.multiplicity == 3:
+        return n_alpha + 1, n_beta - 1
+    return n_alpha, n_beta
+
+
+def _spins(mc: Any, states: Sequence[StateLabel]) -> tuple[dict[StateLabel, float], list[str]]:
+    """<S^2> of each root, and the roots whose <S^2> is off their multiplicity's value."""
     from pyscf import fci
 
     spins = {
-        label: float(fci.spin_op.spin_square0(ci, mc.ncas, mc.nelecas)[0])
+        label: float(fci.spin_op.spin_square0(ci, mc.ncas, _root_nelec(mc, label))[0])
         for label, ci in zip(states, mc.ci, strict=True)
     }
-    wrong = [f"{label} <S^2> = {s:.4f}" for label, s in spins.items() if abs(s) > SPIN_TOLERANCE]
+    wrong = [
+        f"{label} <S^2> = {s:.4f}"
+        for label, s in spins.items()
+        if abs(s - (0.0 if label.multiplicity == 1 else 2.0)) > SPIN_TOLERANCE
+    ]
     return spins, wrong
+
+
+def _spin_problem(states: Sequence[StateLabel], wrong: list[str]) -> str:
+    what = "have the expected spin" if state_counts(states)[1] else "are singlets"
+    return f"not all roots {what} ({', '.join(wrong)})"
 
 
 def active_min_singular_value(
@@ -173,11 +235,12 @@ def find_reference(
     """The reference: PySCF's default active space if it counts, else the lowest-SA other guess.
 
     The guesses of guess_active_sets are solved fresh, the default first. A guess counts if it
-    converges and every root is a singlet. When the default counts it is the reference and no
-    other guess is solved (owner decision 2026-11-14: a lower-SA non-default solution can have
-    a different character, e.g. ethylene SA2-CAS(2,2)/STO-3G guess [6, 8], S0 1.27 eV higher,
-    whose projected starts split between solutions at displaced geometries). Otherwise the
-    other guesses are solved and the lowest SA energy among those that count wins (pick_lowest).
+    converges and every root has the spin of its multiplicity. When the default counts it is the
+    reference and no other guess is solved (owner decision 2026-11-14: a lower-SA non-default
+    solution can have a different character, e.g. ethylene SA2-CAS(2,2)/STO-3G guess [6, 8], S0
+    1.27 eV higher, whose projected starts split between solutions at displaced geometries).
+    Otherwise the other guesses are solved and the lowest SA energy among those that count wins
+    (pick_lowest).
     Returns (None, problems) when none counts. An exception (not a non-convergence) propagates,
     wrapped.
     """
@@ -197,7 +260,7 @@ def find_reference(
         if n_solved == 1 and counted:  # the default (first) guess counts: it is the reference
             break
         n_solved += 1
-        mc = _solver(mol, mf, settings, len(states), plain)
+        mc = _solver(mol, mf, settings, states, plain)
         try:
             mo0 = mcscf.sort_mo(mc, mf.mo_coeff, [i + 1 for i in guess])  # 1-based
             mc.kernel(mo_coeff=mo0)
@@ -208,7 +271,7 @@ def find_reference(
             continue
         _, wrong = _spins(mc, states)
         if wrong:
-            problems.append(f"guess {list(guess)}: not all roots are singlets ({', '.join(wrong)})")
+            problems.append(f"guess {list(guess)}: {_spin_problem(states, wrong)}")
             continue
         counted.append((guess, float(np.mean(mc.e_states)), np.asarray(mc.mo_coeff)))
     if not counted:
@@ -227,7 +290,7 @@ def run_casscf(
     *,
     reference: Callable[[], Orbitals | None] | None = None,
 ) -> CasscfOutcome:
-    """Equal-weight SA-CASSCF over `states` (singlets): the rungs of LADDER.
+    """Equal-weight SA-CASSCF over `states` (singlets, then triplets): the rungs of LADDER.
 
     `previous` = (MO coefficients, Mole) of the previous geometry; `reference` is called (at
     most once) when the reference rung is reached and returns the reference orbitals or None.
@@ -250,7 +313,7 @@ def run_casscf(
             start = None if reference is None else reference()
             if start is None:
                 continue
-        mc = _solver(mol, mf, settings, len(states), rung)
+        mc = _solver(mol, mf, settings, states, rung)
         mo0 = mf.mo_coeff
         if start is not None:
             start_mo, start_mol = start
@@ -270,7 +333,7 @@ def run_casscf(
             continue
         spins, wrong = _spins(mc, states)
         if wrong:
-            problems.append(f"{name}: not all roots are singlets ({', '.join(wrong)})")
+            problems.append(f"{name}: {_spin_problem(states, wrong)}")
             continue
         energies = {label: float(e) for label, e in zip(states, mc.e_states, strict=True)}
         min_sv = None
@@ -283,7 +346,10 @@ def run_casscf(
     )
 
 
-def casscf_gradients(mc: Any, labels: Iterable[StateLabel]) -> dict[StateLabel, np.ndarray]:
+def casscf_gradients(
+    mc: Any, labels: Iterable[StateLabel], states: Sequence[StateLabel]
+) -> dict[StateLabel, np.ndarray]:
+    """SA-CASSCF gradients (Eh/bohr) of `labels`, each root addressed by its position in states."""
     gradients: dict[StateLabel, np.ndarray] = {}
     wanted = sorted(labels)
     if not wanted:
@@ -291,7 +357,7 @@ def casscf_gradients(mc: Any, labels: Iterable[StateLabel]) -> dict[StateLabel, 
     solver = mc.nuc_grad_method()
     for label in wanted:
         try:
-            g = solver.kernel(state=label.index)
+            g = solver.kernel(state=states.index(label))
         except Exception as exc:
             raise wrap_failure(f"The SA-CASSCF gradient of {label}", exc) from exc
         if not getattr(solver, "converged", True):
@@ -301,17 +367,26 @@ def casscf_gradients(mc: Any, labels: Iterable[StateLabel]) -> dict[StateLabel, 
 
 
 def casscf_nacs(
-    mc: Any, pairs: Iterable[tuple[StateLabel, StateLabel]]
+    mc: Any,
+    pairs: Iterable[tuple[StateLabel, StateLabel]],
+    states: Sequence[StateLabel],
+    natom: int,
 ) -> dict[tuple[StateLabel, StateLabel], np.ndarray]:
-    """d_IJ = <Psi_I|dPsi_J/dR> (1/bohr), including the CSF term (PySCF's default convention)."""
+    """d_IJ = <Psi_I|dPsi_J/dR> (1/bohr), including the CSF term (PySCF's default convention).
+
+    A singlet-triplet pair is zero by spin symmetry, without a PySCF call; the PySCF solver is
+    built only when a pair of one multiplicity is requested.
+    """
     nacs: dict[tuple[StateLabel, StateLabel], np.ndarray] = {}
-    wanted = sorted(pairs)
-    if not wanted:
-        return nacs
-    solver = mc.nac_method()
-    for a, b in wanted:
+    solver = None
+    for a, b in sorted(pairs):
+        if a.multiplicity != b.multiplicity:
+            nacs[(a, b)] = np.zeros((natom, 3))
+            continue
+        if solver is None:
+            solver = mc.nac_method()
         try:
-            d = solver.kernel(state=(a.index, b.index))
+            d = solver.kernel(state=(states.index(a), states.index(b)))
         except Exception as exc:
             raise wrap_failure(f"The SA-CASSCF coupling {a}-{b}", exc) from exc
         if not getattr(solver, "converged", True):
@@ -320,16 +395,27 @@ def casscf_nacs(
     return nacs
 
 
-def casscf_dipoles(
-    mol: Any, mc: Any, states: tuple[StateLabel, ...]
-) -> dict[StateLabel, np.ndarray]:
-    """S0 -> state transition dipoles mu = -sum_pq r_pq gamma^{0I}_pq over active orbitals."""
+def casscf_dipoles(mol: Any, mc: Any, states: Sequence[StateLabel]) -> dict[StateLabel, np.ndarray]:
+    """S0 -> state transition dipoles mu = -sum_pq r_pq gamma^{0I}_pq over active orbitals.
+
+    S0 -> triplet dipoles are zero (spin-forbidden). With triplets mc.fcisolver is the mixed
+    solver, so the singlet transition density comes from direct_spin1.trans_rdm1.
+    """
     dipoles: dict[StateLabel, np.ndarray] = {}
     try:
+        trans_rdm1 = mc.fcisolver.trans_rdm1
+        if state_counts(states)[1]:
+            from pyscf.fci import direct_spin1
+
+            trans_rdm1 = direct_spin1.trans_rdm1
         r_ints = mol.intor("int1e_r", comp=3)
         mo_cas = mc.mo_coeff[:, mc.ncore : mc.ncore + mc.ncas]
+        ci0 = mc.ci[0]  # S0 is the first state
         for label in states[1:]:
-            t_mo = mc.fcisolver.trans_rdm1(mc.ci[0], mc.ci[label.index], mc.ncas, mc.nelecas)
+            if label.multiplicity != 1:
+                dipoles[label] = np.zeros(3)
+                continue
+            t_mo = trans_rdm1(ci0, mc.ci[states.index(label)], mc.ncas, mc.nelecas)
             t_ao = mo_cas @ t_mo @ mo_cas.T
             dipoles[label] = -np.einsum("xij,ji->x", r_ints, t_ao)
     except Exception as exc:
@@ -337,13 +423,12 @@ def casscf_dipoles(
     return dipoles
 
 
-def casscf_expansion(mc: Any) -> DeterminantExpansion:
-    """SA-CASSCF states as determinants over mc.mo_coeff: core orbitals, then the active orbitals
-    of each alpha/beta FCI string in ascending order (alpha string = slow CI index)."""
+def _expansion(
+    ncore: int, ncas: int, n_alpha: int, n_beta: int, cis: Sequence[Any]
+) -> DeterminantExpansion:
+    """CI vectors with n_alpha/n_beta active electrons as determinants (see casscf_expansion)."""
     from pyscf.fci import cistring
 
-    ncore, ncas = int(mc.ncore), int(mc.ncas)
-    n_alpha, n_beta = (int(n) for n in mc.nelecas)
     core = list(range(ncore))
 
     def occupations(n_el: int) -> list[list[int]]:
@@ -355,5 +440,29 @@ def casscf_expansion(mc: Any) -> DeterminantExpansion:
     occ_alpha, occ_beta = occupations(n_alpha), occupations(n_beta)
     alpha = [a for a in occ_alpha for _ in occ_beta]
     beta = [b for _ in occ_alpha for b in occ_beta]
-    coeffs = np.array([np.asarray(ci, dtype=float).reshape(-1) for ci in mc.ci])
+    coeffs = np.array([np.asarray(ci, dtype=float).reshape(-1) for ci in cis])
     return DeterminantExpansion(alpha, beta, coeffs)
+
+
+def casscf_expansion(mc: Any) -> DeterminantExpansion:
+    """SA-CASSCF states as determinants over mc.mo_coeff: core orbitals, then the active orbitals
+    of each alpha/beta FCI string in ascending order (alpha string = slow CI index)."""
+    n_alpha, n_beta = (int(n) for n in mc.nelecas)
+    return _expansion(int(mc.ncore), int(mc.ncas), n_alpha, n_beta, list(mc.ci))
+
+
+def casscf_expansions(
+    mc: Any, states: Sequence[StateLabel]
+) -> tuple[DeterminantExpansion, DeterminantExpansion | None]:
+    """The singlet block (Ms = 0, mc.nelecas) and the triplet block (Ms = +1, one more alpha and
+    one fewer beta electron) of the SA-CASSCF states, each over mc.mo_coeff with the layout of
+    casscf_expansion; the triplet block is None without triplets."""
+    n_singlets, n_triplets = state_counts(states)
+    ncore, ncas = int(mc.ncore), int(mc.ncas)
+    n_alpha, n_beta = (int(n) for n in mc.nelecas)
+    cis = list(mc.ci)
+    singlet = _expansion(ncore, ncas, n_alpha, n_beta, cis[:n_singlets])
+    if not n_triplets:
+        return singlet, None
+    triplet = _expansion(ncore, ncas, n_alpha + 1, n_beta - 1, cis[n_singlets:])
+    return singlet, triplet
