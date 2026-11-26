@@ -1,0 +1,457 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>gqteashmd</title>
+<meta name="description" content="gqteashmd is a free program for surface-hopping molecular dynamics with PySCF on Linux: from one input file it optimizes a molecule, computes its frequencies, samples initial conditions, computes the excitations, runs the trajectories and analyses the populations and lifetimes, in one resumable run.">
+<link rel="icon" type="image/svg+xml" href="icon.svg">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=STIX+Two+Text:ital,wght@0,400;0,600;0,700;1,400&family=Public+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header class="site-header">
+  <div class="wrap header-row">
+    <a class="brand" href="#top" aria-label="gqteashmd home">
+      <img src="icon.svg" alt="" width="36" height="36">
+      <span>gqteashmd</span>
+    </a>
+    <nav aria-label="Main">
+      <a href="#workflow">Workflow</a>
+      <a href="#new">What's new</a>
+      <a href="#checked">Validation</a>
+      <a href="#install">Install</a>
+      <a href="https://github.com/AdemirCamargo57/gqteaSHMD/blob/main/USER_MANUAL.md">Manual</a>
+      <a href="https://github.com/AdemirCamargo57/gqteaSHMD">Source code</a>
+    </nav>
+  </div>
+</header>
+
+<main id="top">
+
+  <section class="hero">
+    <div class="wrap hero-grid">
+      <div class="hero-text">
+        <h1>gqteashmd</h1>
+        <p class="lede">Automated surface-hopping molecular dynamics with PySCF.</p>
+        <p>Write one TOML input file and run one command. gqteashmd optimizes the molecule, computes its vibrational frequencies, samples initial geometries and velocities from the Wigner distribution, computes the vertical excitations, selects the initial excited states, runs the surface-hopping trajectories and turns them into state populations and an excited-state lifetime. The whole run resumes where it stopped after a crash, a reboot or a deliberate stop.</p>
+
+        <div class="download">
+          <a id="download-btn" class="btn-download" href="https://github.com/AdemirCamargo57/gqteaSHMD/releases/latest">
+            <svg aria-hidden="true" viewBox="0 0 24 24" width="22" height="22"><path d="M12 3v12m0 0-5-5m5 5 5-5M4 20h16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            <span id="download-label">Get gqteashmd 0.1.0</span>
+          </a>
+          <p class="download-meta" id="download-meta">Linux only. Free and open source, MIT license.</p>
+          <p class="download-links"><a href="https://github.com/AdemirCamargo57/gqteaSHMD/releases">Release notes and earlier versions</a></p>
+        </div>
+      </div>
+
+      <figure class="hero-figure">
+        <canvas id="trajectory" hidden width="560" height="520" role="img" aria-label="Ball-and-stick model of ethylene moving along one surface-hopping trajectory: the carbon-carbon bond twists and the molecule hops from the S1 to the S0 state at 28 femtoseconds"></canvas>
+        <p id="trajectory-fallback" class="player-fallback">The trajectory player needs JavaScript and the file <code>trajectory.json</code>.</p>
+        <div id="player" class="player" hidden>
+          <button type="button" id="player-toggle" class="player-toggle">Pause</button>
+          <div class="player-track">
+            <input type="range" id="player-time" min="0" max="200" step="1" value="0" aria-label="Time along the trajectory">
+            <span id="player-hop" class="player-hop" aria-hidden="true">hop</span>
+          </div>
+          <output id="player-readout" aria-live="off" class="player-readout" for="player-time">t = 0.0 fs · S1</output>
+        </div>
+        <figcaption>Ethylene after excitation to S1: one trajectory, chosen as a clear example of a finished trajectory with one hop, of a 100-trajectory gqteashmd ensemble (SA3-CASSCF(2,2)/6-31G*, 0.5 fs steps). The C=C bond twists and the molecule hops to S0 at 28 fs. Drag to rotate.</figcaption>
+      </figure>
+    </div>
+  </section>
+
+  <section id="workflow" class="section">
+    <div class="wrap">
+      <h2>What it does</h2>
+      <p class="section-intro">One input file drives eight stages, from the geometry to the lifetime. Each stage is split into tasks that run in parallel, and every finished task is kept, so a run that stops resumes where it stopped.</p>
+
+      <div class="tabs" data-tabs>
+        <div class="tab-list" role="tablist" aria-label="Workflow stages">
+          <button role="tab" id="tab-control" aria-controls="panel-control" aria-selected="true">Input &amp; control</button>
+          <button role="tab" id="tab-ground" aria-controls="panel-ground" aria-selected="false" tabindex="-1">Ground state</button>
+          <button role="tab" id="tab-initial" aria-controls="panel-initial" aria-selected="false" tabindex="-1">Initial conditions</button>
+          <button role="tab" id="tab-dynamics" aria-controls="panel-dynamics" aria-selected="false" tabindex="-1">Dynamics</button>
+          <button role="tab" id="tab-analysis" aria-controls="panel-analysis" aria-selected="false" tabindex="-1">Analysis</button>
+        </div>
+
+        <div role="tabpanel" id="panel-control" aria-labelledby="tab-control" class="tab-panel">
+          <p class="panel-lead">A strict input file, checks before anything runs, and a run that can be stopped, resumed and changed safely.</p>
+          <ul class="tool-list">
+            <li>One strict TOML input file; units in the key names (<code>dt_fs</code>, <code>temperature_K</code>); <code>gqteashmd validate</code> lists every problem at once</li>
+            <li>Checks before a run: the project location, free disk space, the required Python packages and the hardware you declared</li>
+            <li>Parallel tasks on one workstation, with cores, memory and threads set per stage</li>
+            <li>Crash-safe resume: a killed run, or one stopped by a clean restart, continues from its finished tasks and the last restart of each trajectory</li>
+            <li><code>gqteashmd stop</code> and <code>gqteashmd status</code>; pauses for review after chosen stages (<code>pause_after</code>)</li>
+            <li>Change detection: a changed input never mixes with old results; <code>--rerun-from STAGE</code> says what to recompute</li>
+            <li>A provenance record of every run (versions, packages, machine) and, since 0.1.0, the commit of the installed build</li>
+          </ul>
+        </div>
+
+        <div role="tabpanel" id="panel-ground" aria-labelledby="tab-ground" class="tab-panel" hidden>
+          <p class="panel-lead">The molecule's ground state at the level of theory of the dynamics.</p>
+          <ul class="tool-list">
+            <li><code>prepare</code>: checks and stores the molecule, its charge and multiplicity</li>
+            <li><code>optimize</code> (optional): the S0 geometry with geomeTRIC</li>
+            <li><code>frequencies</code>: the S0 Hessian, analytic for SCF methods or by finite differences for SA-CASSCF; normal modes and a Molden file</li>
+            <li>Electronic structure from PySCF: SCF, state-averaged CASSCF, TDA, TDDFT, CIS and TDHF; energies, analytic gradients and transition dipoles</li>
+            <li>A fixed start for SA-CASSCF: every fresh solve begins from a reference solution at the stage's reference geometry</li>
+          </ul>
+        </div>
+
+        <div role="tabpanel" id="panel-initial" aria-labelledby="tab-initial" class="tab-panel" hidden>
+          <p class="panel-lead">Initial geometries, velocities and excited states for the trajectories.</p>
+          <ul class="tool-list">
+            <li><code>sampling</code>: harmonic Wigner sampling with exact thermal widths; linear and angular momentum removed; an exact energy check per mode</li>
+            <li><code>excitations</code>: vertical excitation energies and oscillator strengths at every sample, and the absorption spectrum as a CSV file</li>
+            <li><code>selection</code>: the initial state of every trajectory, by bright-state selection (weight f/dE&sup2; or f) in an energy window, or a fixed state</li>
+            <li>Reproducible: every random number derives from <code>project.seed</code>, so the same input gives the same samples, also after a restart</li>
+          </ul>
+        </div>
+
+        <div role="tabpanel" id="panel-dynamics" aria-labelledby="tab-dynamics" class="tab-panel" hidden>
+          <p class="panel-lead">One surface-hopping trajectory per selected initial condition, each a resumable task.</p>
+          <ul class="tool-list">
+            <li>SHARC-type or Tully (FSSH) hopping, with velocity adjustment and the energy-based decoherence correction</li>
+            <li>Couplings from wavefunction overlaps (local diabatization, every method) or SA-CASSCF nonadiabatic couplings</li>
+            <li>Step rejection: an unreliable step (a failed calculation, a small overlap, an energy jump, a changed CASSCF start) is redone with halved steps</li>
+            <li>A restart after every accepted step; an outcome for every trajectory (finished, energy drift, overlap or electronic failure, electronic discontinuity)</li>
+            <li>Raise <code>tmax_fs</code> and run again to extend the finished trajectories</li>
+            <li>An optional hop energy rule that keeps the previous step's total energy, as SHARC does (<code>hop_energy = "previous"</code>)</li>
+          </ul>
+        </div>
+
+        <div role="tabpanel" id="panel-analysis" aria-labelledby="tab-analysis" class="tab-panel" hidden>
+          <p class="panel-lead">From trajectories to populations and a lifetime, with uncertainties.</p>
+          <ul class="tool-list">
+            <li>Classical and quantum state populations with 95 % intervals</li>
+            <li>The censored estimator by default: a trajectory that ended early still counts up to its end (Aalen-Johansen), and the complete-trajectory rule is reported beside it</li>
+            <li>A delayed mono-exponential fit (delay t0 and lifetime tau) with bootstrap intervals</li>
+            <li>Hop statistics, first arrival in S0, energy drift and energy-jump diagnostics</li>
+            <li>A warning below 50 trajectories: in a synthetic test, the 95 % lifetime interval reached 90 % coverage from 50 trajectories on</li>
+            <li>Results as CSV, HDF5, JSON and a Markdown report</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="new" class="section section-alt">
+    <div class="wrap feature-grid">
+      <div class="feature-text">
+        <p class="feature-tag">First release, 0.1.0</p>
+        <h2>One input file, one command</h2>
+        <p>The input on the right is the real input of the 100-trajectory ethylene ensemble shown on this page. Everything not written in it takes its documented default (the populations figure below was computed with the complete-trajectory rule, <code>estimator = "complete"</code>, not today's default). <code>gqteashmd run input.toml</code> then runs every stage to the end.</p>
+        <ul class="feature-list">
+          <li><b>Survives crashes.</b> Kill the run or restart the machine, run the same command again: finished tasks are kept and every trajectory continues from its last restart, which is safe against a killed process, not against a power cut.</li>
+          <li><b>Stops when asked.</b> <code>gqteashmd stop</code> ends a run gracefully, and <code>pause_after</code> stops it after a stage you want to check first.</li>
+          <li><b>Never mixes old and new.</b> Each stage records a fingerprint of its inputs. A changed input stops the run and names the <code>--rerun-from</code> stage that recomputes what it affects.</li>
+          <li><b>Records what ran.</b> Every run appends the program version, the commit of the installed build, the Python packages and the machine to <code>provenance.json</code>.</li>
+        </ul>
+        <p><a href="https://github.com/AdemirCamargo57/gqteaSHMD/blob/main/USER_MANUAL.md#4-the-input-file">The input file</a> &middot; <a href="https://github.com/AdemirCamargo57/gqteaSHMD/blob/main/USER_MANUAL.md#5-commands">The commands</a> &middot; <a href="https://github.com/AdemirCamargo57/gqteaSHMD/blob/main/USER_MANUAL.md#73-resuming-after-a-crash-reboot-or-kill">Resuming</a></p>
+      </div>
+
+      <figure class="feature-figure input-sample">
+<pre><code>[project]
+name = "ethylene_p9b"
+directory = "run"
+seed = 2028
+
+[molecule]
+geometry = "ethylene.xyz"
+charge = 0
+multiplicity = 1
+
+[resources]
+total_cores = 16
+total_memory_mb = 7000
+max_parallel_tasks = 8
+threads_per_task = 2
+memory_mb_per_task = 800
+
+[electronic]
+method = "casscf"
+basis = "6-31g*"
+singlets = 3
+
+[electronic.casscf]
+ncas = 2
+nelecas = 2
+
+[sampling]
+n_samples = 300
+
+[selection]
+n_trajectories = 100
+states = ["S1"]
+
+[dynamics]
+tmax_fs = 100.0
+dt_fs = 0.5
+</code></pre>
+        <figcaption>The input of the ethylene ensemble: SA3-CASSCF(2,2)/6-31G*, 300 Wigner samples, 100 trajectories started in S1, 100 fs in steps of 0.5 fs, run on a 16-core workstation in 8 parallel tasks.</figcaption>
+      </figure>
+    </div>
+  </section>
+
+  <section id="dynamics" class="section">
+    <div class="wrap feature-grid">
+      <div class="feature-text">
+        <p class="feature-tag"><code>dynamics</code> and <code>analysis</code> stages</p>
+        <h2>Dynamics that run to the end, or say why they stopped</h2>
+        <p>Every trajectory is its own task with its own restart. At every step the program checks the new electronic structure before it accepts the step, and when a trajectory cannot go on it ends with an outcome that says why, instead of producing numbers nobody can trust.</p>
+        <ul class="feature-list">
+          <li><b>Overlaps every step.</b> Wavefunction overlaps between consecutive steps carry the state couplings and track the states through crossings.</li>
+          <li><b>Rejected, then halved.</b> A step with a failed calculation, a small overlap, an energy jump or a changed CASSCF start is redone as two half steps, down to an eighth of the step.</li>
+          <li><b>Honest outcomes.</b> Finished, energy drift, overlap failure, electronic failure or electronic discontinuity, each with its time and its message.</li>
+          <li><b>Lost trajectories still count.</b> The default censored estimator uses an early-ended trajectory up to its end; the complete-trajectory rule is reported beside it.</li>
+        </ul>
+        <p><a href="https://github.com/AdemirCamargo57/gqteaSHMD/blob/main/USER_MANUAL.md#816-the-dynamics-stage-with-pyscf-p7b">The dynamics stage</a> &middot; <a href="https://github.com/AdemirCamargo57/gqteaSHMD/blob/main/USER_MANUAL.md#813-analysis-populations-and-lifetimes">The analysis</a> &middot; <a href="https://github.com/AdemirCamargo57/gqteaSHMD/blob/main/USER_MANUAL.md#510-ethylene-sa-casscf-findings-and-guidance-p9a">Ethylene: findings and guidance</a></p>
+      </div>
+
+      <figure class="feature-figure pop-figure">
+<!-- populations-svg:begin -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 420" role="img" aria-labelledby="pop-title" data-n-included="67" data-n-selected="100" data-tau-fs="80.136" data-t0-fs="12.835" data-tau-interval-fs="57.621 110.056">
+<title id="pop-title">Classical populations of S0, S1 and S2 from 0 to 100 fs for 67 of 100 trajectories, with 95 % intervals; dashed: the fitted delayed exponential of P(S1) + P(S2), tau 80 fs</title>
+<line class="pop-grid" x1="56" y1="368.0" x2="624" y2="368.0"/>
+<text class="pop-label" x="48" y="372.0" text-anchor="end">0</text>
+<line class="pop-grid" x1="56" y1="287.0" x2="624" y2="287.0"/>
+<text class="pop-label" x="48" y="291.0" text-anchor="end">0.25</text>
+<line class="pop-grid" x1="56" y1="206.0" x2="624" y2="206.0"/>
+<text class="pop-label" x="48" y="210.0" text-anchor="end">0.5</text>
+<line class="pop-grid" x1="56" y1="125.0" x2="624" y2="125.0"/>
+<text class="pop-label" x="48" y="129.0" text-anchor="end">0.75</text>
+<line class="pop-grid" x1="56" y1="44.0" x2="624" y2="44.0"/>
+<text class="pop-label" x="48" y="48.0" text-anchor="end">1</text>
+<text class="pop-label" x="56.0" y="388" text-anchor="middle">0</text>
+<text class="pop-label" x="169.6" y="388" text-anchor="middle">20</text>
+<text class="pop-label" x="283.2" y="388" text-anchor="middle">40</text>
+<text class="pop-label" x="396.8" y="388" text-anchor="middle">60</text>
+<text class="pop-label" x="510.4" y="388" text-anchor="middle">80</text>
+<text class="pop-label" x="624.0" y="388" text-anchor="middle">100</text>
+<line class="pop-axis" x1="56" y1="368.0" x2="624" y2="368.0"/>
+<line class="pop-axis" x1="56" y1="44" x2="56" y2="368.0"/>
+<text class="pop-label" x="340.0" y="410" text-anchor="middle">time (fs)</text>
+<text class="pop-label" transform="translate(16 206.0) rotate(-90)" text-anchor="middle">population</text>
+<polygon class="pop-band pop-s0" points="56.0,350.4 58.8,350.4 61.7,350.4 64.5,350.4 67.4,350.4 70.2,350.4 73.0,350.4 75.9,350.4 78.7,350.4 81.6,350.4 84.4,350.4 87.2,350.4 90.1,350.4 92.9,350.4 95.8,350.4 98.6,350.4 101.4,350.4 104.3,350.4 107.1,350.4 110.0,350.4 112.8,350.4 115.6,350.4 118.5,350.4 121.3,350.4 124.2,350.4 127.0,350.4 129.8,350.4 132.7,342.1 135.5,334.8 138.4,328.0 141.2,328.0 144.0,315.2 146.9,315.2 149.7,315.2 152.6,315.2 155.4,315.2 158.2,315.2 161.1,315.2 163.9,315.2 166.8,315.2 169.6,309.1 172.4,309.1 175.3,309.1 178.1,303.1 181.0,303.1 183.8,303.1 186.6,303.1 189.5,303.1 192.3,303.1 195.2,303.1 198.0,303.1 200.8,303.1 203.7,303.1 206.5,297.3 209.4,291.5 212.2,291.5 215.0,291.5 217.9,291.5 220.7,274.9 223.6,269.4 226.4,264.1 229.2,269.4 232.1,264.1 234.9,258.8 237.8,258.8 240.6,253.5 243.4,248.3 246.3,253.5 249.1,253.5 252.0,258.8 254.8,258.8 257.6,264.1 260.5,264.1 263.3,253.5 266.2,248.3 269.0,248.3 271.8,248.3 274.7,248.3 277.5,253.5 280.4,253.5 283.2,253.5 286.0,248.3 288.9,243.2 291.7,238.1 294.6,233.0 297.4,233.0 300.2,238.1 303.1,243.2 305.9,238.1 308.8,238.1 311.6,238.1 314.4,238.1 317.3,238.1 320.1,238.1 323.0,238.1 325.8,233.0 328.6,228.0 331.5,218.1 334.3,218.1 337.2,223.0 340.0,218.1 342.8,213.2 345.7,208.3 348.5,203.5 351.4,203.5 354.2,198.7 357.0,198.7 359.9,198.7 362.7,198.7 365.6,184.5 368.4,179.8 371.2,179.8 374.1,184.5 376.9,179.8 379.8,179.8 382.6,175.2 385.4,175.2 388.3,175.2 391.1,170.6 394.0,175.2 396.8,170.6 399.6,170.6 402.5,166.0 405.3,170.6 408.2,170.6 411.0,166.0 413.8,156.9 416.7,161.5 419.5,161.5 422.4,156.9 425.2,152.5 428.0,152.5 430.9,148.0 433.7,148.0 436.6,143.6 439.4,143.6 442.2,143.6 445.1,143.6 447.9,148.0 450.8,148.0 453.6,143.6 456.4,148.0 459.3,143.6 462.1,143.6 465.0,143.6 467.8,148.0 470.6,143.6 473.5,143.6 476.3,139.2 479.2,139.2 482.0,139.2 484.8,139.2 487.7,143.6 490.5,148.0 493.4,148.0 496.2,148.0 499.0,148.0 501.9,143.6 504.7,148.0 507.6,148.0 510.4,148.0 513.2,148.0 516.1,148.0 518.9,148.0 521.8,148.0 524.6,143.6 527.4,143.6 530.3,148.0 533.1,143.6 536.0,148.0 538.8,139.2 541.6,139.2 544.5,143.6 547.3,143.6 550.2,143.6 553.0,143.6 555.8,148.0 558.7,148.0 561.5,148.0 564.4,143.6 567.2,143.6 570.0,143.6 572.9,139.2 575.7,134.9 578.6,139.2 581.4,139.2 584.2,139.2 587.1,143.6 589.9,152.5 592.8,156.9 595.6,152.5 598.4,152.5 601.3,148.0 604.1,152.5 607.0,148.0 609.8,148.0 612.6,143.6 615.5,139.2 618.3,139.2 621.2,139.2 624.0,134.9 624.0,208.5 621.2,213.3 618.3,213.3 615.5,213.3 612.6,218.1 609.8,222.8 607.0,222.8 604.1,227.5 601.3,222.8 598.4,227.5 595.6,227.5 592.8,232.2 589.9,227.5 587.1,218.1 584.2,213.3 581.4,213.3 578.6,213.3 575.7,208.5 572.9,213.3 570.0,218.1 567.2,218.1 564.4,218.1 561.5,222.8 558.7,222.8 555.8,222.8 553.0,218.1 550.2,218.1 547.3,218.1 544.5,218.1 541.6,213.3 538.8,213.3 536.0,222.8 533.1,218.1 530.3,222.8 527.4,218.1 524.6,218.1 521.8,222.8 518.9,222.8 516.1,222.8 513.2,222.8 510.4,222.8 507.6,222.8 504.7,222.8 501.9,218.1 499.0,222.8 496.2,222.8 493.4,222.8 490.5,222.8 487.7,218.1 484.8,213.3 482.0,213.3 479.2,213.3 476.3,213.3 473.5,218.1 470.6,218.1 467.8,222.8 465.0,218.1 462.1,218.1 459.3,218.1 456.4,222.8 453.6,218.1 450.8,222.8 447.9,222.8 445.1,218.1 442.2,218.1 439.4,218.1 436.6,218.1 433.7,222.8 430.9,222.8 428.0,227.5 425.2,227.5 422.4,232.2 419.5,236.8 416.7,236.8 413.8,232.2 411.0,241.4 408.2,246.0 405.3,246.0 402.5,241.4 399.6,246.0 396.8,246.0 394.0,250.5 391.1,246.0 388.3,250.5 385.4,250.5 382.6,250.5 379.8,255.1 376.9,255.1 374.1,259.5 371.2,255.1 368.4,255.1 365.6,259.5 362.7,272.8 359.9,272.8 357.0,272.8 354.2,272.8 351.4,277.1 348.5,277.1 345.7,281.4 342.8,285.7 340.0,290.0 337.2,294.2 334.3,290.0 331.5,290.0 328.6,298.3 325.8,302.4 323.0,306.5 320.1,306.5 317.3,306.5 314.4,306.5 311.6,306.5 308.8,306.5 305.9,306.5 303.1,310.6 300.2,306.5 297.4,302.4 294.6,302.4 291.7,306.5 288.9,310.6 286.0,314.6 283.2,318.5 280.4,318.5 277.5,318.5 274.7,314.6 271.8,314.6 269.0,314.6 266.2,314.6 263.3,318.5 260.5,326.3 257.6,326.3 254.8,322.4 252.0,322.4 249.1,318.5 246.3,318.5 243.4,314.6 240.6,318.5 237.8,322.4 234.9,322.4 232.1,326.3 229.2,330.1 226.4,326.3 223.6,330.1 220.7,333.8 217.9,344.6 215.0,344.6 212.2,344.6 209.4,344.6 206.5,348.0 203.7,351.3 200.8,351.3 198.0,351.3 195.2,351.3 192.3,351.3 189.5,351.3 186.6,351.3 183.8,351.3 181.0,351.3 178.1,351.3 175.3,354.5 172.4,354.5 169.6,354.5 166.8,357.5 163.9,357.5 161.1,357.5 158.2,357.5 155.4,357.5 152.6,357.5 149.7,357.5 146.9,357.5 144.0,357.5 141.2,363.0 138.4,363.0 135.5,365.3 132.7,367.1 129.8,368.0 127.0,368.0 124.2,368.0 121.3,368.0 118.5,368.0 115.6,368.0 112.8,368.0 110.0,368.0 107.1,368.0 104.3,368.0 101.4,368.0 98.6,368.0 95.8,368.0 92.9,368.0 90.1,368.0 87.2,368.0 84.4,368.0 81.6,368.0 78.7,368.0 75.9,368.0 73.0,368.0 70.2,368.0 67.4,368.0 64.5,368.0 61.7,368.0 58.8,368.0 56.0,368.0"/>
+<polygon class="pop-band pop-s1" points="56.0,44.0 58.8,44.0 61.7,44.0 64.5,44.0 67.4,44.0 70.2,44.0 73.0,44.0 75.9,44.0 78.7,44.0 81.6,44.0 84.4,44.0 87.2,44.0 90.1,44.0 92.9,44.0 95.8,44.0 98.6,44.0 101.4,44.9 104.3,49.0 107.1,46.7 110.0,46.7 112.8,49.0 115.6,54.5 118.5,57.5 121.3,57.5 124.2,64.0 127.0,67.4 129.8,70.9 132.7,74.5 135.5,78.2 138.4,81.9 141.2,81.9 144.0,93.5 146.9,93.5 149.7,93.5 152.6,93.5 155.4,93.5 158.2,93.5 161.1,93.5 163.9,93.5 166.8,93.5 169.6,97.4 172.4,97.4 175.3,97.4 178.1,97.4 181.0,97.4 183.8,97.4 186.6,97.4 189.5,97.4 192.3,97.4 195.2,97.4 198.0,97.4 200.8,97.4 203.7,93.5 206.5,97.4 209.4,101.4 212.2,105.5 215.0,109.6 217.9,109.6 220.7,117.8 223.6,122.0 226.4,126.3 229.2,122.0 232.1,130.6 234.9,134.9 237.8,134.9 240.6,134.9 243.4,139.2 246.3,139.2 249.1,139.2 252.0,134.9 254.8,134.9 257.6,130.6 260.5,130.6 263.3,139.2 266.2,143.6 269.0,148.0 271.8,148.0 274.7,148.0 277.5,143.6 280.4,143.6 283.2,139.2 286.0,143.6 288.9,152.5 291.7,152.5 294.6,156.9 297.4,161.5 300.2,156.9 303.1,148.0 305.9,152.5 308.8,152.5 311.6,152.5 314.4,152.5 317.3,152.5 320.1,148.0 323.0,152.5 325.8,156.9 328.6,156.9 331.5,166.0 334.3,166.0 337.2,166.0 340.0,170.6 342.8,166.0 345.7,175.2 348.5,179.8 351.4,179.8 354.2,184.5 357.0,184.5 359.9,184.5 362.7,184.5 365.6,198.7 368.4,203.5 371.2,203.5 374.1,198.7 376.9,198.7 379.8,198.7 382.6,203.5 385.4,203.5 388.3,203.5 391.1,208.3 394.0,203.5 396.8,203.5 399.6,203.5 402.5,208.3 405.3,203.5 408.2,203.5 411.0,208.3 413.8,218.1 416.7,213.2 419.5,213.2 422.4,223.0 425.2,228.0 428.0,228.0 430.9,233.0 433.7,233.0 436.6,238.1 439.4,238.1 442.2,238.1 445.1,238.1 447.9,233.0 450.8,233.0 453.6,238.1 456.4,228.0 459.3,233.0 462.1,238.1 465.0,238.1 467.8,233.0 470.6,238.1 473.5,233.0 476.3,238.1 479.2,238.1 482.0,238.1 484.8,238.1 487.7,233.0 490.5,228.0 493.4,228.0 496.2,228.0 499.0,228.0 501.9,233.0 504.7,223.0 507.6,223.0 510.4,223.0 513.2,223.0 516.1,223.0 518.9,218.1 521.8,218.1 524.6,223.0 527.4,223.0 530.3,218.1 533.1,218.1 536.0,213.2 538.8,223.0 541.6,223.0 544.5,218.1 547.3,218.1 550.2,218.1 553.0,218.1 555.8,213.2 558.7,213.2 561.5,213.2 564.4,218.1 567.2,218.1 570.0,218.1 572.9,223.0 575.7,228.0 578.6,223.0 581.4,223.0 584.2,223.0 587.1,218.1 589.9,208.3 592.8,203.5 595.6,208.3 598.4,208.3 601.3,213.2 604.1,208.3 607.0,213.2 609.8,213.2 612.6,218.1 615.5,223.0 618.3,223.0 621.2,223.0 624.0,228.0 624.0,298.3 621.2,294.2 618.3,294.2 615.5,294.2 612.6,290.0 609.8,285.7 607.0,285.7 604.1,281.4 601.3,285.7 598.4,281.4 595.6,281.4 592.8,277.1 589.9,281.4 587.1,290.0 584.2,294.2 581.4,294.2 578.6,294.2 575.7,298.3 572.9,294.2 570.0,290.0 567.2,290.0 564.4,290.0 561.5,285.7 558.7,285.7 555.8,285.7 553.0,290.0 550.2,290.0 547.3,290.0 544.5,290.0 541.6,294.2 538.8,294.2 536.0,285.7 533.1,290.0 530.3,290.0 527.4,294.2 524.6,294.2 521.8,290.0 518.9,290.0 516.1,294.2 513.2,294.2 510.4,294.2 507.6,294.2 504.7,294.2 501.9,302.4 499.0,298.3 496.2,298.3 493.4,298.3 490.5,298.3 487.7,302.4 484.8,306.5 482.0,306.5 479.2,306.5 476.3,306.5 473.5,302.4 470.6,306.5 467.8,302.4 465.0,306.5 462.1,306.5 459.3,302.4 456.4,298.3 453.6,306.5 450.8,302.4 447.9,302.4 445.1,306.5 442.2,306.5 439.4,306.5 436.6,306.5 433.7,302.4 430.9,302.4 428.0,298.3 425.2,298.3 422.4,294.2 419.5,285.7 416.7,285.7 413.8,290.0 411.0,281.4 408.2,277.1 405.3,277.1 402.5,281.4 399.6,277.1 396.8,277.1 394.0,277.1 391.1,281.4 388.3,277.1 385.4,277.1 382.6,277.1 379.8,272.8 376.9,272.8 374.1,272.8 371.2,277.1 368.4,277.1 365.6,272.8 362.7,259.5 359.9,259.5 357.0,259.5 354.2,259.5 351.4,255.1 348.5,255.1 345.7,250.5 342.8,241.4 340.0,246.0 337.2,241.4 334.3,241.4 331.5,241.4 328.6,232.2 325.8,232.2 323.0,227.5 320.1,222.8 317.3,227.5 314.4,227.5 311.6,227.5 308.8,227.5 305.9,227.5 303.1,222.8 300.2,232.2 297.4,236.8 294.6,232.2 291.7,227.5 288.9,227.5 286.0,218.1 283.2,213.3 280.4,218.1 277.5,218.1 274.7,222.8 271.8,222.8 269.0,222.8 266.2,218.1 263.3,213.3 260.5,203.7 257.6,203.7 254.8,208.5 252.0,208.5 249.1,213.3 246.3,213.3 243.4,213.3 240.6,208.5 237.8,208.5 234.9,208.5 232.1,203.7 229.2,193.9 226.4,198.8 223.6,193.9 220.7,189.0 217.9,179.0 215.0,179.0 212.2,173.9 209.4,168.8 206.5,163.7 203.7,158.5 200.8,163.7 198.0,163.7 195.2,163.7 192.3,163.7 189.5,163.7 186.6,163.7 183.8,163.7 181.0,163.7 178.1,163.7 175.3,163.7 172.4,163.7 169.6,163.7 166.8,158.5 163.9,158.5 161.1,158.5 158.2,158.5 155.4,158.5 152.6,158.5 149.7,158.5 146.9,158.5 144.0,158.5 141.2,142.6 138.4,142.6 135.5,137.1 132.7,131.7 129.8,126.1 127.0,120.5 124.2,114.7 121.3,102.9 118.5,102.9 115.6,96.8 112.8,84.0 110.0,77.2 107.1,77.2 104.3,84.0 101.4,69.9 98.6,61.6 95.8,61.6 92.9,61.6 90.1,61.6 87.2,61.6 84.4,61.6 81.6,61.6 78.7,61.6 75.9,61.6 73.0,61.6 70.2,61.6 67.4,61.6 64.5,61.6 61.7,61.6 58.8,61.6 56.0,61.6"/>
+<polygon class="pop-band pop-s2" points="56.0,350.4 58.8,350.4 61.7,350.4 64.5,350.4 67.4,350.4 70.2,350.4 73.0,350.4 75.9,350.4 78.7,350.4 81.6,350.4 84.4,350.4 87.2,350.4 90.1,350.4 92.9,350.4 95.8,350.4 98.6,350.4 101.4,342.1 104.3,328.0 107.1,334.8 110.0,334.8 112.8,328.0 115.6,315.2 118.5,309.1 121.3,309.1 124.2,297.3 127.0,291.5 129.8,285.9 132.7,285.9 135.5,285.9 138.4,285.9 141.2,285.9 144.0,280.3 146.9,280.3 149.7,280.3 152.6,280.3 155.4,280.3 158.2,280.3 161.1,280.3 163.9,280.3 166.8,280.3 169.6,280.3 172.4,280.3 175.3,280.3 178.1,285.9 181.0,285.9 183.8,285.9 186.6,285.9 189.5,285.9 192.3,285.9 195.2,285.9 198.0,285.9 200.8,285.9 203.7,291.5 206.5,291.5 209.4,291.5 212.2,285.9 215.0,280.3 217.9,280.3 220.7,285.9 223.6,285.9 226.4,285.9 229.2,285.9 232.1,280.3 234.9,280.3 237.8,280.3 240.6,285.9 243.4,285.9 246.3,280.3 249.1,280.3 252.0,280.3 254.8,280.3 257.6,280.3 260.5,280.3 263.3,280.3 266.2,280.3 269.0,274.9 271.8,274.9 274.7,274.9 277.5,274.9 280.4,274.9 283.2,280.3 286.0,280.3 288.9,274.9 291.7,280.3 294.6,280.3 297.4,274.9 300.2,274.9 303.1,280.3 305.9,280.3 308.8,280.3 311.6,280.3 314.4,280.3 317.3,280.3 320.1,285.9 323.0,280.3 325.8,280.3 328.6,285.9 331.5,285.9 334.3,285.9 337.2,280.3 340.0,280.3 342.8,291.5 345.7,285.9 348.5,285.9 351.4,285.9 354.2,285.9 357.0,285.9 359.9,285.9 362.7,285.9 365.6,285.9 368.4,285.9 371.2,285.9 374.1,285.9 376.9,291.5 379.8,291.5 382.6,291.5 385.4,291.5 388.3,291.5 391.1,291.5 394.0,291.5 396.8,297.3 399.6,297.3 402.5,297.3 405.3,297.3 408.2,297.3 411.0,297.3 413.8,297.3 416.7,297.3 419.5,297.3 422.4,291.5 425.2,291.5 428.0,291.5 430.9,291.5 433.7,291.5 436.6,291.5 439.4,291.5 442.2,291.5 445.1,291.5 447.9,291.5 450.8,291.5 453.6,291.5 456.4,297.3 459.3,297.3 462.1,291.5 465.0,291.5 467.8,291.5 470.6,291.5 473.5,297.3 476.3,297.3 479.2,297.3 482.0,297.3 484.8,297.3 487.7,297.3 490.5,297.3 493.4,297.3 496.2,297.3 499.0,297.3 501.9,297.3 504.7,303.1 507.6,303.1 510.4,303.1 513.2,303.1 516.1,303.1 518.9,309.1 521.8,309.1 524.6,309.1 527.4,309.1 530.3,309.1 533.1,315.2 536.0,315.2 538.8,315.2 541.6,315.2 544.5,315.2 547.3,315.2 550.2,315.2 553.0,315.2 555.8,315.2 558.7,315.2 561.5,315.2 564.4,315.2 567.2,315.2 570.0,315.2 572.9,315.2 575.7,315.2 578.6,315.2 581.4,315.2 584.2,315.2 587.1,315.2 589.9,315.2 592.8,315.2 595.6,315.2 598.4,315.2 601.3,315.2 604.1,315.2 607.0,315.2 609.8,315.2 612.6,315.2 615.5,315.2 618.3,315.2 621.2,315.2 624.0,315.2 624.0,357.5 621.2,357.5 618.3,357.5 615.5,357.5 612.6,357.5 609.8,357.5 607.0,357.5 604.1,357.5 601.3,357.5 598.4,357.5 595.6,357.5 592.8,357.5 589.9,357.5 587.1,357.5 584.2,357.5 581.4,357.5 578.6,357.5 575.7,357.5 572.9,357.5 570.0,357.5 567.2,357.5 564.4,357.5 561.5,357.5 558.7,357.5 555.8,357.5 553.0,357.5 550.2,357.5 547.3,357.5 544.5,357.5 541.6,357.5 538.8,357.5 536.0,357.5 533.1,357.5 530.3,354.5 527.4,354.5 524.6,354.5 521.8,354.5 518.9,354.5 516.1,351.3 513.2,351.3 510.4,351.3 507.6,351.3 504.7,351.3 501.9,348.0 499.0,348.0 496.2,348.0 493.4,348.0 490.5,348.0 487.7,348.0 484.8,348.0 482.0,348.0 479.2,348.0 476.3,348.0 473.5,348.0 470.6,344.6 467.8,344.6 465.0,344.6 462.1,344.6 459.3,348.0 456.4,348.0 453.6,344.6 450.8,344.6 447.9,344.6 445.1,344.6 442.2,344.6 439.4,344.6 436.6,344.6 433.7,344.6 430.9,344.6 428.0,344.6 425.2,344.6 422.4,344.6 419.5,348.0 416.7,348.0 413.8,348.0 411.0,348.0 408.2,348.0 405.3,348.0 402.5,348.0 399.6,348.0 396.8,348.0 394.0,344.6 391.1,344.6 388.3,344.6 385.4,344.6 382.6,344.6 379.8,344.6 376.9,344.6 374.1,341.1 371.2,341.1 368.4,341.1 365.6,341.1 362.7,341.1 359.9,341.1 357.0,341.1 354.2,341.1 351.4,341.1 348.5,341.1 345.7,341.1 342.8,344.6 340.0,337.5 337.2,337.5 334.3,341.1 331.5,341.1 328.6,341.1 325.8,337.5 323.0,337.5 320.1,341.1 317.3,337.5 314.4,337.5 311.6,337.5 308.8,337.5 305.9,337.5 303.1,337.5 300.2,333.8 297.4,333.8 294.6,337.5 291.7,337.5 288.9,333.8 286.0,337.5 283.2,337.5 280.4,333.8 277.5,333.8 274.7,333.8 271.8,333.8 269.0,333.8 266.2,337.5 263.3,337.5 260.5,337.5 257.6,337.5 254.8,337.5 252.0,337.5 249.1,337.5 246.3,337.5 243.4,341.1 240.6,341.1 237.8,337.5 234.9,337.5 232.1,337.5 229.2,341.1 226.4,341.1 223.6,341.1 220.7,341.1 217.9,337.5 215.0,337.5 212.2,341.1 209.4,344.6 206.5,344.6 203.7,344.6 200.8,341.1 198.0,341.1 195.2,341.1 192.3,341.1 189.5,341.1 186.6,341.1 183.8,341.1 181.0,341.1 178.1,341.1 175.3,337.5 172.4,337.5 169.6,337.5 166.8,337.5 163.9,337.5 161.1,337.5 158.2,337.5 155.4,337.5 152.6,337.5 149.7,337.5 146.9,337.5 144.0,337.5 141.2,341.1 138.4,341.1 135.5,341.1 132.7,341.1 129.8,341.1 127.0,344.6 124.2,348.0 121.3,354.5 118.5,354.5 115.6,357.5 112.8,363.0 110.0,365.3 107.1,365.3 104.3,363.0 101.4,367.1 98.6,368.0 95.8,368.0 92.9,368.0 90.1,368.0 87.2,368.0 84.4,368.0 81.6,368.0 78.7,368.0 75.9,368.0 73.0,368.0 70.2,368.0 67.4,368.0 64.5,368.0 61.7,368.0 58.8,368.0 56.0,368.0"/>
+<polyline class="pop-line pop-s0" points="56.0,368.0 58.8,368.0 61.7,368.0 64.5,368.0 67.4,368.0 70.2,368.0 73.0,368.0 75.9,368.0 78.7,368.0 81.6,368.0 84.4,368.0 87.2,368.0 90.1,368.0 92.9,368.0 95.8,368.0 98.6,368.0 101.4,368.0 104.3,368.0 107.1,368.0 110.0,368.0 112.8,368.0 115.6,368.0 118.5,368.0 121.3,368.0 124.2,368.0 127.0,368.0 129.8,368.0 132.7,363.2 135.5,358.3 138.4,353.5 141.2,353.5 144.0,343.8 146.9,343.8 149.7,343.8 152.6,343.8 155.4,343.8 158.2,343.8 161.1,343.8 163.9,343.8 166.8,343.8 169.6,339.0 172.4,339.0 175.3,339.0 178.1,334.1 181.0,334.1 183.8,334.1 186.6,334.1 189.5,334.1 192.3,334.1 195.2,334.1 198.0,334.1 200.8,334.1 203.7,334.1 206.5,329.3 209.4,324.5 212.2,324.5 215.0,324.5 217.9,324.5 220.7,310.0 223.6,305.1 226.4,300.3 229.2,305.1 232.1,300.3 234.9,295.5 237.8,295.5 240.6,290.6 243.4,285.8 246.3,290.6 249.1,290.6 252.0,295.5 254.8,295.5 257.6,300.3 260.5,300.3 263.3,290.6 266.2,285.8 269.0,285.8 271.8,285.8 274.7,285.8 277.5,290.6 280.4,290.6 283.2,290.6 286.0,285.8 288.9,281.0 291.7,276.1 294.6,271.3 297.4,271.3 300.2,276.1 303.1,281.0 305.9,276.1 308.8,276.1 311.6,276.1 314.4,276.1 317.3,276.1 320.1,276.1 323.0,276.1 325.8,271.3 328.6,266.4 331.5,256.8 334.3,256.8 337.2,261.6 340.0,256.8 342.8,251.9 345.7,247.1 348.5,242.3 351.4,242.3 354.2,237.4 357.0,237.4 359.9,237.4 362.7,237.4 365.6,222.9 368.4,218.1 371.2,218.1 374.1,222.9 376.9,218.1 379.8,218.1 382.6,213.3 385.4,213.3 388.3,213.3 391.1,208.4 394.0,213.3 396.8,208.4 399.6,208.4 402.5,203.6 405.3,208.4 408.2,208.4 411.0,203.6 413.8,193.9 416.7,198.7 419.5,198.7 422.4,193.9 425.2,189.1 428.0,189.1 430.9,184.2 433.7,184.2 436.6,179.4 439.4,179.4 442.2,179.4 445.1,179.4 447.9,184.2 450.8,184.2 453.6,179.4 456.4,184.2 459.3,179.4 462.1,179.4 465.0,179.4 467.8,184.2 470.6,179.4 473.5,179.4 476.3,174.6 479.2,174.6 482.0,174.6 484.8,174.6 487.7,179.4 490.5,184.2 493.4,184.2 496.2,184.2 499.0,184.2 501.9,179.4 504.7,184.2 507.6,184.2 510.4,184.2 513.2,184.2 516.1,184.2 518.9,184.2 521.8,184.2 524.6,179.4 527.4,179.4 530.3,184.2 533.1,179.4 536.0,184.2 538.8,174.6 541.6,174.6 544.5,179.4 547.3,179.4 550.2,179.4 553.0,179.4 555.8,184.2 558.7,184.2 561.5,184.2 564.4,179.4 567.2,179.4 570.0,179.4 572.9,174.6 575.7,169.7 578.6,174.6 581.4,174.6 584.2,174.6 587.1,179.4 589.9,189.1 592.8,193.9 595.6,189.1 598.4,189.1 601.3,184.2 604.1,189.1 607.0,184.2 609.8,184.2 612.6,179.4 615.5,174.6 618.3,174.6 621.2,174.6 624.0,169.7"/>
+<polyline class="pop-line pop-s1" points="56.0,44.0 58.8,44.0 61.7,44.0 64.5,44.0 67.4,44.0 70.2,44.0 73.0,44.0 75.9,44.0 78.7,44.0 81.6,44.0 84.4,44.0 87.2,44.0 90.1,44.0 92.9,44.0 95.8,44.0 98.6,44.0 101.4,48.8 104.3,58.5 107.1,53.7 110.0,53.7 112.8,58.5 115.6,68.2 118.5,73.0 121.3,73.0 124.2,82.7 127.0,87.5 129.8,92.4 132.7,97.2 135.5,102.0 138.4,106.9 141.2,106.9 144.0,121.4 146.9,121.4 149.7,121.4 152.6,121.4 155.4,121.4 158.2,121.4 161.1,121.4 163.9,121.4 166.8,121.4 169.6,126.2 172.4,126.2 175.3,126.2 178.1,126.2 181.0,126.2 183.8,126.2 186.6,126.2 189.5,126.2 192.3,126.2 195.2,126.2 198.0,126.2 200.8,126.2 203.7,121.4 206.5,126.2 209.4,131.0 212.2,135.9 215.0,140.7 217.9,140.7 220.7,150.4 223.6,155.2 226.4,160.1 229.2,155.2 232.1,164.9 234.9,169.7 237.8,169.7 240.6,169.7 243.4,174.6 246.3,174.6 249.1,174.6 252.0,169.7 254.8,169.7 257.6,164.9 260.5,164.9 263.3,174.6 266.2,179.4 269.0,184.2 271.8,184.2 274.7,184.2 277.5,179.4 280.4,179.4 283.2,174.6 286.0,179.4 288.9,189.1 291.7,189.1 294.6,193.9 297.4,198.7 300.2,193.9 303.1,184.2 305.9,189.1 308.8,189.1 311.6,189.1 314.4,189.1 317.3,189.1 320.1,184.2 323.0,189.1 325.8,193.9 328.6,193.9 331.5,203.6 334.3,203.6 337.2,203.6 340.0,208.4 342.8,203.6 345.7,213.3 348.5,218.1 351.4,218.1 354.2,222.9 357.0,222.9 359.9,222.9 362.7,222.9 365.6,237.4 368.4,242.3 371.2,242.3 374.1,237.4 376.9,237.4 379.8,237.4 382.6,242.3 385.4,242.3 388.3,242.3 391.1,247.1 394.0,242.3 396.8,242.3 399.6,242.3 402.5,247.1 405.3,242.3 408.2,242.3 411.0,247.1 413.8,256.8 416.7,251.9 419.5,251.9 422.4,261.6 425.2,266.4 428.0,266.4 430.9,271.3 433.7,271.3 436.6,276.1 439.4,276.1 442.2,276.1 445.1,276.1 447.9,271.3 450.8,271.3 453.6,276.1 456.4,266.4 459.3,271.3 462.1,276.1 465.0,276.1 467.8,271.3 470.6,276.1 473.5,271.3 476.3,276.1 479.2,276.1 482.0,276.1 484.8,276.1 487.7,271.3 490.5,266.4 493.4,266.4 496.2,266.4 499.0,266.4 501.9,271.3 504.7,261.6 507.6,261.6 510.4,261.6 513.2,261.6 516.1,261.6 518.9,256.8 521.8,256.8 524.6,261.6 527.4,261.6 530.3,256.8 533.1,256.8 536.0,251.9 538.8,261.6 541.6,261.6 544.5,256.8 547.3,256.8 550.2,256.8 553.0,256.8 555.8,251.9 558.7,251.9 561.5,251.9 564.4,256.8 567.2,256.8 570.0,256.8 572.9,261.6 575.7,266.4 578.6,261.6 581.4,261.6 584.2,261.6 587.1,256.8 589.9,247.1 592.8,242.3 595.6,247.1 598.4,247.1 601.3,251.9 604.1,247.1 607.0,251.9 609.8,251.9 612.6,256.8 615.5,261.6 618.3,261.6 621.2,261.6 624.0,266.4"/>
+<polyline class="pop-line pop-s2" points="56.0,368.0 58.8,368.0 61.7,368.0 64.5,368.0 67.4,368.0 70.2,368.0 73.0,368.0 75.9,368.0 78.7,368.0 81.6,368.0 84.4,368.0 87.2,368.0 90.1,368.0 92.9,368.0 95.8,368.0 98.6,368.0 101.4,363.2 104.3,353.5 107.1,358.3 110.0,358.3 112.8,353.5 115.6,343.8 118.5,339.0 121.3,339.0 124.2,329.3 127.0,324.5 129.8,319.6 132.7,319.6 135.5,319.6 138.4,319.6 141.2,319.6 144.0,314.8 146.9,314.8 149.7,314.8 152.6,314.8 155.4,314.8 158.2,314.8 161.1,314.8 163.9,314.8 166.8,314.8 169.6,314.8 172.4,314.8 175.3,314.8 178.1,319.6 181.0,319.6 183.8,319.6 186.6,319.6 189.5,319.6 192.3,319.6 195.2,319.6 198.0,319.6 200.8,319.6 203.7,324.5 206.5,324.5 209.4,324.5 212.2,319.6 215.0,314.8 217.9,314.8 220.7,319.6 223.6,319.6 226.4,319.6 229.2,319.6 232.1,314.8 234.9,314.8 237.8,314.8 240.6,319.6 243.4,319.6 246.3,314.8 249.1,314.8 252.0,314.8 254.8,314.8 257.6,314.8 260.5,314.8 263.3,314.8 266.2,314.8 269.0,310.0 271.8,310.0 274.7,310.0 277.5,310.0 280.4,310.0 283.2,314.8 286.0,314.8 288.9,310.0 291.7,314.8 294.6,314.8 297.4,310.0 300.2,310.0 303.1,314.8 305.9,314.8 308.8,314.8 311.6,314.8 314.4,314.8 317.3,314.8 320.1,319.6 323.0,314.8 325.8,314.8 328.6,319.6 331.5,319.6 334.3,319.6 337.2,314.8 340.0,314.8 342.8,324.5 345.7,319.6 348.5,319.6 351.4,319.6 354.2,319.6 357.0,319.6 359.9,319.6 362.7,319.6 365.6,319.6 368.4,319.6 371.2,319.6 374.1,319.6 376.9,324.5 379.8,324.5 382.6,324.5 385.4,324.5 388.3,324.5 391.1,324.5 394.0,324.5 396.8,329.3 399.6,329.3 402.5,329.3 405.3,329.3 408.2,329.3 411.0,329.3 413.8,329.3 416.7,329.3 419.5,329.3 422.4,324.5 425.2,324.5 428.0,324.5 430.9,324.5 433.7,324.5 436.6,324.5 439.4,324.5 442.2,324.5 445.1,324.5 447.9,324.5 450.8,324.5 453.6,324.5 456.4,329.3 459.3,329.3 462.1,324.5 465.0,324.5 467.8,324.5 470.6,324.5 473.5,329.3 476.3,329.3 479.2,329.3 482.0,329.3 484.8,329.3 487.7,329.3 490.5,329.3 493.4,329.3 496.2,329.3 499.0,329.3 501.9,329.3 504.7,334.1 507.6,334.1 510.4,334.1 513.2,334.1 516.1,334.1 518.9,339.0 521.8,339.0 524.6,339.0 527.4,339.0 530.3,339.0 533.1,343.8 536.0,343.8 538.8,343.8 541.6,343.8 544.5,343.8 547.3,343.8 550.2,343.8 553.0,343.8 555.8,343.8 558.7,343.8 561.5,343.8 564.4,343.8 567.2,343.8 570.0,343.8 572.9,343.8 575.7,343.8 578.6,343.8 581.4,343.8 584.2,343.8 587.1,343.8 589.9,343.8 592.8,343.8 595.6,343.8 598.4,343.8 601.3,343.8 604.1,343.8 607.0,343.8 609.8,343.8 612.6,343.8 615.5,343.8 618.3,343.8 621.2,343.8 624.0,343.8"/>
+<polyline class="pop-fit" points="56.0,44.0 58.8,44.0 61.7,44.0 64.5,44.0 67.4,44.0 70.2,44.0 73.0,44.0 75.9,44.0 78.7,44.0 81.6,44.0 84.4,44.0 87.2,44.0 90.1,44.0 92.9,44.0 95.8,44.0 98.6,44.0 101.4,44.0 104.3,44.0 107.1,44.0 110.0,44.0 112.8,44.0 115.6,44.0 118.5,44.0 121.3,44.0 124.2,44.0 127.0,44.0 129.8,44.7 132.7,46.7 135.5,48.7 138.4,50.7 141.2,52.6 144.0,54.6 146.9,56.5 149.7,58.5 152.6,60.4 155.4,62.3 158.2,64.2 161.1,66.1 163.9,68.0 166.8,69.9 169.6,71.7 172.4,73.6 175.3,75.4 178.1,77.2 181.0,79.0 183.8,80.8 186.6,82.6 189.5,84.4 192.3,86.1 195.2,87.9 198.0,89.6 200.8,91.4 203.7,93.1 206.5,94.8 209.4,96.5 212.2,98.2 215.0,99.9 217.9,101.5 220.7,103.2 223.6,104.8 226.4,106.5 229.2,108.1 232.1,109.7 234.9,111.3 237.8,112.9 240.6,114.5 243.4,116.1 246.3,117.6 249.1,119.2 252.0,120.8 254.8,122.3 257.6,123.8 260.5,125.3 263.3,126.8 266.2,128.3 269.0,129.8 271.8,131.3 274.7,132.8 277.5,134.3 280.4,135.7 283.2,137.2 286.0,138.6 288.9,140.0 291.7,141.4 294.6,142.8 297.4,144.2 300.2,145.6 303.1,147.0 305.9,148.4 308.8,149.8 311.6,151.1 314.4,152.5 317.3,153.8 320.1,155.1 323.0,156.5 325.8,157.8 328.6,159.1 331.5,160.4 334.3,161.7 337.2,163.0 340.0,164.2 342.8,165.5 345.7,166.8 348.5,168.0 351.4,169.3 354.2,170.5 357.0,171.7 359.9,172.9 362.7,174.2 365.6,175.4 368.4,176.6 371.2,177.7 374.1,178.9 376.9,180.1 379.8,181.3 382.6,182.4 385.4,183.6 388.3,184.7 391.1,185.9 394.0,187.0 396.8,188.1 399.6,189.3 402.5,190.4 405.3,191.5 408.2,192.6 411.0,193.7 413.8,194.7 416.7,195.8 419.5,196.9 422.4,198.0 425.2,199.0 428.0,200.1 430.9,201.1 433.7,202.2 436.6,203.2 439.4,204.2 442.2,205.2 445.1,206.2 447.9,207.2 450.8,208.2 453.6,209.2 456.4,210.2 459.3,211.2 462.1,212.2 465.0,213.2 467.8,214.1 470.6,215.1 473.5,216.0 476.3,217.0 479.2,217.9 482.0,218.8 484.8,219.8 487.7,220.7 490.5,221.6 493.4,222.5 496.2,223.4 499.0,224.3 501.9,225.2 504.7,226.1 507.6,227.0 510.4,227.9 513.2,228.7 516.1,229.6 518.9,230.5 521.8,231.3 524.6,232.2 527.4,233.0 530.3,233.9 533.1,234.7 536.0,235.5 538.8,236.3 541.6,237.2 544.5,238.0 547.3,238.8 550.2,239.6 553.0,240.4 555.8,241.2 558.7,242.0 561.5,242.8 564.4,243.5 567.2,244.3 570.0,245.1 572.9,245.8 575.7,246.6 578.6,247.4 581.4,248.1 584.2,248.8 587.1,249.6 589.9,250.3 592.8,251.1 595.6,251.8 598.4,252.5 601.3,253.2 604.1,253.9 607.0,254.7 609.8,255.4 612.6,256.1 615.5,256.8 618.3,257.4 621.2,258.1 624.0,258.8"/>
+<line class="pop-line pop-s0" x1="56" y1="18" x2="80" y2="18"/>
+<text class="pop-label" x="86" y="22">S0</text>
+<line class="pop-line pop-s1" x1="126" y1="18" x2="150" y2="18"/>
+<text class="pop-label" x="156" y="22">S1</text>
+<line class="pop-line pop-s2" x1="196" y1="18" x2="220" y2="18"/>
+<text class="pop-label" x="226" y="22">S2</text>
+<line class="pop-fit" x1="266" y1="18" x2="290" y2="18"/>
+<text class="pop-label" x="296" y="22">fit to S1 + S2</text>
+</svg>
+<!-- populations-svg:end -->
+        <figcaption>Populations of the 67 of 100 trajectories that ran to 100 fs, with 95 % intervals; the dashed line is the fitted delayed exponential (tau 80 fs, 95 % interval 58 to 110 fs). The other 33 ended early after a hop. The default censored estimator also uses them and gives a shorter lifetime (62 fs here); which value is closer to the truth is not known (see <a href="#limits">Known limitations</a>).</figcaption>
+      </figure>
+    </div>
+  </section>
+
+  <section id="commands" class="section section-alt">
+    <div class="wrap">
+      <h2>Other commands</h2>
+      <p class="section-intro">Besides <code>run</code>, a few commands prepare, inspect and control a project, and two run calculations without one.</p>
+      <div class="card-grid">
+        <article class="card">
+          <h3><code>init</code> and <code>validate</code></h3>
+          <p>Write a commented template input, then check an input file and its geometry before anything runs, with every problem listed at once.</p>
+          <p class="card-link"><a href="https://github.com/AdemirCamargo57/gqteaSHMD/blob/main/USER_MANUAL.md#3-quick-start">Manual</a></p>
+        </article>
+        <article class="card">
+          <h3><code>status</code> and <code>stop</code></h3>
+          <p>See which stages are done and how many tasks run, and stop a running project gracefully from another terminal.</p>
+          <p class="card-link"><a href="https://github.com/AdemirCamargo57/gqteaSHMD/blob/main/USER_MANUAL.md#5-commands">Manual</a></p>
+        </article>
+        <article class="card">
+          <h3><code>single-point</code></h3>
+          <p>One PySCF calculation at the input geometry, outside any project: energies, gradients, transition dipoles and oscillator strengths, as a table or JSON.</p>
+          <p class="card-link"><a href="https://github.com/AdemirCamargo57/gqteaSHMD/blob/main/USER_MANUAL.md#53-gqteashmd-single-point">Manual</a></p>
+        </article>
+        <article class="card">
+          <h3><code>model-dynamics</code></h3>
+          <p>Surface-hopping ensembles on Tully's one-dimensional models, and on linear vibronic coupling models with singlets, triplets and spin-orbit coupling, without PySCF.</p>
+          <p class="card-link"><a href="https://github.com/AdemirCamargo57/gqteaSHMD/blob/main/USER_MANUAL.md#57-gqteashmd-model-dynamics">Manual</a></p>
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <section id="checked" class="section">
+    <div class="wrap">
+      <h2>How it was checked</h2>
+      <p class="section-intro">gqteashmd is research software at version 0.1. Each result below is marked by how it was checked, and each card links to the manual section with the numbers.</p>
+      <ul class="badge-key">
+        <li><span class="badge badge-test">Test</span> an automated test fails when the bound is missed</li>
+        <li><span class="badge badge-pre">Pre-registered</span> a pass rule fixed before the run, checked by a tool run by hand</li>
+        <li><span class="badge badge-report">Report</span> a measurement recorded without a pass rule</li>
+      </ul>
+      <p class="section-intro">The numbers are the measured differences, not the test bounds. Several tests need SHARC 4.1 or ORCA and are run by hand, not in the automatic tests on GitHub.</p>
+
+      <div class="card-grid">
+        <article class="card">
+          <h3>Electronic structure</h3>
+          <ul class="result-list">
+            <li>Energies, gradients and nonadiabatic couplings against SHARC 4.1 (ethylene SA2-CASSCF(2,2)/6-31G*): 1.4e-8 Eh, 1.4e-8 Eh/bohr, 9.1e-8 1/bohr up to sign <span class="badge badge-test">Test</span></li>
+            <li>Analytic gradients against finite differences <span class="badge badge-test">Test</span></li>
+          </ul>
+          <p class="card-link"><a href="https://github.com/AdemirCamargo57/gqteaSHMD/blob/main/USER_MANUAL.md#86-electronic-structure-pyscf">Manual</a></p>
+        </article>
+        <article class="card">
+          <h3>Frequencies and sampling</h3>
+          <ul class="result-list">
+            <li>Harmonic frequencies against ORCA 6.1.1 (water RHF/6-31G*): within 0.052 cm<sup>&minus;1</sup> <span class="badge badge-test">Test</span></li>
+            <li>Wigner sampling against SHARC's <code>wigner.py</code> at 0 and 1000 K: means within 1.6 and standard deviations within 1.4 standard errors <span class="badge badge-test">Test</span></li>
+          </ul>
+          <p class="card-link"><a href="https://github.com/AdemirCamargo57/gqteaSHMD/blob/main/USER_MANUAL.md#87-harmonic-analysis-frequencies">Manual</a> &middot; <a href="https://github.com/AdemirCamargo57/gqteaSHMD/blob/main/USER_MANUAL.md#88-wigner-sampling-of-initial-conditions">Sampling</a></p>
+        </article>
+        <article class="card">
+          <h3>Excitations and selection</h3>
+          <ul class="result-list">
+            <li>Excitation energies against SHARC's <code>SHARC_PYSCF.py</code>, and the selection against <code>excite.py</code>: dE &le; 8.7e-8 Eh <span class="badge badge-test">Test</span></li>
+          </ul>
+          <p class="card-link"><a href="https://github.com/AdemirCamargo57/gqteaSHMD/blob/main/USER_MANUAL.md#89-initial-excitation">Manual</a></p>
+        </article>
+        <article class="card">
+          <h3>Dynamics core</h3>
+          <ul class="result-list">
+            <li>FSSH and local diabatization against exact wavepackets on Tully's models <span class="badge badge-test">Test</span></li>
+            <li>FSSH against an exact 2D LVC solver: largest differences 0.049 (quantum) and 0.072 (classical populations) <span class="badge badge-report">Report</span></li>
+            <li>Single trajectories on Tully's models against SHARC 4.1: nuclear motion within 7.5e-11 bohr <span class="badge badge-test">Test</span></li>
+          </ul>
+          <p class="card-link"><a href="https://github.com/AdemirCamargo57/gqteaSHMD/blob/main/USER_MANUAL.md#814-dynamics-core-models-determinism-restart-performance-and-validation">Manual</a> &middot; <a href="https://github.com/AdemirCamargo57/gqteaSHMD/blob/main/USER_MANUAL.md#815-lvc-models-spinorbit-coupling-and-the-diagonal-representation">LVC</a></p>
+        </article>
+        <article class="card">
+          <h3>The dynamics stage</h3>
+          <ul class="result-list">
+            <li>Restart and extension bit-identical with an analytic backend, and to round-off with PySCF <span class="badge badge-test">Test</span></li>
+            <li>SHARC's driver on our electronic structure: positions within 2.1e-7 bohr over 41 steps <span class="badge badge-test">Test</span></li>
+          </ul>
+          <p class="card-link"><a href="https://github.com/AdemirCamargo57/gqteaSHMD/blob/main/USER_MANUAL.md#816-the-dynamics-stage-with-pyscf-p7b">Manual</a></p>
+        </article>
+        <article class="card">
+          <h3>Ensembles against SHARC</h3>
+          <ul class="result-list">
+            <li>Ethylene, 100 trajectories, SHARC driving our electronic structure: all four comparison rules pass on the 48 paired trajectories <span class="badge badge-pre">Pre-registered</span></li>
+            <li>Our population functions against SHARC's <code>populations.py</code> on 100 SHARC trajectories <span class="badge badge-pre">Pre-registered</span></li>
+            <li>Against SHARC with its own electronic-structure interface: inconclusive, 13 paired <span class="badge badge-report">Report</span></li>
+          </ul>
+          <p class="card-link"><a href="https://github.com/AdemirCamargo57/gqteaSHMD/blob/main/USER_MANUAL.md#817-sharc-ensemble-comparison-p9b">Manual</a></p>
+        </article>
+        <article class="card">
+          <h3>The analysis</h3>
+          <ul class="result-list">
+            <li>The censored estimator is unbiased and its intervals cover on a synthetic Markov model <span class="badge badge-test">Test</span></li>
+            <li>The least biased of three estimators under artificial random losses, which satisfy its assumption by construction <span class="badge badge-pre">Pre-registered</span></li>
+          </ul>
+          <p class="card-link"><a href="https://github.com/AdemirCamargo57/gqteaSHMD/blob/main/USER_MANUAL.md#819-the-censored-analysis-and-the-hop-step-energy-check-measurements">Manual</a></p>
+        </article>
+      </div>
+
+      <aside id="limits" class="limits" aria-labelledby="limits-title">
+        <h3 id="limits-title">Known limitations</h3>
+        <ul>
+          <li>Closed-shell singlets only: no triplets or spin-orbit coupling from PySCF (they exist only for the analytic and LVC models of <code>model-dynamics</code>). Linux only, on one workstation, without a batch scheduler.</li>
+          <li>33 of the 100 ethylene trajectories end early after a hop, when the CASSCF calculation switches to another solution.</li>
+          <li>The lifetime is uncertain: the censored estimate is 62 fs and the complete-trajectory estimate 80 fs. The measured back-hop rates on these data argue against the censored estimator's assumption, so its shorter lifetime is not shown to be unbiased, and which value is closer to the truth is not known.</li>
+          <li>The comparison with SHARC's own electronic-structure interface is inconclusive; a replayed trajectory disagrees with SHARC after its hop under the default hop energy rule (with <code>hop_energy = "previous"</code> it agrees over the 20 steps after the hop); the lifetime fit has not been compared with SHARC's <code>make_fit.py</code>.</li>
+          <li>No plots: the results come as CSV, HDF5, JSON and Markdown files.</li>
+        </ul>
+        <p>The full list is in the <a href="https://github.com/AdemirCamargo57/gqteaSHMD/blob/main/CHANGELOG.md">release notes</a> and the <a href="https://github.com/AdemirCamargo57/gqteaSHMD/blob/main/USER_MANUAL.md#10-known-limitations">manual</a>.</p>
+      </aside>
+    </div>
+  </section>
+
+  <section id="install" class="section section-alt">
+    <div class="wrap install-grid">
+      <div>
+        <h2>Install</h2>
+        <ol class="steps">
+          <li>
+            <h3>Download the release</h3>
+            <p>From the <a href="https://github.com/AdemirCamargo57/gqteaSHMD/releases/latest">latest release</a>, download <code>environment.lock.txt</code> and the wheel, <code>gqteashmd-0.1.0-py3-none-any.whl</code>.</p>
+          </li>
+          <li>
+            <h3>Create the environment</h3>
+            <p>In a Linux shell: <code>conda create -n gqteashmd-0.1.0 --file environment.lock.txt</code>, then <code>conda activate gqteashmd-0.1.0</code>. The lock file gives the exact packages the release was tested with.</p>
+          </li>
+          <li>
+            <h3>Install the program</h3>
+            <p><code>pip install --no-deps gqteashmd-0.1.0-py3-none-any.whl</code>. Check it with <code>gqteashmd --version</code>, which names the version and the commit it was built from.</p>
+          </li>
+          <li>
+            <h3>Run a project</h3>
+            <p><code>gqteashmd init input.toml</code> writes a commented template. Edit it, check it with <code>gqteashmd validate input.toml</code>, then start it with <code>gqteashmd run input.toml</code>.</p>
+          </li>
+        </ol>
+      </div>
+
+      <aside class="requirements" aria-labelledby="req-title">
+        <h3 id="req-title">Requirements</h3>
+        <ul>
+          <li>Linux, 64-bit. Tested on Oracle Linux 9.5 under WSL2.</li>
+          <li>conda (for example Miniforge). PySCF, NumPy, SciPy, h5py, geomeTRIC and pydantic all come from the lock file.</li>
+          <li>On Windows, use WSL2, and keep projects on the Linux filesystem, not under <code>/mnt/c</code> or a OneDrive folder.</li>
+          <li>SHARC 4.1 and ORCA are needed only for the comparison tests, not to run gqteashmd.</li>
+        </ul>
+
+        <details class="source-install">
+          <summary>Install for development instead</summary>
+          <p>From a clone of the repository, in WSL or Linux:</p>
+<pre><code>git clone https://github.com/AdemirCamargo57/gqteaSHMD.git
+cd gqteaSHMD
+conda env create -f environment.yml
+conda activate gqteashmd-dev
+pip install -e . --no-deps</code></pre>
+          <p>Details are in the <a href="https://github.com/AdemirCamargo57/gqteaSHMD/blob/main/USER_MANUAL.md#221-install-for-development">user manual</a>.</p>
+        </details>
+      </aside>
+    </div>
+  </section>
+
+  <section id="docs" class="section">
+    <div class="wrap docs-grid">
+      <div>
+        <h2>Learn to use it</h2>
+        <p>The <a href="https://github.com/AdemirCamargo57/gqteaSHMD/blob/main/USER_MANUAL.md">user manual</a> describes every input key, command, stage and output file, with worked examples on water (optimization, frequencies, sampling, excitations, dynamics) and the ethylene studies of the program's validation. Each method has a section on its formulas and on how it was checked.</p>
+        <p>Found a bug or have a request? <a href="https://github.com/AdemirCamargo57/gqteaSHMD/issues">Open an issue on GitHub</a>.</p>
+      </div>
+      <div>
+        <h2>Who makes it</h2>
+        <p>gqteashmd is developed by the <span lang="pt-BR">Grupo de Química Teórica e Estrutural de Anápolis</span> (gQTEA) at the State University of Goiás (UEG), Brazil, for research and graduate teaching in computational chemistry.</p>
+        <ul class="team">
+          <li>Ademir J. Camargo</li>
+          <li>Valter H. C. Silva</li>
+          <li>Solemar S. Oliveira</li>
+          <li>Hamilton B. Napolitano</li>
+          <li>Luciano Ribeiro</li>
+          <li>Flavio O. Sanches</li>
+        </ul>
+        <p>gqteashmd was written by the gQTEA team with the help of an AI coding assistant (Claude, Anthropic); every result on this page comes from the program's tests and recorded runs.</p>
+        <p>Contact: <a href="mailto:ajc@ueg.br">ajc@ueg.br</a></p>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<footer class="site-footer">
+  <div class="wrap">
+    <p>gqteashmd is free software released under the <a href="https://github.com/AdemirCamargo57/gqteaSHMD/blob/main/LICENSE">MIT License</a>. © 2026 the gqteashmd developers, State University of Goiás.</p>
+  </div>
+</footer>
+
+<script src="app.js"></script>
+</body>
+</html>

@@ -46,6 +46,8 @@ In SHARC 4.1 these steps are separate manual tools: `wigner.py`, `setup_init.py`
 
 The electronic-structure program is **PySCF** **[IMPLEMENTED]**: the `[electronic]` input section (§4.2), the command `gqteashmd single-point` (§5.3) and the stages `optimize`, `frequencies` and `excitations` use it today. The stage `dynamics` (P7b) uses it too, with wavefunction overlaps (every method) or SA-CASSCF nonadiabatic couplings (§8.6.8, §8.16). ORCA, Gaussian and others may be added later.
 
+The program's website, https://ademircamargo57.github.io/gqteaSHMD/, gives an overview, the installation steps of the latest release and how each part was checked; this manual is the reference.
+
 ---
 
 ## 2. Installation
