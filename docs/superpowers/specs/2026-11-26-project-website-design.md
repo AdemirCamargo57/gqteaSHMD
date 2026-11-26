@@ -5,6 +5,8 @@
 
 **Erratum (implementation, 2026-11-26):** the release button points at the latest release page (`rel.html_url`), not at the `.whl` asset as section 2 item 2 says: installing needs two files, the wheel and `environment.lock.txt`, so the button leads to the page that holds both, and the line below it names both (controller ruling during Task 2).
 
+**Erratum (final review, 2026-11-26):** the page states the censored estimator's standing as CHANGELOG 0.1.0 does (the back-hop rates argue against its assumption) and the N = 50 warning as a 90 % coverage result, not as "reliable"; the populations caption gives the tau interval (58 to 110 fs) and names the complete-trajectory rule; the S2 curve uses a darker colour in light mode (`--pop-s2`); the figure script refuses an analysis that is not complete-rule or not fitted to S1 + S2.
+
 ## 0. Owner decisions (2026-11-26, multiple choice)
 
 1. **Model:** the page follows the style and structure of the gqteaWinToga site (https://ademircamargo57.github.io/gqteaWinToga/): one `index.html`, `style.css`, `app.js`, served by GitHub Pages from `docs/` on `main`.
