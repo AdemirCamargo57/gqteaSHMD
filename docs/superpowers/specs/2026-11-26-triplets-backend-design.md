@@ -1,6 +1,28 @@
 # Triplet states in the PySCF backend (triplets and SOC, sub-project 1): design
 
-Status: written 2026-11-26; awaiting owner review. Branch `feat/triplets-backend` (from `main` `478d3f2`).
+Status: written 2026-11-26; owner-approved 2026-11-26. Branch `feat/triplets-backend` (from `main` `478d3f2`). The report is `docs/superpowers/reports/2026-11-26-triplets-backend.md`.
+
+> **Erratum (2026-11-26, after the implementation).** Where the work differs from this spec:
+>
+> - **Plan rulings** (`docs/superpowers/plans/2026-11-26-triplets-backend.md`, binding where they differ):
+>   - **PR1 (section 3.4):** TDA/TDDFT triplets are expanded in their **Ms = 0** component, `sum_ia X_ia (|i->a, alpha> - |i->a, beta>)`, in the singlets' determinant layout, not in Ms = +1. CASSCF triplets keep Ms = +1. The cross blocks are still exactly zero.
+>   - **PR2:** Task 2 accepts `triplets > 0` before the backend supports it and before `dynamics` refuses it; the branch is merged only when complete.
+>   - **PR3 (section 4 item 2):** each FD test compares a fixed set of Cartesian components (three per state for the response tests, two for CASSCF).
+>   - **PR4 (section 4 item 3):** the NAC test system is water CAS(4,4)/STO-3G with 2 singlets and 2 triplets (ethylene has one triplet).
+>   - **PR5 (section 3.4, snapshot):** `save_state` writes format 1, as before, without triplets, and format 2 (format 1 plus `t_alpha`, `t_beta`, `t_coeffs`) with them.
+>   - **PR6 (section 2.3):** the `S^2` column of the `single-point` table appears only with triplets.
+>   - **PR7 (section 2.2):** the `reference` group of `excitations.h5` has no triplet data; `excitations.json` has the reference triplet excitation energies.
+>   - **PR8:** a failing triplet NAC stops the task and the controller rules. **It was triggered.**
+> - **Triplet-triplet NACs are not available (sections 3.2 and 4 item 3; owner decision 7's default "checked by finite differences" is not reachable).** PySCF 2.14's SA-CASSCF NAC code raises an `AssertionError` for a pair of triplets in a mixed-spin state average (it uses `mc.nelecas` for every root). The program refuses such a pair with a `ValueError`, in `casscf_nacs` and at request time in the backend, before any PySCF call. Singlet-singlet NACs stay (FD-checked, below); singlet-triplet NACs are exact zeros. Section 4 item 3 is therefore: the singlet NAC of a state average with a triplet against FD overlaps (1e-4, unchanged), the refusal, and the exact zeros. **Consequence for sub-project 3:** `coupling = "nacdr"` with triplets is not possible unless this is solved; `coupling = "overlap"` works.
+> - **Section 4 item 5:** `SHARC_PYSCF.py` refuses non-singlet states (`NotImplementedError: Not implemented for states other than singlets!`, Task 1), so the SHARC test is a skip with that reason.
+> - **Section 2.3:** a TDA/TDDFT triplet row has no `<S^2>` (`null` in the JSON, `-` in the table); the response solve gives none.
+> - **Decided after numbers were seen** (no spec-fixed bound changed; the report's section 8 has every number):
+>   - the direct-mix test asserts the SA energy at 1e-8 Eh and each state at 1e-6 Eh (the plan had 1e-8 per state; per-state energies scatter across BLAS kernels by up to 2.5e-7 at `conv_tol_grad` 1e-6);
+>   - the resume test of item 4 is one save-and-load chain (two independent backends have different sign frames);
+>   - the CASSCF continuity test of item 4 uses ethylene SA-CASSCF(2,2)/6-31G\* with 2 singlets and 1 triplet (water CAS(4,4)/STO-3G gave 0.983 for the triplet block, and its singlet block drops to 0.977 also without triplets);
+>   - the singlet NAC check uses ethylene 2S+1T (water CAS(4,4) is off by 1.6e-3 1/bohr with triplets and by 2.3e-2 without them);
+>   - the ORCA inputs of item 1 gained `NoFrozenCore` (water) and `etol 1e-10` / `gtol 1e-6` (ethylene CASSCF), so ORCA computes the same method at the same convergence.
+> - **Measured** (asserted): ORCA largest difference 1.07e-8 Eh; FD gradients 8.59e-7 Eh/bohr; the singlet NAC 1.37e-5 1/bohr; triplet-block continuity 0.99304 (TDA) and 0.992663 (CASSCF, a 1x1 block); resumed overlaps 6e-15.
 
 This is the first of three sub-projects that close O7 (triplets and spin-orbit coupling from PySCF): (1) triplet states in the backend, no spin-orbit coupling (this spec); (2) the spin-orbit coupling matrix elements, validated against ORCA; (3) the `dynamics` stage with spin-orbit coupling. Each has its own spec, plan, review and merge.
 

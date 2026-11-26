@@ -5,6 +5,30 @@ Linux only.
 
 ## Unreleased
 
+### Added
+- Triplet states in the PySCF backend, without spin-orbit coupling (triplets and SOC,
+  sub-project 1; USER_MANUAL 4.2, 5.3, 6, 8.6.9; report
+  `docs/superpowers/reports/2026-11-26-triplets-backend.md`):
+  - `[electronic] triplets > 0` is accepted for `casscf`, `tda` and `tddft`. For CASSCF it may
+    not exceed the triplet states of the active space.
+  - SA-CASSCF averages the singlets and triplets with equal weights in one orbital set
+    (`state_average_mix_`); TDA/TDDFT add a separate triplet response solve on the same SCF.
+    Energies, analytic gradients, zero S0 -> T transition dipoles, and wavefunction overlaps
+    that are block-diagonal by multiplicity, with phase tracking and a saved state (format 2
+    with triplets).
+  - `single-point` prints the triplet rows and an `S^2` column, and writes them to its JSON.
+  - `excitations` records the S0 -> T excitation energies (`excitations.h5` `triplet_labels`,
+    `triplet_energies`; `excitations.json` `triplet_labels`, `triplet_states`). The spectrum
+    and the selection stay singlet-only.
+  - `dynamics` refuses `triplets > 0` (exit 2); dynamics with triplets and spin-orbit coupling
+    is planned.
+  - Validated against ORCA 6.1.1 (energies within 1.1e-8 Eh) and finite differences (triplet
+    gradients within 8.6e-7 Eh/bohr). SHARC 4.1's `SHARC_PYSCF.py` refuses triplets, so there
+    is no SHARC comparison.
+  - **Limitation:** nonadiabatic coupling vectors between two triplets are not available
+    (PySCF 2.14 fails on them in a mixed-spin state average) and are refused; singlet-triplet
+    couplings are exactly zero. Use overlaps.
+
 ### Changed
 - `analysis` stage version 4 (USER_MANUAL 8.13, 8.19):
   - With no complete trajectory, the analysis horizon is capped at the last grid time at which
@@ -28,6 +52,12 @@ Linux only.
 ### Upgrade notes
 Every project with `analysis` results needs `--rerun-from analysis` (analysis stage version 4;
 seconds, the trajectories stay). `gqteashmd run` stops with exit 3 until then.
+
+The triplet states need no action for projects with `triplets = 0` (no stage version or
+fingerprint changed). Turning triplets on in an existing project makes it stale: a `casscf`
+project from `optimize` on (the state average, and so S0, changes; `--rerun-from optimize`, or
+`--rerun-from frequencies` without `optimize`), a `tda`/`tddft` project from `excitations` on
+(`--rerun-from excitations`).
 
 ## 0.1.0 - 2026-11-26
 
