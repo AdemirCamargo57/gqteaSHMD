@@ -74,7 +74,7 @@ def test_without_losses_the_censored_default_equals_the_complete_rule(tmp_path, 
     # censored analysis spec 4.1 item 1, on the canned pipeline (every trajectory finishes)
     assert _main(_input(tmp_path, write_input)) == 0
     summary = _analysis(tmp_path)
-    assert summary["estimator"] == "censored" and summary["schema_version"] == 2
+    assert summary["estimator"] == "censored" and summary["schema_version"] == 3
     assert summary["n_censored"] == 0 and summary["n_complete"] == 3
     complete = summary["estimators"]["complete"]["table"]
     assert len(summary["table"]) == len(complete) > 1

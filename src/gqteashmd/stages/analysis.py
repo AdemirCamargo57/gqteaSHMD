@@ -2,13 +2,14 @@
 
 `run_task` reads every selected trajectory's output.h5, applies the two inclusion rules (the
 complete rule of P8 spec section 3 and the censored rule of the censored analysis spec, section
-2.1) on the common grid, computes both estimators with `gqteashmd.analysis` and writes every
-output in its task directory; the estimator in use (`[analysis] estimator`) fills the top-level
-keys and the files, the other one is reported beside it. It raises only for unreadable or
-inconsistent inputs (non-retryable TaskError naming the `--rerun-from` stage). A physics or
-statistics stop is recorded in analysis.json (plan ruling PR6); `finalize` adds the
-excluded-fraction warning, copies the files to the stage directory, writes analysis.json and
-report.md, then raises it.
+2.1) on the common grid (with no complete trajectory the horizon is capped at the last grid
+step at which any trajectory is observed, spec 2026-11-26, 3.1), computes both estimators with
+`gqteashmd.analysis` and writes every output in its task directory; the estimator in use
+(`[analysis] estimator`) fills the top-level keys and the files, the other one is reported
+beside it. It raises only for unreadable or inconsistent inputs (non-retryable TaskError naming
+the `--rerun-from` stage). A physics or statistics stop is recorded in analysis.json (plan
+ruling PR6); `finalize` adds the excluded-fraction warning, copies the files to the stage
+directory, writes analysis.json and report.md, then raises it.
 """
 
 from __future__ import annotations
@@ -55,6 +56,7 @@ FILES = ("populations.h5", "populations.csv", "hops.csv")
 DYNAMICS_ADVICE = "rerun with --rerun-from dynamics"
 TASK = "analysis"
 TABLE_ROWS = 25
+NO_DATA_AFTER_START = "no trajectory is complete and none is observed after t = 0"
 # P9b (spec 6): the smallest of N = 20, 50, 100 whose 95 % tau interval covered the true tau in
 # at least 90 % of 400 synthetic repetitions (tools/validation/tau_coverage.py); fewer included
 # trajectories: warn and `small_ensemble` (ruling P8-5)
@@ -82,8 +84,8 @@ def _task_error(message: str) -> TaskError:
 
 class AnalysisStage(Stage):
     name = "analysis"
-    # 3: the censored estimator (default) beside the complete rule (censored analysis spec)
-    version = 3
+    # 4: the horizon cap without complete trajectories and the hold-in-S0 estimate (spec 2026-11-26)
+    version = 4
     depends_on = ("selection", "dynamics")
     config_sections = ("analysis",)
     required_modules: tuple[str, ...] = ("h5py>=3.9", "scipy>=1.11")
@@ -190,6 +192,10 @@ class AnalysisStage(Stage):
         for t in checked:
             _check_included(t, files[t.task])
         h = grid.horizon_steps(complete, n_total)  # ruling PR7
+        # spec 2026-11-26, 3.1: with no complete trajectory, the last observed grid step
+        horizon_capped = not complete and bool(censor_steps)
+        if horizon_capped:
+            h = max(censor_steps.values())
         jump_censored = {c.task for c in censored if c.reason == "energy_jump"}
         censor_steps = {k: v for k, v in censor_steps.items() if v < h}  # ruling PR5
         censored = [c for c in censored if c.task in censor_steps]
@@ -200,12 +206,23 @@ class AnalysisStage(Stage):
         outcomes = {o.value: int(counts.get(o.value, 0)) for o in TrajectoryOutcome}
         outcomes["task_failed"] = sum(1 for t in trajectories.values() if t is None)
         summary = _base_summary(
-            ctx, section, selected, in_use, excluded, complete, censored, outcomes, dt_out
+            ctx,
+            section,
+            selected,
+            in_use,
+            excluded,
+            complete,
+            censored,
+            outcomes,
+            dt_out,
+            horizon_capped=horizon_capped,
         )
 
         if not in_use:
             error = _nothing_to_analyse(outcomes, excluded, use_censored)
             return _stop(task_dir, summary, error, 0, n_total)
+        if horizon_capped and h == 0:
+            return _stop(task_dir, summary, NO_DATA_AFTER_START, len(in_use), n_total)
 
         deviation, worst = 0.0, checked[0].task
         for t in checked:
@@ -288,11 +305,10 @@ class AnalysisStage(Stage):
                 f"{est_censored.empty_rows}); the censored curve and its fit are not supported "
                 "by data there"
             )
-        if not complete:
-            t_last = float(g_censored.time_fs[g_censored.observed.any(axis=0)].max())
+        if horizon_capped:
             warnings.append(
-                f"no trajectory is complete: the censored curve beyond {t_last:g} fs, the last "
-                "time any trajectory is observed, is held constant"
+                f"no trajectory is complete: the analysis horizon is capped at "
+                f"{g_censored.horizon_fs:g} fs, the last time any trajectory is observed"
             )
 
         # hops, drifts and consistency stay over the complete trajectories (ruling PR4)
@@ -581,12 +597,14 @@ def _base_summary(
     censored: Sequence[censoring.Censored],
     outcomes: Mapping[str, int],
     dt_out: float,
+    *,
+    horizon_capped: bool,
 ) -> dict[str, Any]:
     """Every key of analysis.json; `None` for what is not computed (yet). The top-level
     `n_included`, `included`, `excluded`, `small_ensemble`, `fit` and `table` belong to the
     estimator in use; `estimators` holds both (ruling PR4)."""
     return {
-        "schema_version": 2,
+        "schema_version": 3,
         "estimator": section.estimator,
         "n_selected": len(selected),
         "n_included": len(in_use),
@@ -615,6 +633,7 @@ def _base_summary(
         ],
         "cut": None,
         "horizon_fs": None,
+        "horizon_capped": horizon_capped,
         "dt_out_fs": dt_out,
         "fit": None,
         "estimators": None,

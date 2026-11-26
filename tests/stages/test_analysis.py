@@ -471,7 +471,7 @@ def test_enabled_needs_a_dynamics_table(tmp_path, write_input):
 
 def test_stage_attributes():
     stage = AnalysisStage()
-    assert stage.name == "analysis" and stage.version == 3
+    assert stage.name == "analysis" and stage.version == 4
     assert stage.depends_on == ("selection", "dynamics")
     assert stage.config_sections == ("analysis",)
     assert stage.required_modules == ("h5py>=3.9", "scipy>=1.11")
@@ -562,7 +562,7 @@ def test_censored_estimator_uses_a_lost_trajectory_up_to_its_end(tmp_path, write
     ctx = _context(tmp_path, write_input, trajs, estimator="censored")
     run_stage(ctx)
     data = _analysis(ctx)
-    assert data["schema_version"] == 2 and data["estimator"] == "censored"
+    assert data["schema_version"] == 3 and data["estimator"] == "censored"
     assert data["n_complete"] == 2 and data["n_censored"] == 1 and data["n_included"] == 3
     assert data["censored"] == [
         {
@@ -654,37 +654,55 @@ def test_a_trajectory_lost_after_the_horizon_counts_as_complete(tmp_path, write_
     assert data["estimators"]["complete"]["n"] == 1
 
 
-def test_without_a_complete_trajectory_the_censored_estimator_still_runs(tmp_path, write_input):
-    # no finished trajectory: the horizon is tmax (grid.horizon_steps), the complete block is
-    # null and the files carry no complete_ columns (ruling PR6)
+def test_without_a_complete_trajectory_the_horizon_is_capped(tmp_path, write_input):
+    # no finished trajectory: the horizon is the last observed grid step, 1.5 fs (traj_00001,
+    # energy_drift, records up to grid step 3), not tmax; traj_00001 is then observed through
+    # the horizon and counts as complete there (ruling PR5); the complete block stays null
     trajs = [("overlap_failure", [1, 0, 0], {}), ("energy_drift", [1, 1, 1, 1], {})]
     ctx = _context(tmp_path, write_input, trajs, estimator="censored")
     run_stage(ctx)
     data = _analysis(ctx)
-    assert data["horizon_fs"] == pytest.approx(2.0)
-    assert data["n_complete"] == 0 and data["n_censored"] == 2 and data["n_included"] == 2
+    assert data["horizon_fs"] == pytest.approx(1.5) and data["horizon_capped"] is True
+    assert data["n_complete"] == 0 and data["n_censored"] == 1 and data["n_included"] == 2
     assert data["estimators"]["complete"] is None and data["consistency"] is None
-    assert data["estimators"]["censored"]["empty_rows"] > 0  # nobody at risk at the end
     assert data["hops"]["pairs"] == {}
     with h5py.File(ctx.stage_dir / "populations.h5", "r") as f:
         assert not any(name.startswith("complete_") for name in f)
         assert f.attrs["estimator"] == "censored" and f.attrs["n_complete"] == 0
+        assert f["time_fs"][()][-1] == pytest.approx(1.5)
     assert "complete_P_S0" not in (ctx.stage_dir / "populations.csv").read_text()
-    # final review I2: the held probabilities and the held tail are named (ruling F1)
+    assert CAPPED_WARNING.format(t="1.5") in data["warnings"]
+    assert not any("is held constant" in w for w in data["warnings"])
+    # traj_00000 is in S0 at its censoring step (1.0 fs) and nobody is at risk in S0 after it
     n_empty = data["estimators"]["censored"]["empty_rows"]
-    assert EMPTY_ROWS_WARNING.format(n=n_empty) in data["warnings"]
-    # traj_00001 (energy_drift) is observed up to its last record, grid step 3 = 1.5 fs
-    assert NO_COMPLETE_WARNING.format(t="1.5") in data["warnings"]
-    assert f"- empty_rows: {n_empty}\n" in (ctx.stage_dir / "report.md").read_text()
+    assert n_empty == 1 and EMPTY_ROWS_WARNING.format(n=n_empty) in data["warnings"]
 
 
+def test_a_cap_at_zero_stops_the_stage(tmp_path, write_input):
+    trajs = [("overlap_failure", [1], {}), ("energy_drift", [1], {})]
+    ctx = _context(tmp_path, write_input, trajs, estimator="censored")
+    with pytest.raises(StageFailedError, match="none is observed after t = 0"):
+        run_stage(ctx)
+    data = _analysis(ctx)
+    assert data["stage_failed"] is True and data["horizon_capped"] is True
+    assert data["error"] == analysis_module.NO_DATA_AFTER_START
+
+
+def test_with_a_complete_trajectory_the_horizon_is_not_capped(tmp_path, write_input):
+    trajs = [(FIN, [1, 1, 1, 1, 1], {}), ("overlap_failure", [1, 0, 0], {})]
+    ctx = _context(tmp_path, write_input, trajs, estimator="censored")
+    run_stage(ctx)
+    data = _analysis(ctx)
+    assert data["horizon_capped"] is False and data["horizon_fs"] == pytest.approx(2.0)
+
+
+CAPPED_WARNING = (
+    "no trajectory is complete: the analysis horizon is capped at {t} fs, the last time any "
+    "trajectory is observed"
+)
 EMPTY_ROWS_WARNING = (
     "the censored estimator held {n} state probabilities over intervals with no trajectory at "
     "risk (empty_rows = {n}); the censored curve and its fit are not supported by data there"
-)
-NO_COMPLETE_WARNING = (
-    "no trajectory is complete: the censored curve beyond {t} fs, the last time any trajectory "
-    "is observed, is held constant"
 )
 
 
