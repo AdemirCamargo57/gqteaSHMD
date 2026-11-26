@@ -39,7 +39,7 @@ def _hessian():
 
 class FakeBackend:
     def __init__(self, settings, fail_on=(), retryable_on=(), bad=None):
-        self.states = states_from_counts(settings.singlets)
+        self.states = states_from_counts(settings.singlets, settings.triplets)
         self.log = []
         self.fail_on = fail_on
         self.retryable_on = retryable_on
@@ -56,7 +56,11 @@ class FakeBackend:
         if x0 in self.retryable_on:
             raise ElectronicStructureError("disk full", retryable=True)
         energies = {s: -75.0 + 0.2 * i + 0.01 * i * x0 for i, s in enumerate(self.states)}
-        mu = {s: np.array([0.1 * i, 0.0, 0.05]) for i, s in enumerate(self.states) if i > 0}
+        mu = {
+            s: (np.array([0.1 * i, 0.0, 0.05]) if s.multiplicity == 1 else np.zeros(3))
+            for i, s in enumerate(self.states)
+            if i > 0
+        }
         kind = self.bad.get(x0)
         if kind == "below_s0":
             energies[self.states[2]] = -75.1
@@ -352,3 +356,59 @@ def test_undersized_samples_file_is_a_non_retryable_task_error(tmp_path, write_i
         stage.run_task(bigger, task, task_dir)
     assert info.value.retryable is False and "--rerun-from sampling" in str(info.value)
     assert fake["backends"] == []  # nothing was computed
+
+
+TRIPLET = "triplets = 1\n"
+
+
+def _finalized(ctx, write=True):
+    stage, results = _run(ctx)
+    stage.finalize(ctx, results)
+    return results
+
+
+def test_triplets_are_recorded_and_leave_the_singlets_alone(tmp_path, write_input, fake):
+    plain = _context(tmp_path / "plain", write_input)
+    _finalized(plain)
+    trip = _context(tmp_path / "trip", write_input, electronic=TRIPLET)
+    results = _finalized(trip)
+    assert results["ref"]["samples"][0]["triplet_energies_hartree"]
+    with (
+        h5py.File(plain.stage_dir / "excitations.h5", "r") as a,
+        h5py.File(trip.stage_dir / "excitations.h5", "r") as b,
+    ):
+        assert "triplet_energies" not in a and "triplet_labels" not in a
+        assert b["triplet_energies"].shape == (5, 1)
+        assert b["triplet_energies"].attrs["units"] == "eV"
+        assert (
+            np.isfinite(b["triplet_energies"][()]).all() and (b["triplet_energies"][()] > 0).all()
+        )
+        assert [x.decode() for x in b["triplet_labels"][()]] == ["T1"]
+        assert "triplet_energies" not in b["reference"]
+        for name in ("energies", "oscillator_strengths", "transition_dipoles"):
+            np.testing.assert_allclose(a[name][()], b[name][()], atol=1e-10)
+    text = (plain.stage_dir / "spectrum.csv").read_text()
+    assert text == (trip.stage_dir / "spectrum.csv").read_text()
+    sa = json.loads((plain.stage_dir / "excitations.json").read_text())
+    sb = json.loads((trip.stage_dir / "excitations.json").read_text())
+    assert "triplet_states" not in sa and "triplet_labels" not in sa
+    assert sb["triplet_labels"] == ["T1"]
+    t1 = sb["triplet_states"]["T1"]
+    assert t1["mean_excitation_eV"] > 0 and t1["reference_excitation_eV"] > 0
+    assert sb["state_labels"] == sa["state_labels"]
+
+
+def test_a_triplet_below_s0_fails_the_sample(tmp_path, write_input, fake, monkeypatch):
+    ctx = _context(tmp_path, write_input, electronic=TRIPLET)
+    original = FakeBackend.compute
+
+    def low_triplet(self, request):
+        result = original(self, request)
+        t1 = next(s for s in result.states if s.multiplicity == 3)
+        result.energies[t1] = -80.0
+        return result
+
+    monkeypatch.setattr(FakeBackend, "compute", low_triplet)
+    _, results = _run(ctx)
+    rows = results["s00001"]["samples"] if "s00001" in results else []
+    assert rows and all(not r["ok"] and "T1 is not positive" in r["error"] for r in rows)

@@ -265,3 +265,12 @@ def test_hop_energy_reaches_the_options_and_the_fingerprint_only_when_set(tmp_pa
     fp_previous = _stage().fingerprint_inputs(previous)["dynamics"]
     assert fp_previous["hop_energy"] == "previous"
     assert {k: v for k, v in fp_previous.items() if k != "hop_energy"} == fp_default
+
+
+def test_triplets_are_refused(tmp_path, write_input):
+    ctx = _context(tmp_path, write_input)
+    two = ctx.config.electronic.model_copy(update={"triplets": 1})
+    assert _stage().check_config(ctx.config.model_copy(update={"electronic": two})) == [
+        "Stage 'dynamics' with [electronic] triplets > 0 is planned (spin-orbit coupling, "
+        "sub-project 3); set [electronic] triplets = 0"
+    ]

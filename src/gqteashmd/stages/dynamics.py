@@ -115,12 +115,18 @@ class DynamicsStage(Stage):
         return config.dynamics is not None  # plan ruling R1
 
     def check_config(self, config: ShmdConfig) -> list[str]:
+        problems: list[str] = []
         if config.electronic is not None and config.electronic.singlets < 2:
-            return [
+            problems.append(
                 "Stage 'dynamics' needs [electronic] singlets >= 2 (S0 and at least one "
                 "excited state)"
-            ]
-        return []
+            )
+        if config.electronic is not None and config.electronic.triplets > 0:
+            problems.append(
+                "Stage 'dynamics' with [electronic] triplets > 0 is planned (spin-orbit "
+                "coupling, sub-project 3); set [electronic] triplets = 0"
+            )
+        return problems
 
     def fingerprint_inputs(self, ctx: StageContext) -> dict[str, Any]:
         assert ctx.config.dynamics is not None and ctx.config.electronic is not None

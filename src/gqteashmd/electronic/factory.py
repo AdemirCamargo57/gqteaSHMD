@@ -14,10 +14,10 @@ from gqteashmd.errors import ConfigError
 
 def ground_state_settings(settings: ElectronicSection) -> ElectronicSection:
     """S0 only. SCF methods need no excited states for S0. SA-CASSCF keeps its state average,
-    which defines the S0 surface."""
+    which defines the S0 surface. SCF methods drop the triplets too."""
     if settings.method == "casscf":
         return settings
-    return settings.model_copy(update={"singlets": 1})
+    return settings.model_copy(update={"singlets": 1, "triplets": 0})
 
 
 # The CASSCF start rule (fresh solves start from a reference solution). It is part of every

@@ -77,6 +77,33 @@ def test_round_trip_with_failed_sample_and_reference(tmp_path):
     assert sorted(p.name for p in tmp_path.iterdir()) == ["excitations.h5"]
 
 
+def test_round_trip_with_triplets(tmp_path):
+    e, mu, f, ok = _data()
+    t = np.array([[3.0], [np.nan], [3.5]])
+    path = tmp_path / "excitations.h5"
+    write_excitations_h5(
+        path,
+        symbols=("O", "H"),
+        state_labels=LABELS,
+        sample_indices=np.array([1, 2, 3]),
+        ok=ok,
+        energies_hartree=e,
+        transition_dipoles_au=mu,
+        oscillator_strengths=f,
+        triplet_labels=("T1",),
+        triplet_energies_eV=t,
+    )
+    d = read_excitations_h5(path)
+    assert d["triplet_labels"] == ("T1",)
+    np.testing.assert_allclose(d["triplet_energies_eV"], t)
+    with h5py.File(path, "r") as h:
+        assert h["triplet_energies"].attrs["units"] == "eV"
+    plain = tmp_path / "plain.h5"
+    _write(plain)
+    d = read_excitations_h5(plain)
+    assert d["triplet_labels"] == () and d["triplet_energies_eV"] is None
+
+
 def test_reference_absent(tmp_path):
     path = tmp_path / "excitations.h5"
     _write(path)
