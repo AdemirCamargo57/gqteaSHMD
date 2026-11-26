@@ -2,6 +2,7 @@
 
 import json
 import logging
+import types
 
 import h5py
 import numpy as np
@@ -694,6 +695,52 @@ def test_with_a_complete_trajectory_the_horizon_is_not_capped(tmp_path, write_in
     run_stage(ctx)
     data = _analysis(ctx)
     assert data["horizon_capped"] is False and data["horizon_fs"] == pytest.approx(2.0)
+
+
+def test_the_capped_horizon_never_exceeds_tmax(tmp_path, write_input):
+    # final review I1: tmax_fs = 2.0 (n_total 4), e.g. after lowering it; both lost
+    # trajectories have records beyond it (grid steps 6 and 5), so the cap is clamped to
+    # n_total and both are observed through the horizon, i.e. complete there (ruling PR5)
+    trajs = [("overlap_failure", [1, 1, 1, 1, 1, 1, 0], {}), ("energy_drift", [1] * 6, {})]
+    ctx = _context(tmp_path, write_input, trajs, estimator="censored")
+    run_stage(ctx)
+    data = _analysis(ctx)
+    assert data["horizon_fs"] == pytest.approx(2.0) and data["horizon_capped"] is True
+    assert data["n_censored"] == 0 and data["censored"] == [] and data["n_included"] == 2
+    assert CAPPED_WARNING.format(t="2") in data["warnings"]
+
+
+def _estimate(tau_fs):
+    return types.SimpleNamespace(
+        fit=types.SimpleNamespace(fit=types.SimpleNamespace(tau_fs=tau_fs))
+    )
+
+
+def test_tau_range_takes_the_extremes_of_the_fitted_estimators():
+    blocks = {
+        "complete": _estimate(80.0),
+        "censored": _estimate(62.5),
+        "hold_in_s0": _estimate(70.0),
+        "other": _estimate(None),  # not fitted: ignored
+    }
+    assert analysis_module._tau_range(blocks) == {
+        "min": 62.5,
+        "max": 80.0,
+        "min_estimator": "censored",
+        "max_estimator": "complete",
+    }
+
+
+@pytest.mark.parametrize(
+    "blocks",
+    [
+        {},
+        {"censored": _estimate(62.5)},
+        {"complete": None, "censored": _estimate(62.5), "hold_in_s0": _estimate(None)},
+    ],
+)
+def test_tau_range_needs_two_fitted_estimators(blocks):
+    assert analysis_module._tau_range(blocks) is None
 
 
 CAPPED_WARNING = (

@@ -193,10 +193,11 @@ class AnalysisStage(Stage):
         for t in checked:
             _check_included(t, files[t.task])
         h = grid.horizon_steps(complete, n_total)  # ruling PR7
-        # spec 2026-11-26, 3.1: with no complete trajectory, the last observed grid step
+        # spec 2026-11-26, 3.1: with no complete trajectory, the last observed grid step,
+        # never beyond n_total (final review I1: records past a lowered tmax_fs)
         horizon_capped = not complete and bool(censor_steps)
         if horizon_capped:
-            h = max(censor_steps.values())
+            h = min(n_total, max(censor_steps.values()))
         jump_censored = {c.task for c in censored if c.reason == "energy_jump"}
         censor_steps = {k: v for k, v in censor_steps.items() if v < h}  # ruling PR5
         censored = [c for c in censored if c.task in censor_steps]
