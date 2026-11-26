@@ -5,13 +5,13 @@ from __future__ import annotations
 import os
 import platform
 import socket
-import subprocess
 from datetime import UTC, datetime
 from importlib import metadata
 from pathlib import Path
 from typing import Any
 
 from gqteashmd import __version__
+from gqteashmd.build_info import commit_info
 from gqteashmd.util.fileio import read_json, write_json_atomic
 
 PACKAGES = ("pydantic", "numpy", "scipy", "h5py", "pyscf", "geometric")
@@ -22,19 +22,6 @@ def _package_version(name: str) -> str | None:
         return metadata.version(name)
     except metadata.PackageNotFoundError:
         return None
-
-
-def _git(*args: str) -> str | None:
-    repo = Path(__file__).resolve().parents[3]
-    if not (repo / ".git").exists():
-        return None
-    try:
-        out = subprocess.run(
-            ["git", "-C", str(repo), *args], capture_output=True, text=True, timeout=5, check=True
-        )
-    except (OSError, subprocess.SubprocessError):
-        return None
-    return out.stdout.strip()
 
 
 def _cpu_model() -> str | None:
@@ -48,13 +35,14 @@ def _cpu_model() -> str | None:
 
 
 def collect_provenance() -> dict[str, Any]:
-    commit = _git("rev-parse", "HEAD")
-    status = _git("status", "--porcelain") if commit else None
+    info = commit_info()
     return {
         "started_at": datetime.now(UTC).isoformat(timespec="seconds"),
         "gqteashmd": __version__,
-        "git_commit": commit or None,
-        "git_dirty": (bool(status) if status is not None else None),
+        "git_commit": info.commit,
+        "git_dirty": info.dirty,
+        "commit_source": info.source,
+        "build_time": info.build_time,
         "python": platform.python_version(),
         "platform": platform.platform(),
         "hostname": socket.gethostname(),

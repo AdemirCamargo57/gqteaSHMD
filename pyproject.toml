@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "gqteashmd"
-version = "0.1.0.dev0"
+dynamic = ["version"]
 description = "Automated surface-hopping molecular dynamics workflow (PySCF backend)"
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -19,6 +19,12 @@ gqteashmd = "gqteashmd.cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/gqteashmd"]
+
+[tool.hatch.build.targets.wheel.hooks.custom]
+# hatch_build.py: the build stamp gqteashmd/_build.py (release spec 2.2)
+
+[tool.hatch.version]
+path = "src/gqteashmd/__init__.py"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

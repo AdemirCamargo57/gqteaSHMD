@@ -9,13 +9,14 @@ import signal
 import sys
 import threading
 import time
+from collections.abc import Sequence
 from contextlib import ExitStack
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 
-from gqteashmd import __version__
+from gqteashmd import build_info
 from gqteashmd.chem.xyz import parse_xyz
 from gqteashmd.config.loader import load_config
 from gqteashmd.config.model_dynamics import LvcDynamicsInput, load_model_dynamics
@@ -479,9 +480,34 @@ def _run_lvc_dynamics(args: argparse.Namespace, cfg: LvcDynamicsInput) -> int:
     return 0
 
 
+class _VersionAction(argparse.Action):
+    """`--version`: the version and the commit, looked up only when the option is given."""
+
+    def __init__(
+        self,
+        option_strings: list[str],
+        dest: str = argparse.SUPPRESS,
+        default: str = argparse.SUPPRESS,
+        help: str | None = "show the version and the commit, then exit",
+    ) -> None:
+        super().__init__(
+            option_strings=option_strings, dest=dest, default=default, nargs=0, help=help
+        )
+
+    def __call__(
+        self,
+        parser: argparse.ArgumentParser,
+        namespace: argparse.Namespace,
+        values: str | Sequence[Any] | None,
+        option_string: str | None = None,
+    ) -> None:
+        print(build_info.version_text())
+        parser.exit()
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="gqteashmd", description="Surface-hopping MD workflow")
-    parser.add_argument("--version", action="version", version=f"gqteashmd {__version__}")
+    parser.add_argument("--version", action=_VersionAction)
     sub = parser.add_subparsers(dest="command", required=True)
 
     p_init = sub.add_parser("init", help="write a commented template input file")

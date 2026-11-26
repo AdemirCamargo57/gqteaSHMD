@@ -9,6 +9,8 @@ dependencies:
   - ruff=0.17.4  # same version as the pre-commit hook
   - mypy=1.*
   - pre-commit>=3
+  # build backend: the release wheel is built without build isolation (release spec 2.2)
+  - hatchling>=1.24
   # needed from P3 on; installed now so the environment does not change shape later
   - pyscf=2.14.*
   - numpy

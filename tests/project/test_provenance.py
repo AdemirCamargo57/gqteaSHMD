@@ -1,5 +1,7 @@
 import json
 import subprocess
+import sys
+import types
 
 import pytest
 
@@ -21,6 +23,8 @@ def test_collect_provenance_has_the_documented_keys():
         "gqteashmd",
         "git_commit",
         "git_dirty",
+        "commit_source",
+        "build_time",
         "python",
         "platform",
         "hostname",
@@ -66,8 +70,35 @@ def test_missing_git_gives_null_commit(monkeypatch):
         raise FileNotFoundError("git")
 
     monkeypatch.setattr(subprocess, "run", no_git)
+    monkeypatch.setitem(sys.modules, "gqteashmd._build", None)
     entry = collect_provenance()
     assert entry["git_commit"] is None and entry["git_dirty"] is None
+    assert entry["commit_source"] is None and entry["build_time"] is None
+
+
+def test_provenance_takes_the_build_stamp_without_a_checkout(monkeypatch, tmp_path):
+    from gqteashmd import build_info
+
+    stamp = types.ModuleType("gqteashmd._build")
+    stamp.COMMIT, stamp.DIRTY, stamp.BUILD_TIME = "d" * 40, False, "2026-11-25T10:00:00+00:00"
+    monkeypatch.setattr(build_info, "_checkout_root", lambda: tmp_path)
+    monkeypatch.setitem(sys.modules, "gqteashmd._build", stamp)
+    entry = collect_provenance()
+    assert (entry["git_commit"], entry["git_dirty"]) == ("d" * 40, False)
+    assert entry["commit_source"] == "build"
+    assert entry["build_time"] == "2026-11-25T10:00:00+00:00"
+
+
+def test_provenance_from_a_live_checkout_has_no_build_time(monkeypatch):
+    from gqteashmd import build_info
+    from gqteashmd.build_info import CommitInfo
+
+    monkeypatch.setattr(
+        build_info, "_live_checkout", lambda: CommitInfo("e" * 40, True, "git", None)
+    )
+    entry = collect_provenance()
+    assert (entry["git_commit"], entry["git_dirty"]) == ("e" * 40, True)
+    assert entry["commit_source"] == "git" and entry["build_time"] is None
 
 
 def test_provenance_records_the_cpu_model():

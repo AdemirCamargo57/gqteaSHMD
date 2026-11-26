@@ -1,0 +1,32 @@
+# Clean-install check of a release (tools/release/clean_install_check.sh; release spec 5.1).
+# Water CIS/STO-3G at the size of tests/test_e2e_dynamics.py, through the analysis.
+[project]
+name = "release-check"
+directory = "run"
+
+[molecule]
+geometry = "water.xyz"
+
+[resources]
+total_cores = 4
+total_memory_mb = 4000
+
+[electronic]
+method = "tda"
+basis = "sto-3g"
+functional = "hf"
+singlets = 3
+
+[sampling]
+n_samples = 4
+
+[excitations]
+samples_per_task = 2
+
+[selection]
+n_trajectories = 2
+allow_fewer = true
+
+[dynamics]
+tmax_fs = 1.0
+dt_fs = 0.25

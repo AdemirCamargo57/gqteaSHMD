@@ -10,3 +10,6 @@ dist/
 # gqteashmd project runs must never live in the repository
 .gqteashmd/
 run/
+
+# the build stamp exists only inside wheels (hatch_build.py); never in the source tree
+src/gqteashmd/_build.py
