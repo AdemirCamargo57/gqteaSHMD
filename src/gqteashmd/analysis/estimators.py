@@ -1,12 +1,15 @@
-"""The populations, intervals and fit of each estimator (censored analysis spec, section 2).
+"""The populations, intervals and fit of the three estimators (censored analysis spec, section 2).
 
 `complete_estimate` is the P8 arithmetic unchanged (the stage's numbers before this
 sub-project); `censored_estimate` is the Aalen-Johansen curve with bootstrap intervals and the
-fit to its excited-state sum. The caller passes the random generator (seed rule D12).
+fit to its excited-state sum; `hold_in_s0_estimate` (reported only, spec 2026-11-26, 3.2) is
+the complete arithmetic on the grid with the lost trajectories held in S0. The caller passes the
+random generator (seed rule D12).
 """
 
 from __future__ import annotations
 
+import dataclasses
 from collections.abc import Sequence
 from dataclasses import dataclass
 
@@ -49,6 +52,7 @@ def complete_estimate(
     rng: np.random.Generator,
     n_bootstrap: int,
     dt_out: float,
+    name: str = "complete",
 ) -> Estimate:
     n = int(g.active.shape[0])
     n_states = int(g.populations.shape[-1])
@@ -63,7 +67,41 @@ def complete_estimate(
         per = g.populations[:, :, list(fit_index)].sum(axis=-1)
     fit = kinetics.bootstrap_fit(g.time_fs, per, idx, dt_out=dt_out)
     return Estimate(
-        "complete", n, p_classical, p_lo, p_hi, rho, rho_lo, rho_hi, per.mean(axis=0), fit, None
+        name, n, p_classical, p_lo, p_hi, rho, rho_lo, rho_hi, per.mean(axis=0), fit, None
+    )
+
+
+def hold_in_s0_grid(g: GridData) -> GridData:
+    """The held grid of spec 2026-11-26, 3.2: from its censoring step on, a censored trajectory
+    is in S0 (classical) with populations (1, 0, ...) (quantum)."""
+    observed = np.asarray(g.observed, dtype=bool)
+    ground = np.zeros(g.populations.shape[-1])
+    ground[0] = 1.0
+    return dataclasses.replace(
+        g,
+        active=np.where(observed, g.active, 0),
+        populations=np.where(observed[..., None], g.populations, ground),
+        observed=np.ones_like(observed),
+    )
+
+
+def hold_in_s0_estimate(
+    g: GridData,
+    fit_index: Sequence[int],
+    *,
+    fit_population: str,
+    rng: np.random.Generator,
+    n_bootstrap: int,
+    dt_out: float,
+) -> Estimate:
+    return complete_estimate(
+        hold_in_s0_grid(g),
+        fit_index,
+        fit_population=fit_population,
+        rng=rng,
+        n_bootstrap=n_bootstrap,
+        dt_out=dt_out,
+        name="hold_in_s0",
     )
 
 

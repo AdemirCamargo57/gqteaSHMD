@@ -52,6 +52,7 @@ from gqteashmd.util.seeds import task_rng
 
 log = logging.getLogger("gqteashmd.stages.analysis")
 NORM_TOLERANCE = 1e-6
+HOLD_RULE = "lost trajectories held in S0 from their censoring step"
 FILES = ("populations.h5", "populations.csv", "hops.csv")
 DYNAMICS_ADVICE = "rerun with --rerun-from dynamics"
 TASK = "analysis"
@@ -272,6 +273,19 @@ class AnalysisStage(Stage):
             n_bootstrap=section.n_bootstrap,
             dt_out=dt_out,
         )
+        # spec 2026-11-26, 3.2: reported only; stream 2, so streams 0 and 1 are unchanged
+        est_hold = (
+            estimators.hold_in_s0_estimate(
+                g_censored,
+                fit_index,
+                fit_population=section.fit_population,
+                rng=task_rng(seed, "analysis", 2),
+                n_bootstrap=section.n_bootstrap,
+                dt_out=dt_out,
+            )
+            if censor_steps
+            else None
+        )
         est = est_censored if use_censored else est_complete
         assert est is not None  # `in_use` is not empty
         g = g_censored if use_censored else g_complete
@@ -296,8 +310,8 @@ class AnalysisStage(Stage):
                 f"fit: bootstrap_failures ({fitu.bootstrap_failures} of {section.n_bootstrap} "
                 "bootstrap resamples gave no fit and are left out of the intervals)"
             )
-        # final review I2, ruling F1: name the identity rows that carry probability and, with
-        # no complete trajectory, the held tail; the horizon and the fit are left as they are
+        # final review I2, ruling F1: name the identity rows that carry probability; then,
+        # with no complete trajectory, the capped horizon
         if est_censored.empty_rows:
             warnings.append(
                 f"the censored estimator held {est_censored.empty_rows} state probabilities over "
@@ -359,7 +373,15 @@ class AnalysisStage(Stage):
                     "censored": _estimate_summary(
                         est_censored, g_censored, labels, fit_states, "classical"
                     ),
+                    "hold_in_s0": None
+                    if est_hold is None
+                    else _estimate_summary(
+                        est_hold, g_censored, labels, fit_states, section.fit_population
+                    ),
                 },
+                "tau_range_fs": _tau_range(
+                    {"complete": est_complete, "censored": est_censored, "hold_in_s0": est_hold}
+                ),
                 "hops": hop_stats,
                 "energy": {
                     "drift_eV": energy.summary_eV(drifts),
@@ -383,7 +405,9 @@ class AnalysisStage(Stage):
             "fit_target": est.target,
             "fit_curve": curve,
         }
-        extra, extra_blocks = _other_estimator(est_complete if use_censored else est_censored)
+        extra, extra_blocks = _extra_curves(
+            est_complete if use_censored else est_censored, est_hold
+        )
         artifacts.write_populations_h5(
             task_dir / "populations.h5",
             **arrays,
@@ -637,6 +661,7 @@ def _base_summary(
         "dt_out_fs": dt_out,
         "fit": None,
         "estimators": None,
+        "tau_range_fs": None,
         "hops": None,
         "energy": None,
         "consistency": None,
@@ -687,30 +712,49 @@ def _estimate_summary(
     if est.name == "censored":
         out["empty_rows"] = est.empty_rows
         out["quantum_rule"] = "at_risk_average"
+    if est.name == "hold_in_s0":
+        out["rule"] = HOLD_RULE
     return out
 
 
-def _other_estimator(
-    other: estimators.Estimate | None,
+def _extra_curves(
+    *others: estimators.Estimate | None,
 ) -> tuple[dict[str, np.ndarray], list[tuple[str, np.ndarray, np.ndarray, np.ndarray]]]:
-    """The other estimator's curves for the files, under its name as prefix (ruling PR6);
-    nothing when it has no trajectory."""
-    if other is None:
-        return {}, []
-    prefix = other.name  # "complete" or "censored"
-    extra = {
-        f"{prefix}_classical": other.classical,
-        f"{prefix}_classical_lower": other.classical_lower,
-        f"{prefix}_classical_upper": other.classical_upper,
-        f"{prefix}_quantum": other.quantum,
-        f"{prefix}_quantum_lower": other.quantum_lower,
-        f"{prefix}_quantum_upper": other.quantum_upper,
-    }
-    extra_blocks = [
-        (f"{prefix}_P", other.classical, other.classical_lower, other.classical_upper),
-        (f"{prefix}_rho", other.quantum, other.quantum_lower, other.quantum_upper),
-    ]
+    """The curves of the estimators not in use, under their names as prefix (ruling PR6; spec
+    2026-11-26, 3.3); nothing for an estimator without trajectories."""
+    extra: dict[str, np.ndarray] = {}
+    extra_blocks: list[tuple[str, np.ndarray, np.ndarray, np.ndarray]] = []
+    for other in others:
+        if other is None:
+            continue
+        prefix = other.name  # "complete", "censored" or "hold_in_s0"
+        extra |= {
+            f"{prefix}_classical": other.classical,
+            f"{prefix}_classical_lower": other.classical_lower,
+            f"{prefix}_classical_upper": other.classical_upper,
+            f"{prefix}_quantum": other.quantum,
+            f"{prefix}_quantum_lower": other.quantum_lower,
+            f"{prefix}_quantum_upper": other.quantum_upper,
+        }
+        extra_blocks += [
+            (f"{prefix}_P", other.classical, other.classical_lower, other.classical_upper),
+            (f"{prefix}_rho", other.quantum, other.quantum_lower, other.quantum_upper),
+        ]
     return extra, extra_blocks
+
+
+def _tau_range(blocks: Mapping[str, estimators.Estimate | None]) -> dict[str, Any] | None:
+    """Spec 2026-11-26, 3.3: over the estimators that exist and have a fitted tau."""
+    taus = [
+        (name, float(e.fit.fit.tau_fs))
+        for name, e in blocks.items()
+        if e is not None and e.fit.fit.tau_fs is not None
+    ]
+    if len(taus) < 2:
+        return None
+    low = min(taus, key=lambda x: x[1])
+    high = max(taus, key=lambda x: x[1])
+    return {"min": low[1], "max": high[1], "min_estimator": low[0], "max_estimator": high[0]}
 
 
 def _stop(

@@ -572,7 +572,7 @@ def test_censored_estimator_uses_a_lost_trajectory_up_to_its_end(tmp_path, write
             "censored_at_fs": 1.0,
         }
     ]
-    assert set(data["estimators"]) == {"complete", "censored"}
+    assert set(data["estimators"]) == {"complete", "censored", "hold_in_s0"}
     assert data["estimators"]["complete"]["n"] == 2
     assert data["estimators"]["censored"]["n"] == 3
     # at t = 1.0 fs: traj 0 in S1, traj 1 in S1, traj 2 in S0 -> P(S0) = 1/3; after that the
@@ -868,3 +868,44 @@ def test_the_complete_estimator_reproduces_main(tmp_path, write_input, populatio
             assert f["fit_target"][()].tolist() == BASELINE_P_S1
         else:
             assert close(f["fit_target"][()].tolist(), BASELINE_RHO_S1)
+
+
+def test_the_hold_in_s0_block_and_the_lifetime_range(tmp_path, write_input):
+    trajs = [
+        (FIN, [1, 1, 1, 1, 1], {}),
+        (FIN, [1, 1, 1, 0, 0], {}),
+        ("overlap_failure", [1, 1, 1], {}),  # lost in S1 at 1.0 fs: held in S0 after it
+    ]
+    ctx = _context(tmp_path, write_input, trajs, estimator="censored")
+    run_stage(ctx)
+    data = _analysis(ctx)
+    block = data["estimators"]["hold_in_s0"]
+    assert block["n"] == 3 and block["rule"] == analysis_module.HOLD_RULE
+    row = next(r for r in block["table"] if r["time_fs"] == 1.5)
+    assert row["P"]["S0"] == pytest.approx(2 / 3)  # traj_00001 decayed, traj_00002 held
+    names = [n for n in ("complete", "censored", "hold_in_s0") if data["estimators"][n]]
+    taus = {n: data["estimators"][n]["fit"]["tau_fs"] for n in names}
+    taus = {n: t for n, t in taus.items() if t is not None}
+    r = data["tau_range_fs"]
+    if len(taus) >= 2:
+        assert r["min"] == min(taus.values()) and r["max"] == max(taus.values())
+        assert taus[r["min_estimator"]] == r["min"] and taus[r["max_estimator"]] == r["max"]
+    else:
+        assert r is None
+    header = next(
+        line
+        for line in (ctx.stage_dir / "populations.csv").read_text().splitlines()
+        if not line.startswith("#")
+    ).split(",")
+    assert "hold_in_s0_P_S0" in header and "hold_in_s0_rho_S1_upper" in header
+    with h5py.File(ctx.stage_dir / "populations.h5", "r") as f:
+        assert "hold_in_s0_classical" in f and "hold_in_s0_quantum_upper" in f
+    assert "## Lifetime range" in (ctx.stage_dir / "report.md").read_text()
+
+
+def test_without_a_censored_trajectory_there_is_no_hold_in_s0_block(tmp_path, write_input):
+    ctx = _context(tmp_path, write_input, _varied_trajectories(), estimator="censored")
+    run_stage(ctx)
+    data = _analysis(ctx)
+    assert data["estimators"]["hold_in_s0"] is None
+    assert "hold_in_s0_P_S0" not in (ctx.stage_dir / "populations.csv").read_text()

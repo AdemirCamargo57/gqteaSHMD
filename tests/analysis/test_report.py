@@ -141,3 +141,32 @@ def test_markdown_says_hops_and_energy_cover_the_complete_trajectories(summary_e
     assert "\n## Hops (complete trajectories)\n- pairs: S1->S0 2\n" in text
     assert "\n## Energy (complete trajectories)\n- drift_eV: " in text
     assert "\n## Hops\n" not in text and "\n## Energy\n" not in text
+
+
+def test_markdown_shows_the_lifetime_range(summary_example):
+    s = dict(summary_example)
+    fit = {
+        "tau_fs": 50.0,
+        "tau_interval_fs": [40.0, 60.0],
+        "t0_fs": 5.0,
+        "t0_interval_fs": [4.0, 6.0],
+    }
+    s["estimators"] = {
+        "complete": {"fit": dict(fit, tau_fs=80.0)},
+        "censored": {"fit": dict(fit, tau_fs=62.5)},
+        "hold_in_s0": {"fit": fit},
+    }
+    s["tau_range_fs"] = {
+        "min": 50.0,
+        "max": 80.0,
+        "min_estimator": "hold_in_s0",
+        "max_estimator": "complete",
+    }
+    text = analysis_markdown(s)
+    section = text.split("## Lifetime range\n", 1)[1].split("\n## ", 1)[0]
+    assert "- complete: tau 80 fs [40, 60], t0 5 fs [4, 6]" in section
+    assert "- range: 50-80 fs (hold_in_s0 to complete)" in section
+    assert "Which estimate is closest to the truth is not known (USER_MANUAL 8.19)." in section
+    assert text.index("## Other estimator") < text.index("## Lifetime range")
+    empty = analysis_markdown(summary_example).split("## Lifetime range\n", 1)[1]
+    assert "- range: -" in empty
