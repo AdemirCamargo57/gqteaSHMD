@@ -347,3 +347,8 @@ def test_without_triplets_no_triplet_solve_runs(monkeypatch):
     mf = _water_rhf()
     out = pyscf_response.run_response(mf, _triplet_settings(3, 0), states_from_counts(3, 0))
     assert out.td_triplet is None
+
+
+def test_a_triplet_gradient_without_the_triplet_object_is_a_value_error():
+    with pytest.raises(ValueError, match="td_triplet"):
+        pyscf_response.response_gradients(None, None, {StateLabel(3, 1)}, "tda")

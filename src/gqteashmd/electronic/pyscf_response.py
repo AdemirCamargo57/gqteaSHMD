@@ -109,6 +109,10 @@ def response_gradients(
 ) -> dict[StateLabel, np.ndarray]:
     gradients: dict[StateLabel, np.ndarray] = {}
     for label in sorted(labels):
+        if label.multiplicity == 3 and td_triplet is None:
+            raise ValueError(
+                f"a gradient of {label} needs the triplet response object (td_triplet)"
+            )
         try:
             if label.multiplicity == 3:
                 g = td_triplet.nuc_grad_method().kernel(state=label.index)
@@ -142,13 +146,10 @@ def response_dipoles(
     return out
 
 
-def response_expansion(mf: Any, td: Any, n_excited: int) -> DeterminantExpansion:
-    """Ground determinant plus spin-adapted single excitations over mf.mo_coeff.
-
-    State k+1 = sum_ia X_k[i, a] (|i->a, alpha> + |i->a, beta>), the excited orbital taking i's
-    place in the occupied list (the sign convention of a_a^+ a_i). For TDDFT only X is used (the
-    RPA de-excitation part Y is dropped); truncate() renormalises.
-    """
+def _single_excitations(mf: Any) -> tuple[np.ndarray, np.ndarray, np.ndarray, int]:
+    """The single-excitation layout shared by the singlet and triplet expansions: the occupied
+    list, the occupied list of each |i->a> (the excited orbital takes i's place), the unexcited
+    list repeated, and the number of single excitations. Index k = i * nvir + a."""
     nocc = int(np.count_nonzero(mf.mo_occ > 0))
     nvir = int(mf.mo_coeff.shape[1]) - nocc
     occ = np.arange(nocc)
@@ -157,6 +158,17 @@ def response_expansion(mf: Any, td: Any, n_excited: int) -> DeterminantExpansion
     i_index, a_index = np.divmod(np.arange(n_single), nvir)
     excited_occ[np.arange(n_single), i_index] = nocc + a_index
     ground = np.tile(occ, (n_single, 1))
+    return occ, excited_occ, ground, n_single
+
+
+def response_expansion(mf: Any, td: Any, n_excited: int) -> DeterminantExpansion:
+    """Ground determinant plus spin-adapted single excitations over mf.mo_coeff.
+
+    State k+1 = sum_ia X_k[i, a] (|i->a, alpha> + |i->a, beta>), the excited orbital taking i's
+    place in the occupied list (the sign convention of a_a^+ a_i). For TDDFT only X is used (the
+    RPA de-excitation part Y is dropped); truncate() renormalises.
+    """
+    occ, excited_occ, ground, n_single = _single_excitations(mf)
     alpha = np.vstack([occ[None, :], excited_occ, ground])
     beta = np.vstack([occ[None, :], ground, excited_occ])
     coeffs = np.zeros((1 + n_excited, 1 + 2 * n_single))
@@ -173,14 +185,7 @@ def response_triplet_expansion(mf: Any, td: Any, n_triplets: int) -> Determinant
     T_k = sum_ia X_k[i, a] (|i->a, alpha> - |i->a, beta>), the singlet layout of
     response_expansion without the ground determinant and with the beta part negated. X only
     (TDDFT's Y is dropped); truncate() renormalises."""
-    nocc = int(np.count_nonzero(mf.mo_occ > 0))
-    nvir = int(mf.mo_coeff.shape[1]) - nocc
-    occ = np.arange(nocc)
-    n_single = nocc * nvir
-    excited_occ = np.tile(occ, (n_single, 1))
-    i_index, a_index = np.divmod(np.arange(n_single), nvir)
-    excited_occ[np.arange(n_single), i_index] = nocc + a_index
-    ground = np.tile(occ, (n_single, 1))
+    occ, excited_occ, ground, n_single = _single_excitations(mf)
     alpha = np.vstack([excited_occ, ground])
     beta = np.vstack([ground, excited_occ])
     coeffs = np.zeros((n_triplets, 2 * n_single))
