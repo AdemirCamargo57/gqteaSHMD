@@ -104,6 +104,11 @@ def test_the_reanalysis_is_unchanged_and_gains_ipcw():
     assert block["fit"]["status"] == "ok"
     assert set(block) >= {"populations", "tau_fs", "tau_interval_fs", "max_weight"}
     assert block["max_weight"] >= 1.0
+    assert set(block) >= {"beta_successes", "beta_interval_per_sd", "beta_interval_per_eV"}
+    assert block["beta_successes"] <= 50  # the synthetic project's n_bootstrap
+    for key in ("beta_interval_per_sd", "beta_interval_per_eV"):
+        if block[key] is not None:
+            assert block[key][0] <= block[key][1]
 
 
 def test_control_and_gate_report_their_rules():

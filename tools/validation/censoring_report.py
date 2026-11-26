@@ -206,6 +206,36 @@ def _ipcw_fit_summary(failures: int, betas: list[float]) -> dict[str, Any]:
     return {"failures": failures, "beta_mean": float(np.mean(betas)) if betas else None}
 
 
+def _repetition(
+    complete: Sequence[Trajectory],
+    steps: dict[str, int],
+    p: dict[str, Any],
+    rng: np.random.Generator,
+    bootstrap: int,
+    dt_out: float,
+    curves: dict[str, list[np.ndarray]],
+    fits: dict[str, list[tuple[float | None, float | None]]],
+    units: list[np.ndarray],
+) -> ipcw.CensoringFit:
+    """One repetition after the losses are drawn: the five estimates, their fits and the
+    bootstrap unit. The only random draw is `bootstrap_indices` (its order is fixed)."""
+    est, g, cfit = estimates(complete, steps, p)
+    for k, v in est.items():
+        curves[k].append(v)
+        fits[k].append(fit_excited(g.time_fs, v, dt_out, excited_sum=k == "ipcw"))
+    idx = populations.bootstrap_indices(rng, len(complete), bootstrap)
+    boot = censoring.bootstrap_aalen_johansen(g.active, g.observed, p["n_states"], idx)
+    units.append(boot.std(axis=0, ddof=1))
+    return cfit
+
+
+def _percentiles(values: list[float]) -> list[float] | None:
+    if len(values) < 2:
+        return None
+    lo, hi = (float(v) for v in np.percentile(values, [2.5, 97.5]))
+    return [lo, hi]
+
+
 def artificial(
     p: dict[str, Any], *, repetitions: int, bootstrap: int, seed: int, hot: bool
 ) -> dict[str, Any]:
@@ -242,17 +272,11 @@ def artificial(
             step = censor_step_for(t, float(rng.choice(delays)), p["dt_fs"], p["output_every"])
             if step is not None:
                 steps[t.task] = step
-        est, g, cfit = estimates(complete, steps, p)
-        for k, v in est.items():
-            curves[k].append(v)
-            fits[k].append(fit_excited(g.time_fs, v, dt_out, excited_sum=k == "ipcw"))
+        cfit = _repetition(complete, steps, p, rng, bootstrap, dt_out, curves, fits, units)
         if cfit.ok and cfit.beta is not None:
             betas.append(cfit.beta)
         else:
             failures += 1
-        idx = populations.bootstrap_indices(rng, len(complete), bootstrap)
-        boot = censoring.bootstrap_aalen_johansen(g.active, g.observed, p["n_states"], idx)
-        units.append(boot.std(axis=0, ddof=1))
     unit = np.mean(units, axis=0)
     result: dict[str, Any] = {
         "n_complete": len(complete),
@@ -318,17 +342,11 @@ def control(p: dict[str, Any], *, repetitions: int, bootstrap: int, seed: int) -
             if hit[i].any()
         }
         realised.append(len(steps) / int(reach.sum()))
-        est, g, cfit = estimates(complete, steps, p)
-        for k, v in est.items():
-            curves[k].append(v)
-            fits[k].append(fit_excited(g.time_fs, v, dt_out, excited_sum=k == "ipcw"))
+        cfit = _repetition(complete, steps, p, rng, bootstrap, dt_out, curves, fits, units)
         if cfit.ok and cfit.beta is not None:
             betas.append(cfit.beta)
         else:
             failures += 1
-        idx = populations.bootstrap_indices(rng, len(complete), bootstrap)
-        boot = censoring.bootstrap_aalen_johansen(g.active, g.observed, p["n_states"], idx)
-        units.append(boot.std(axis=0, ddof=1))
     unit = np.mean(units, axis=0)
     summary = _summarise(curves, fits, truth, unit, tau_true, t0_true)
     return {
@@ -396,18 +414,21 @@ def gate(p: dict[str, Any], *, seed: int, resamples: int = GATE_RESAMPLES) -> di
     if not fit.ok:
         return out
     idx = populations.bootstrap_indices(np.random.default_rng(seed + 3), len(used), resamples)
-    betas = []
+    betas, betas_eV = [], []
     for r in idx:
         f = ipcw.fit_censoring_hazard(g.active[r], g.observed[r], kin[r], s)
         if f.ok and f.beta is not None:
             betas.append(f.beta)
+            if f.beta_per_eV is not None:  # each resample standardises over its own data
+                betas_eV.append(f.beta_per_eV)
     out["successes"] = len(betas)
-    if len(betas) >= 2:
-        lo, hi = (float(v) for v in np.percentile(betas, [2.5, 97.5]))
-        out["beta_interval_per_sd"] = [lo, hi]
-        if fit.sd_eV:
-            out["beta_interval_per_eV"] = [lo / fit.sd_eV, hi / fit.sd_eV]
-        out["passed"] = bool(len(betas) >= GATE_MIN_SUCCESS_FRACTION * resamples and lo > 0.0)
+    sd_interval = _percentiles(betas)
+    out["beta_interval_per_sd"] = sd_interval
+    out["beta_interval_per_eV"] = _percentiles(betas_eV)
+    if sd_interval is not None:
+        out["passed"] = bool(
+            len(betas) >= GATE_MIN_SUCCESS_FRACTION * resamples and sd_interval[0] > 0.0
+        )
     return out
 
 
@@ -425,12 +446,17 @@ def _ipcw_block(
     weights = ipcw.censoring_weights(fit.hazard, g.observed)
     rng = np.random.default_rng(seed + 4)  # plan ruling PR2
     resampled, refit_failures = [], 0
+    betas, betas_eV = [], []
     for r in populations.bootstrap_indices(rng, len(used), p["n_bootstrap"]):
-        c, _ = ipcw.ipcw_estimate(g.active[r], g.observed[r], kin[r], s)
+        c, rf = ipcw.ipcw_estimate(g.active[r], g.observed[r], kin[r], s)
         if c is None:
             refit_failures += 1
         else:
             resampled.append(c[:, 1:].sum(axis=1))
+        if rf.ok and rf.beta is not None:
+            betas.append(rf.beta)
+            if rf.beta_per_eV is not None:
+                betas_eV.append(rf.beta_per_eV)
     fu = kinetics.bootstrap_fit_curves(
         g.time_fs, curve[:, 1:].sum(axis=1), resampled, n_trajectories=len(used), dt_out=dt_out
     )
@@ -448,6 +474,9 @@ def _ipcw_block(
             "max_weight": float(weights.max()),
             "max_row_sum_deviation": float(np.abs(curve.sum(axis=1) - 1.0).max()),
             "refit_failures": refit_failures,
+            "beta_successes": len(betas),
+            "beta_interval_per_sd": _percentiles(betas),
+            "beta_interval_per_eV": _percentiles(betas_eV),
             "fit_bootstrap_failures": fu.bootstrap_failures,
         }
     )
