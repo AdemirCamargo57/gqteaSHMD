@@ -324,10 +324,17 @@ def _cmd_single_point(args: argparse.Namespace) -> int:
     if settings.functional:
         name += f" / {settings.functional}"
     print(f"Single point: {name} (PySCF {result.meta['pyscf_version']})")
-    print(f"{'state':<6}{'energy (Eh)':>18}{'dE (eV)':>10}{'f':>9}")
+    # the S^2 column only with triplets (plan ruling PR6): the singlet table is unchanged
+    with_spin = settings.triplets > 0
+    header = f"{'state':<6}{'energy (Eh)':>18}{'dE (eV)':>10}{'f':>9}"
+    print(header + f"{'S^2':>8}" if with_spin else header)
     for row in data["states"]:
         f = "-" if row["oscillator_strength"] is None else f"{row['oscillator_strength']:.4f}"
-        print(f"{row['label']:<6}{row['energy_hartree']:>18.9f}{row['excitation_ev']:>10.4f}{f:>9}")
+        line = f"{row['label']:<6}{row['energy_hartree']:>18.9f}{row['excitation_ev']:>10.4f}{f:>9}"
+        if with_spin:
+            s2 = "-" if row["spin_square"] is None else f"{row['spin_square']:.4f}"
+            line += f"{s2:>8}"
+        print(line)
     if args.json is not None:
         write_json_atomic(args.json, data)
         print(f"Results written to {args.json}")

@@ -50,7 +50,9 @@ _NO_REFERENCE = (
 
 MIN_PYSCF_VERSION = (2, 6, 0)
 _STATE_FORMAT = 1
+_STATE_FORMAT_TRIPLETS = 2  # format 1 plus the triplet block t_alpha, t_beta, t_coeffs
 _STATE_ARRAYS = ("coords", "mo_coeff", "density", "alpha", "beta", "coeffs")
+_TRIPLET_ARRAYS = ("t_alpha", "t_beta", "t_coeffs")
 
 # (name, level shift / Eh, damping factor, second-order solver)
 _SCF_LADDER: tuple[tuple[str, float, float, bool], ...] = (
@@ -67,7 +69,9 @@ class _Snapshot:
     coords: np.ndarray  # bohr
     mo_coeff: np.ndarray  # MOs the expansion refers to (CASSCF: mc.mo_coeff; else mf.mo_coeff)
     density: np.ndarray  # SCF density matrix, the next SCF guess
-    expansion: DeterminantExpansion  # truncated and phase-aligned
+    expansion: DeterminantExpansion  # singlets; truncated and phase-aligned
+    # triplets (CASSCF Ms = +1, TDA/TDDFT Ms = 0); truncated and phase-aligned; None without them
+    triplet_expansion: DeterminantExpansion | None = None
 
 
 @dataclass(eq=False)
@@ -79,6 +83,7 @@ class _Live:
     solver: Any  # CASSCF object, TD object or None
     energies: dict[StateLabel, float]
     phases: np.ndarray
+    triplet_solver: Any = None  # the triplet TD object (TDA/TDDFT with triplets) or None
 
 
 def require_pyscf() -> str:
@@ -179,7 +184,8 @@ class PySCFBackend(ElectronicBackend):
                 )
                 solver, energies, spins = outcome.mc, outcome.energies, outcome.spin_squares
                 mo_coeff = np.asarray(solver.mo_coeff)
-                expansion = pyscf_casscf.casscf_expansion(solver)
+                expansion, triplet_expansion = pyscf_casscf.casscf_expansions(solver, self._states)
+                triplet_solver = None
                 rung_meta: dict[str, Any] = {
                     "casscf": outcome.rung,
                     "casscf_reference": self._reference_meta(),
@@ -198,10 +204,24 @@ class PySCFBackend(ElectronicBackend):
                 outcome_r = pyscf_response.run_response(mf, self._settings, self._states)
                 solver, energies, spins = outcome_r.td, outcome_r.energies, {}
                 mo_coeff = np.asarray(mf.mo_coeff)
-                expansion = pyscf_response.response_expansion(mf, solver, len(self._states) - 1)
+                n_s, n_t = pyscf_casscf.state_counts(self._states)
+                expansion = pyscf_response.response_expansion(mf, solver, n_s - 1)
+                triplet_expansion = (
+                    pyscf_response.response_triplet_expansion(mf, outcome_r.td_triplet, n_t)
+                    if n_t
+                    else None
+                )
+                triplet_solver = outcome_r.td_triplet
                 rung_meta = {"td": outcome_r.rung}
+                if n_t:
+                    rung_meta["td_triplet"] = outcome_r.triplet_rung
+            n_singlets = pyscf_casscf.state_counts(self._states)[0]
             try:
                 expansion = truncate(expansion, self._settings.overlap_norm_kept)
+                if triplet_expansion is not None:
+                    triplet_expansion = truncate(
+                        triplet_expansion, self._settings.overlap_norm_kept
+                    )
             except (ValueError, MemoryError) as exc:
                 raise wrap_failure("The wavefunction overlap", exc) from exc
             phases = np.ones(len(self._states))
@@ -210,11 +230,15 @@ class PySCFBackend(ElectronicBackend):
                 rung_meta["overlaps"] = "no previous geometry"
             else:
                 try:
-                    tracked = track(self._state_overlaps(previous, mol, mo_coeff, expansion))
+                    tracked = track(
+                        self._state_overlaps(previous, mol, mo_coeff, expansion, triplet_expansion)
+                    )
                 except (ValueError, MemoryError) as exc:  # LinAlgError is a ValueError
                     raise wrap_failure("The wavefunction overlap", exc) from exc
                 phases = tracked.phases
-                expansion = expansion.with_signs(phases)
+                expansion = expansion.with_signs(phases[:n_singlets])
+                if triplet_expansion is not None:
+                    triplet_expansion = triplet_expansion.with_signs(phases[n_singlets:])
                 if request.overlaps:
                     overlaps = tracked.overlaps
                 rung_meta.update(
@@ -228,11 +252,15 @@ class PySCFBackend(ElectronicBackend):
                         "%.3f): an intruder state or too few computed states.",
                         tracked.min_singular_value,
                     )
-            live = _Live(mol, mf, solver, energies, phases)
+            live = _Live(mol, mf, solver, energies, phases, triplet_solver)
             gradients, nacs = self._derivatives(live, request.gradients, request.nacs)
             dipoles = self._dipoles(live, request.transition_dipoles)
         self._snapshot = _Snapshot(
-            np.array(request.coords_bohr), mo_coeff, np.asarray(mf.make_rdm1()), expansion
+            np.array(request.coords_bohr),
+            mo_coeff,
+            np.asarray(mf.make_rdm1()),
+            expansion,
+            triplet_expansion,
         )
         self._live = live
         meta: dict[str, Any] = {
@@ -305,7 +333,7 @@ class PySCFBackend(ElectronicBackend):
         self._check_labels(frozenset(gradients), frozenset(nacs))
         with self._environment() as stdout:
             out = stdout if stdout is not None else sys.stdout
-            for obj in (live.mol, live.mf, live.solver):
+            for obj in (live.mol, live.mf, live.solver, live.triplet_solver):
                 if obj is not None:
                     obj.stdout = out  # the file of the previous compute() is closed
             grads, phased = self._derivatives(live, frozenset(gradients), frozenset(nacs))
@@ -342,10 +370,21 @@ class PySCFBackend(ElectronicBackend):
         snap = self._snapshot
         if snap is None:
             raise ValueError("There is no electronic state to save: call compute() first.")
+        # without triplets exactly the format-1 file (plan ruling PR5); with them format 2 adds
+        # the triplet block after format 1's arrays
+        triplet: dict[str, Any] = {}  # Any: np.savez types its keywords as allow_pickle
+        version = _STATE_FORMAT
+        if snap.triplet_expansion is not None:
+            version = _STATE_FORMAT_TRIPLETS
+            triplet = {
+                "t_alpha": snap.triplet_expansion.alpha,
+                "t_beta": snap.triplet_expansion.beta,
+                "t_coeffs": snap.triplet_expansion.coeffs,
+            }
         buffer = io.BytesIO()
         np.savez(
             buffer,
-            format=np.array(_STATE_FORMAT),
+            format=np.array(version),
             fingerprint=np.array(self._fingerprint()),
             coords=snap.coords,
             mo_coeff=snap.mo_coeff,
@@ -353,6 +392,7 @@ class PySCFBackend(ElectronicBackend):
             alpha=snap.expansion.alpha,
             beta=snap.expansion.beta,
             coeffs=snap.expansion.coeffs,
+            **triplet,
         )
         try:
             write_bytes_atomic(Path(path), buffer.getvalue())
@@ -368,9 +408,12 @@ class PySCFBackend(ElectronicBackend):
         try:
             with np.load(Path(path), allow_pickle=False) as data:
                 version = int(data["format"])  # read first: a newer format may lack other fields
-                if version == _STATE_FORMAT:
+                if version in (_STATE_FORMAT, _STATE_FORMAT_TRIPLETS):
                     fingerprint = str(data["fingerprint"])
-                    body = {k: np.array(data[k]) for k in _STATE_ARRAYS}
+                    keys: tuple[str, ...] = _STATE_ARRAYS
+                    if version == _STATE_FORMAT_TRIPLETS:
+                        keys += _TRIPLET_ARRAYS
+                    body = {k: np.array(data[k]) for k in keys}
         except (OSError, EOFError, zipfile.BadZipFile, KeyError, TypeError, ValueError) as exc:
             raise unreadable(f"{type(exc).__name__}: {exc}") from exc
         if body is None:
@@ -380,6 +423,11 @@ class PySCFBackend(ElectronicBackend):
                 f"The electronic state in {path} was saved with different settings or a "
                 "different molecule; it cannot be reused."
             )
+        has_triplets = "t_coeffs" in body
+        if self._settings.triplets and not has_triplets:
+            raise unreadable("missing the triplet expansion")
+        if not self._settings.triplets and has_triplets:
+            raise unreadable("unexpected triplet expansion")
         natom = len(self._molecule.symbols)
         if body["coords"].shape != (natom, 3):
             raise unreadable(f"coords has shape {body['coords'].shape}, expected ({natom}, 3)")
@@ -388,11 +436,24 @@ class PySCFBackend(ElectronicBackend):
         nao = body["mo_coeff"].shape[0]
         if body["density"].shape != (nao, nao):
             raise unreadable(f"density has shape {body['density'].shape}, expected ({nao}, {nao})")
+        triplet_expansion = None
         try:
             expansion = DeterminantExpansion(body["alpha"], body["beta"], body["coeffs"])
+            if has_triplets:
+                triplet_expansion = DeterminantExpansion(
+                    body["t_alpha"], body["t_beta"], body["t_coeffs"]
+                )
         except ValueError as exc:
             raise unreadable(str(exc)) from exc
-        self._snapshot = _Snapshot(body["coords"], body["mo_coeff"], body["density"], expansion)
+        n_triplets = self._settings.triplets
+        if triplet_expansion is not None and triplet_expansion.coeffs.shape[0] != n_triplets:
+            raise unreadable(
+                f"the triplet expansion has {triplet_expansion.coeffs.shape[0]} states, "
+                f"expected {n_triplets}"
+            )
+        self._snapshot = _Snapshot(
+            body["coords"], body["mo_coeff"], body["density"], expansion, triplet_expansion
+        )
         self._live = None
 
     # ------------------------------------------------------------------ setup
@@ -453,8 +514,15 @@ class PySCFBackend(ElectronicBackend):
             raise ValueError(f"Gradients requested for unknown state(s): {', '.join(unknown)}")
 
     def _state_overlaps(
-        self, previous: _Snapshot, mol: Any, mo_coeff: np.ndarray, expansion: DeterminantExpansion
+        self,
+        previous: _Snapshot,
+        mol: Any,
+        mo_coeff: np.ndarray,
+        expansion: DeterminantExpansion,
+        triplet_expansion: DeterminantExpansion | None = None,
     ) -> np.ndarray:
+        """The state overlap matrix, block-diagonal by multiplicity: each block is computed
+        separately, the singlet-triplet entries are exactly zero."""
         from pyscf import gto
 
         try:
@@ -463,7 +531,17 @@ class PySCFBackend(ElectronicBackend):
         except Exception as exc:
             raise wrap_failure("The AO overlap between geometries", exc) from exc
         s_mo = previous.mo_coeff.T @ s_ao @ mo_coeff
-        return state_overlaps(previous.expansion, expansion, s_mo)
+        singlet = state_overlaps(previous.expansion, expansion, s_mo)
+        if triplet_expansion is None:
+            return singlet
+        if previous.triplet_expansion is None:  # unreachable: load_state checks the block
+            raise ValueError("the previous geometry has no triplet expansion")
+        n_s = singlet.shape[0]
+        n_t = triplet_expansion.coeffs.shape[0]
+        s = np.zeros((n_s + n_t, n_s + n_t))
+        s[:n_s, :n_s] = singlet
+        s[n_s:, n_s:] = state_overlaps(previous.triplet_expansion, triplet_expansion, s_mo)
+        return s
 
     def _phase(self, live: _Live, label: StateLabel) -> float:
         return float(live.phases[self._states.index(label)])
@@ -479,7 +557,11 @@ class PySCFBackend(ElectronicBackend):
             raw = pyscf_casscf.casscf_nacs(live.solver, nacs, self._states, live.mol.natm)
         else:
             grads = pyscf_response.response_gradients(
-                live.mf, live.solver, gradients, self._settings.method
+                live.mf,
+                live.solver,
+                gradients,
+                self._settings.method,
+                td_triplet=live.triplet_solver,
             )
             raw = {}
         phased = {

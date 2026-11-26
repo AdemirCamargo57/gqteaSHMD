@@ -89,3 +89,35 @@ def test_unusable_log_path_is_exit_2_before_computing(tmp_path, capsys):
     err = capsys.readouterr()
     assert "--log" in err.err
     assert "Single point" not in err.out
+
+
+WATER = "3\nwater\nO 0.0 0.0 0.1173\nH 0.0 0.7572 -0.4692\nH 0.0 -0.7572 -0.4692\n"
+TDA_HF = (
+    '[electronic]\nmethod = "tda"\nbasis = "sto-3g"\nfunctional = "hf"\nsinglets = 2\n'
+    "triplets = {triplets}\n"
+)
+HEADER = f"{'state':<6}{'energy (Eh)':>18}{'dE (eV)':>10}{'f':>9}"
+
+
+def test_single_point_with_triplets_prints_an_s2_column(tmp_path, capsys):
+    out = tmp_path / "sp.json"
+    path = _input(tmp_path, extra=TDA_HF.format(triplets=1), xyz=WATER)
+    assert main(["single-point", str(path), "--json", str(out)]) == 0
+    lines = capsys.readouterr().out.splitlines()
+    assert lines[1] == HEADER + f"{'S^2':>8}"
+    row = next(line for line in lines if line.startswith("T1"))
+    assert row.split()[3] == "0.0000" and row.split()[4] == "-"
+    data = json.loads(out.read_text())
+    assert [r["label"] for r in data["states"]] == ["S0", "S1", "T1"]
+    assert data["states"][2]["oscillator_strength"] == 0.0
+    assert data["meta"]["td_triplet"] == "default"
+
+
+def test_single_point_without_triplets_keeps_its_table(tmp_path, capsys):
+    out = tmp_path / "sp.json"
+    path = _input(tmp_path, extra=TDA_HF.format(triplets=0), xyz=WATER)
+    assert main(["single-point", str(path), "--json", str(out)]) == 0
+    lines = capsys.readouterr().out.splitlines()
+    assert lines[1] == HEADER
+    assert [line.split()[0] for line in lines[2:]] == ["S0", "S1", "Results"]
+    assert "td_triplet" not in json.loads(out.read_text())["meta"]
