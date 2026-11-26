@@ -5,6 +5,30 @@ Linux only.
 
 ## Unreleased
 
+### Changed
+- `analysis` stage version 4 (USER_MANUAL 8.13, 8.19):
+  - With no complete trajectory, the analysis horizon is capped at the last grid time at which
+    any trajectory is observed. Before, the censored curve was held constant up to `tmax_fs`.
+    The warning now says the horizon is capped, and `analysis.json` has `horizon_capped`. A cap
+    at t = 0 stops the stage (`no trajectory is complete and none is observed after t = 0`).
+  - A third estimate, hold-in-S0 (lost trajectories held in S0 from their censoring step), is
+    reported beside the complete and censored ones (`estimators.hold_in_s0`; columns
+    `hold_in_s0_*` in `populations.csv` and `populations.h5`). It is not an `estimator` value
+    and is `null` without a censored trajectory.
+  - The range of the three lifetimes is `analysis.json` `tau_range_fs` and a `Lifetime range`
+    section of `report.md`. Which estimate is closest to the truth is not known.
+  - `analysis.json` `schema_version` 3. The complete and censored numbers do not change.
+- The IPCW trial (`tools/validation/censoring_report.py`, `tools/validation/ipcw.py`; report
+  `docs/superpowers/reports/2026-11-26-ipcw-trial.md`): an inverse-probability-of-censoring-
+  weighted estimator with the S0 kinetic energy as covariate. By the rule fixed before the run
+  it is **not** built into the stage: it corrects kinetic-energy-dependent censoring in a control
+  test, and the real losses do depend on the S0 kinetic energy, but on the hot-S0 test the
+  hold-in-S0 estimate stays less biased (USER_MANUAL 8.19).
+
+### Upgrade notes
+Every project with `analysis` results needs `--rerun-from analysis` (analysis stage version 4;
+seconds, the trajectories stay). `gqteashmd run` stops with exit 3 until then.
+
 ## 0.1.0 - 2026-11-26
 
 The first release: the whole workflow, from the geometry to populations and a lifetime, driven

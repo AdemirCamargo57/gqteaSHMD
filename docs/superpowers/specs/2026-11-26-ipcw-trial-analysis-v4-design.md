@@ -1,6 +1,24 @@
 # The IPCW trial and analysis stage version 4: design
 
-Status: written 2026-11-26; awaiting owner review. Branch `feat/ipcw-trial-analysis-v4` (from `main` `43a25c7`).
+Status: written 2026-11-26; owner-approved 2026-11-26. Branch `feat/ipcw-trial-analysis-v4` (from `main` `43a25c7`). The report is `docs/superpowers/reports/2026-11-26-ipcw-trial.md`.
+
+> **Erratum (2026-11-26, after the implementation).** Where the work differs from this spec:
+>
+> - **Plan rulings** (`docs/superpowers/plans/2026-11-26-ipcw-trial-analysis-v4.md`, binding where they differ):
+>   - **PR1:** `AnalysisStage.version` 4 and `schema_version` 3 are set in Task 4 (the horizon cap), not Task 5.
+>   - **PR2:** the IPCW bootstrap of section 2.6 draws from `default_rng(seed + 4)` (the spec gave no stream).
+>   - **PR3:** a third failure reason of section 2.3, `no informative S0 interval` (every S0 event cell has `d = r`, so β is not identified).
+>   - **PR4:** "S0-reaching" in the control's lost fraction is `first_s0_time(t) is not None` on all records.
+>   - **PR5:** "a small canned project" of test 4.1 item 8 is an in-memory synthetic project. It is compared with the unmodified script's numbers to a relative 1e-9 (bias ratios, curves) and 1e-6 (tau, t0), not bit for bit.
+>   - **PR6:** `complete_estimate(name=)`, `hold_in_s0_grid` and `hold_in_s0_estimate`.
+>   - **PR7:** the intercept solve uses `brentq` on `[logit(d/r) - s, logit(d/r) + s]`, `s = max|β z_i| + 1`, instead of a vectorised bisection.
+> - **Task 2 review additions** (fix commit `aed305a`, before the measurement ran):
+>   - the IPCW re-analysis reports the β interval of section 2.6, which the plan had left out;
+>   - the gate's per-eV interval comes from the resamples' own per-eV values, not from the full-data SD.
+>
+>   Neither touches a rule.
+> - **The report script keeps `four_estimates`** beside the new `estimates`; section 2.1 said it would be renamed.
+> - **Nothing was decided after numbers were seen that changed a rule**, bound, window, seed or setting. The measurement ran once (its first launch failed before Python started and was relaunched with the same command). The result: control passed, verdict failed, gate passed, so `ipcw_go` is false.
 
 This is the "next analysis change" parked on 2026-11-20 (CLAUDE.md, "Remaining work"): (1) with no complete trajectory, cap the analysis horizon at the last observed grid time; (2) a trial of an inverse-probability-of-censoring-weighted (IPCW) estimator with one covariate (the S0 kinetic energy) on the hot-S0 sensitivity test, implemented in the stage only if it beats the censored and hold-in-S0 estimators there; until then the complete, censored and hold-in-S0 lifetimes are reported as a range.
 
