@@ -122,11 +122,11 @@ The 2026-11-19 verdict (censored <= 1 and below complete-only and still-running)
 | hold-in-S0 | 1.1516 | 0.0799 | -10.39 | +2.28 |
 | IPCW | 0.2009 | 0.0124 | +0.76 | -0.01 |
 
-No fit failed. The fitted β averaged 0.035 per SD: these losses do not depend on the kinetic energy.
+No fit failed. These artificial losses are random by construction, and the fitted β (0.035 per SD on average) agrees.
 
 ## 4. The control test (pre-registered verdict, report script): PASSED
 
-**Set-up** (spec 2.5 item 1; PR4 for the denominator). At every grid step at which one of the 67 trajectories is in S0, it is censored with the true hazard `logit h = a + 1.0 · z(K̄)`. Here z is standardised over all S0 cells of the 67. The intercept `a = -5.2229` was set by bisection, from the data alone and before any estimator, so that the expected lost fraction of the S0-reaching trajectories is 33/90 = 0.36667. The realised mean lost fraction was 0.3624. The stream is `seed + 2`.
+**Set-up** (spec 2.5 item 1; PR4 for the denominator). At every grid step at which one of the 67 trajectories is in S0, it is censored with the true hazard `logit h = a + 1.0 · z(K̄)`. Here z is standardised over all S0 cells of the 67. The intercept `a = -5.2229` was solved with `brentq` on [-30, 10] (`xtol` 1e-12), from the data alone and before any estimator, so that the expected lost fraction of the S0-reaching trajectories is 33/90 = 0.36667. The realised mean lost fraction was 0.3624. The stream is `seed + 2`.
 
 **Rule:** the IPCW `max_bias_over_se` is <= 1, with no fit failure.
 
@@ -140,7 +140,7 @@ No fit failed. The fitted β averaged 0.035 per SD: these losses do not depend o
 
 - IPCW passes (0.265; 0 fit failures; fitted β mean 1.127 per SD against the true 1.0).
 - The test discriminates (report): the censored, still-running and complete-only estimators exceed 1 SE under this censoring.
-- **What it shows:** when censoring depends on the kinetic energy already observed at the time of loss, the IPCW code corrects it. A failure here would have been a bug, not a "no" (owner decision 1).
+- **What it shows:** when censoring depends on the kinetic energy already observed at the time of loss and the fitted censoring model contains the true hazard (correctly specified), the IPCW code removed the bias (one run). A failure here would have been a bug, not a "no" (owner decision 1).
 
 ## 5. The hot-S0 verdict (pre-registered verdict, report script): FAILED
 
@@ -242,7 +242,7 @@ By the pre-registered rule the answer is **no**: IPCW is not built into the stag
   - version 4 caps the horizon without a complete trajectory and reports a hold-in-S0 lifetime and the range, with the complete and censored numbers unchanged.
 - **Shown (pre-registered verdicts, report script):**
   - *the gate:* on the P9b ensemble the real losses depend on the observed S0 kinetic energy; hotter trajectories are lost more often (β 0.63 per SD, 95 % [0.20, 1.20]);
-  - *the control:* IPCW corrects censoring of that kind (0.265, where the censored estimator has 1.17 and hold-in-S0 0.60);
+  - *the control:* where the fitted censoring model contains the true hazard (correctly specified), IPCW removed the bias (0.265, where the censored estimator has 1.17 and hold-in-S0 0.60; one run);
   - *the verdict:* on the hot-S0 test, IPCW improves on the censored estimator only slightly (1.189 against 1.244), and hold-in-S0 stays best (0.630). That test's censoring selects on the whole S0 time, also after the loss.
 - **Report:** IPCW's tau on the three real projects is 55.97 / 55.41 / 58.84 fs. The censored tau is 62.49 / 62.59 / 59.74 fs and the complete tau 80.14 / 77.16 / 75.20 fs. Hold-in-S0 on the real projects was not computed.
 - **Inference, not measured:** whether the real losses look more like the control (the loss depends on the observed past) or like the hot-S0 test (it depends on what happens after the loss). Hence it is still not known which of the lifetimes is closest to the truth.

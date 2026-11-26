@@ -18,6 +18,10 @@ Status: written 2026-11-26; owner-approved 2026-11-26. Branch `feat/ipcw-trial-a
 >
 >   Neither touches a rule.
 > - **The report script keeps `four_estimates`** beside the new `estimates`; section 2.1 said it would be renamed.
+> - **Final review additions:**
+>   - **Section 3.1 (I1):** the cap is clamped to `n_total`, `min(n_total, largest censoring step)`, so it never exceeds `tmax_fs` (a lost trajectory can have records past a lowered `tmax_fs`, and `censoring_step` is not clamped; the censored selection itself is unchanged).
+>   - **Section 4.2 (M1):** "the censored block equals version 3's on the canned pipeline" is covered by the existing tests (T5b pins the complete estimator; the censored path with a complete trajectory is unchanged by construction); no separate censored pin was added.
+>   - **Section 2.5 item 1:** the control's intercept `a` is solved with `brentq` on [-30, 10] (`xtol` 1e-12), not by literal bisection.
 > - **Nothing was decided after numbers were seen that changed a rule**, bound, window, seed or setting. The measurement ran once (its first launch failed before Python started and was relaunched with the same command). The result: control passed, verdict failed, gate passed, so `ipcw_go` is false.
 
 This is the "next analysis change" parked on 2026-11-20 (CLAUDE.md, "Remaining work"): (1) with no complete trajectory, cap the analysis horizon at the last observed grid time; (2) a trial of an inverse-probability-of-censoring-weighted (IPCW) estimator with one covariate (the S0 kinetic energy) on the hot-S0 sensitivity test, implemented in the stage only if it beats the censored and hold-in-S0 estimators there; until then the complete, censored and hold-in-S0 lifetimes are reported as a range.
