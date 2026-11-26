@@ -1,5 +1,6 @@
 """Helpers of tools/validation/censoring_report.py on synthetic trajectories."""
 
+import json
 import sys
 from pathlib import Path
 
@@ -10,7 +11,15 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tools" / "validation"))
 import censoring_report as cr  # noqa: E402
 
+sys.path.insert(0, str(ROOT / "tests" / "validation"))
+from censoring_synthetic import synthetic_project  # noqa: E402
+
 from gqteashmd.analysis.grid import Trajectory  # noqa: E402
+
+BEFORE = json.loads(
+    (ROOT / "tests" / "validation" / "data" / "censoring_report_before.json").read_text()
+)
+OLD = ("censored", "still_running", "complete_only", "hold_in_s0")
 
 
 def _traj(task, outcome, active):
@@ -62,3 +71,57 @@ def test_poisson_interval_brackets_the_rate():
     lo, hi = cr.poisson_rate_interval(4, 2.0)
     assert lo < 2.0 < hi
     assert cr.poisson_rate_interval(0, 2.0)[0] == 0.0
+
+
+def _close(a, b, rel):
+    if a is None or b is None:
+        assert a is None and b is None
+    else:
+        assert a == pytest.approx(b, rel=rel, abs=1e-12)
+
+
+@pytest.mark.parametrize("hot,key", [(False, "artificial"), (True, "sensitivity")])
+def test_the_four_estimators_are_unchanged_by_the_ipcw_addition(hot, key):  # spec 4.1 item 8
+    new = cr.artificial(synthetic_project(), repetitions=4, bootstrap=20, seed=5, hot=hot)
+    old = BEFORE[key]
+    for name in OLD:
+        a, b = new["estimators"][name], old["estimators"][name]
+        _close(a["max_bias_over_se"], b["max_bias_over_se"], 1e-9)
+        _close(a["max_abs_bias"], b["max_abs_bias"], 1e-9)
+        _close(a["tau_bias_fs"], b["tau_bias_fs"], 1e-6)
+        _close(a["t0_bias_fs"], b["t0_bias_fs"], 1e-6)
+        assert a["fits_failed"] == b["fits_failed"]
+    assert "ipcw" in new["estimators"] and new["ipcw_fit"]["failures"] == 0
+    assert ("ipcw_wins" in new) is hot and ("verdict_good" in new) is (not hot)
+
+
+def test_the_reanalysis_is_unchanged_and_gains_ipcw():
+    new = cr.reanalysis(synthetic_project(), seed=5)
+    for name in ("complete", "censored"):
+        _close(new[name]["tau_fs"], BEFORE["reanalysis"][name]["tau_fs"], 1e-6)
+        _close(new[name]["t0_fs"], BEFORE["reanalysis"][name]["t0_fs"], 1e-6)
+    block = new["ipcw"]
+    assert block["fit"]["status"] == "ok"
+    assert set(block) >= {"populations", "tau_fs", "tau_interval_fs", "max_weight"}
+    assert block["max_weight"] >= 1.0
+
+
+def test_control_and_gate_report_their_rules():
+    p = synthetic_project()
+    c = cr.control(p, repetitions=4, bootstrap=20, seed=5)
+    assert set(c["estimators"]) == set(cr.ESTIMATORS)
+    assert c["target_fraction"] == pytest.approx(c["loss_fraction"][0] / c["loss_fraction"][1])
+    assert c["expected_lost_fraction"] == pytest.approx(c["target_fraction"], abs=1e-9)
+    assert isinstance(c["passed"], bool) and c["beta_true"] == 1.0
+    g = cr.gate(p, seed=5, resamples=40)
+    assert g["fit"]["status"] == "ok" and g["successes"] <= 40
+    assert isinstance(g["passed"], bool)
+
+
+def test_ipcw_go_needs_all_three_parts():
+    ok = {"control": {"passed": True}, "sensitivity": {"ipcw_wins": True}, "gate": {"passed": True}}
+    assert cr.ipcw_go(ok)
+    for part, key in (("control", "passed"), ("sensitivity", "ipcw_wins"), ("gate", "passed")):
+        bad = json.loads(json.dumps(ok))
+        bad[part][key] = False
+        assert not cr.ipcw_go(bad)
