@@ -227,6 +227,7 @@ No spec-fixed bound (1e-6 Eh, 1e-5 Eh/bohr, 1e-4 1/bohr, 0.99, 1e-10) was change
   - The singlet NAC check with triplets present covers one triplet.
   - The `excitations` stage tests use the fake backend; no PySCF triplet run went through the stage.
   - The full suite was not run in one run; the three analytic-model validation files and the ORCA frequency test were not run on the branch (section 3).
+  - The TDDFT (RPA) and TDHF triplet gradients and a 2-triplet CASSCF gradient (T2 was only checked to be finite) are not validated against finite differences; FD covers TDA-HF, TDA-B3LYP and the ethylene SA-CASSCF 2+1 S1 and T1.
   - The singlet NAC check passes at the FD step 1e-3 bohr, chosen after the existing step 1e-4 failed (4.6e-4); at that step the triplet case is worse than the singlet-only one.
 - *Unexplained:* the water CAS(4,4)/STO-3G SA-CASSCF fails the FD NAC check and the 0.99 continuity bound **also without triplets** (2.3e-2 1/bohr, asymmetric between equivalent atoms; 0.976-0.977). It was set aside as a property of that system, not explained. It may be related to the open intermittent water CAS(4,4) test of CLAUDE.md limitation 3a (inference).
 - *Decided after numbers were seen:* four test choices, including the NAC check's FD step (section 8); no spec-fixed bound.
