@@ -14,6 +14,10 @@ Conventions
 - The operator is ``sum_k sum_pq h_k[p, q] sum_{sigma sigma'} a+_{p sigma} (s_k)_{sigma sigma'}
   a_{q sigma'}`` with ``s = sigma_Pauli / 2`` (sigma = alpha, beta = up, down).
 
+TDA/TDDFT states (`response_reference_states`) are built from |Phi0> (all occupied MOs, the
+canonical order, coefficient +1) by explicit a+_a a_i excitations, normalised by their own
+vector norms, the triplet Ms = +1 and -1 components by S_plus and S_minus.
+
 PySCF CI vectors (the meaning of their coefficients, read from PySCF 2.14:
 ``fci.cistring.cre_sign`` gives ``a+_p`` the sign (-1)^(occupied orbitals above p), and
 ``fci.addons.cre_b``/``des_b`` add (-1)^(n_alpha)): coefficient C[I_a, I_b] multiplies
@@ -132,6 +136,15 @@ def lowering(state: ReferenceState) -> ReferenceState:
     return _apply_one_body(state, m)
 
 
+def raising(state: ReferenceState) -> ReferenceState:
+    """S_plus |state> with S_plus = sum_p a+_{p alpha} a_{p beta} over all MOs."""
+    n = state.n_mo
+    m = np.zeros((2 * n, 2 * n))
+    for p in range(n):
+        m[p, n + p] = 1.0
+    return _apply_one_body(state, m)
+
+
 def _scaled(state: ReferenceState, factor: float) -> ReferenceState:
     return ReferenceState(state.n_mo, {k: factor * c for k, c in state.coeffs.items()})
 
@@ -185,6 +198,53 @@ def casscf_reference_states(
         zero = _scaled(lowering(plus), 1 / np.sqrt(2))
         minus = _scaled(lowering(zero), 1 / np.sqrt(2))
         out[(label, 1)], out[(label, 0)], out[(label, -1)] = plus, zero, minus
+    return out
+
+
+def _combination(x: np.ndarray, n_mo: int, nocc: int, beta_sign: float) -> ReferenceState:
+    """sum_ia x[i, a] (|i->a alpha> + beta_sign |i->a beta>), normalised by its own norm, with
+    |i->a sigma> = a+_{(nocc + a) sigma} a_{i sigma} |Phi0> applied to the closed-shell
+    determinant |Phi0> (all occupied MOs, canonical order, coefficient +1)."""
+    phi0 = _to_spin_orbitals((tuple(range(nocc)), tuple(range(nocc))), n_mo)
+    state = ReferenceState(n_mo)
+    for (i, a), c in np.ndenumerate(np.asarray(x, dtype=float)):
+        if c == 0.0:
+            continue
+        for offset, weight in ((0, 1.0), (n_mo, beta_sign)):
+            hit = _excite(offset + nocc + a, offset + i, phi0)
+            assert hit is not None
+            sign, occ = hit
+            key = _to_determinant(occ, n_mo)
+            state.coeffs[key] = state.coeffs.get(key, 0.0) + sign * weight * c
+    return _scaled(state, 1.0 / state.norm())
+
+
+def response_reference_states(
+    mf: Any, td: Any, td_triplet: Any, states: Sequence[StateLabel]
+) -> dict[tuple[StateLabel, int], ReferenceState]:
+    """The TDA/TDDFT states as explicit determinant vectors over all MOs, keyed (label, Ms).
+
+    X only (TDDFT's Y dropped), every state normalised by its own vector norm: S0 = |Phi0>;
+    S_m = sum X_ia (|i->a alpha> + |i->a beta>) with X = td.xy[m - 1][0]; T_n at Ms = 0
+    = sum X_ia (|i->a alpha> - |i->a beta>) with X = td_triplet.xy[n - 1][0], then
+    |T, +1> = S_plus |T, 0> / sqrt(2) and |T, -1> = S_minus |T, 0> / sqrt(2) (Condon-Shortley).
+    """
+    n_mo = int(np.asarray(mf.mo_coeff).shape[1])
+    nocc = int(np.count_nonzero(np.asarray(mf.mo_occ) > 0))
+    out: dict[tuple[StateLabel, int], ReferenceState] = {}
+    for label in states:
+        if label.multiplicity == 1 and label.index == 0:
+            occ = tuple(range(nocc))
+            out[(label, 0)] = ReferenceState(n_mo, {(occ, occ): 1.0 + 0j})
+        elif label.multiplicity == 1:
+            x = np.asarray(td.xy[label.index - 1][0])
+            out[(label, 0)] = _combination(x, n_mo, nocc, 1.0)
+        else:
+            x = np.asarray(td_triplet.xy[label.index - 1][0])
+            zero = _combination(x, n_mo, nocc, -1.0)
+            out[(label, 0)] = zero
+            out[(label, 1)] = _scaled(raising(zero), 1 / np.sqrt(2))
+            out[(label, -1)] = _scaled(lowering(zero), 1 / np.sqrt(2))
     return out
 
 

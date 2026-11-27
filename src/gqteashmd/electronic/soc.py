@@ -92,6 +92,36 @@ CI vectors (``<S| S_- = 0``, ``S_+ |T, +1> = 0``):
 
 The doubly occupied core contributes nothing (a spin flip or S^z on a closed shell vanishes); it
 enters only through the SOMF density. Only active-orbital indices appear.
+
+TDA/TDDFT (CIS-like states, X only)
+-----------------------------------
+Occupied MOs i, j, virtual MOs a, b (``mf.mo_coeff``, all MOs, h transformed to the MO basis),
+``|i->a, sigma> = a+_{a sigma} a_{i sigma} |Phi0>``, ``X[i, a]`` of PySCF's ``td.xy[k][0]``
+(nocc, nvir). PySCF's restricted X has ``sum X^2 = 1/2`` for TDA and ``sum X^2 - sum Y^2 = 1/2``
+for TDDFT; Y is dropped and every state's X is rescaled to ``x = X / sqrt(2 sum X^2)``, so
+``sum x^2 = 1/2`` (the overlaps' approximation). The states (the layout of
+``pyscf_response.response_expansion`` and ``response_triplet_expansion``), all normalised::
+
+    S0 = |Phi0>,  S_m = sum x_ia (|i->a, alpha> + |i->a, beta>),
+    |T_n, 0> = sum x_ia (|i->a, alpha> - |i->a, beta>)
+
+From ``S_- a+_{a alpha} a_{i beta} |Phi0> = |i->a, beta> - |i->a, alpha>`` and Condon-Shortley,
+``|T_n, +1> = -sqrt 2 sum x_ia a+_{a alpha} a_{i beta} |Phi0>``. Evaluating the densities by
+the anticommutation rules (``a+_{p beta} a_{q alpha}`` on ``a+_{a alpha} a_{i beta} |Phi0>``
+lands on a single excitation only for q = a, p virtual, giving ``|i->p, beta>``, and for q = j
+occupied, p = i, giving ``-|j->a, alpha>``; on the same ket ``a+_{p alpha} a_{q alpha}`` gives
+``+a+_{b alpha} a_{i beta}|Phi0>`` for (p, q) = (b, a) and ``a+_{p beta} a_{q beta}`` gives
+``-a+_{a alpha} a_{j beta}|Phi0>`` for (p, q) = (i, j), i != j, while the occupied diagonal
+terms cancel between the alpha and the beta parts of ``S^z_pq``), with ``x^S`` the singlet's and
+``x^T``, ``x^T'`` the triplets' amplitudes (bra first)::
+
+    S0-T:   D[i, a]  = -sqrt 2 x^T[i, a]                       (occupied row, virtual column)
+    S_m-T:  D[b, a]  = -sqrt 2 (x^S^T x^T)[b, a],   D[i, j] = +sqrt 2 (x^T x^S^T)[i, j]
+    T-T':   Z[b, a]  =  (x^T^T x^T')[b, a],          Z[i, j] = (x^T' x^T^T)[i, j]
+
+and the components follow from D and Z exactly as for SA-CASSCF above. So
+``<S0|H|T_n, 0> = sum_ia h_z,ia x_ia`` and ``<S_m|H|T_n, 0> = sum_ab h_z,ba (x^S^T x^T)_ba -
+sum_ij h_z,ij (x^T x^S^T)_ij`` (the virtual-virtual and the occupied-occupied contractions).
 """
 
 from __future__ import annotations
@@ -200,6 +230,30 @@ class SocBlocks:
     tt: np.ndarray
 
 
+def _st_components(
+    h_z: np.ndarray, h_plus: np.ndarray, h_minus: np.ndarray, d: np.ndarray
+) -> np.ndarray:
+    """<S|H|T, M> for M = -1, 0, +1 from the spin-flip density D = <S|a+_{p beta} a_{q alpha}
+    |T, +1> (module docstring)."""
+    return np.array(
+        [
+            -0.5 * np.sum(h_minus * d),
+            -np.sum(h_z * d) / np.sqrt(2.0),
+            0.5 * np.sum(h_plus * d),
+        ]
+    )
+
+
+def _tt_block(
+    h_z: np.ndarray, h_plus: np.ndarray, h_minus: np.ndarray, z_density: np.ndarray
+) -> np.ndarray:
+    """The 3 x 3 block <T, M|H|T', M'> from Z = <T, +1|S^z_pq|T', +1> (module docstring)."""
+    z = np.sum(h_z * z_density)
+    plus = np.sum(h_plus * z_density) / np.sqrt(2.0)
+    minus = np.sum(h_minus * z_density) / np.sqrt(2.0)
+    return np.array([[-z, plus, 0.0], [minus, 0.0, plus], [0.0, minus, z]])
+
+
 def _ci_matrix(ci: Any, ncas: int, nelec: tuple[int, int]) -> np.ndarray:
     from pyscf.fci import cistring
 
@@ -252,19 +306,64 @@ def casscf_soc_blocks(mc: Any, states: Sequence[StateLabel], h_ao: np.ndarray) -
             flips = _excitations(ket, ncas, t_nelec, "a", "b")
             for i, bra in enumerate(s_ci):
                 d = np.einsum("ab,pqab->pq", bra, flips)
-                st[i, j, 2] = 0.5 * np.sum(h_plus * d)
-                st[i, j, 1] = -np.sum(h_z * d) / np.sqrt(2.0)
-                st[i, j, 0] = -0.5 * np.sum(h_minus * d)
+                st[i, j] = _st_components(h_z, h_plus, h_minus, d)
             alpha = _excitations(ket, ncas, t_nelec, "a", "a")
             beta = _excitations(ket, ncas, t_nelec, "b", "b") if t_nelec[1] else None
             for jb, bra in enumerate(t_ci):
                 z_density = 0.5 * np.einsum("ab,pqab->pq", bra, alpha)
                 if beta is not None:
                     z_density -= 0.5 * np.einsum("ab,pqab->pq", bra, beta)
-                z = np.sum(h_z * z_density)
-                plus = np.sum(h_plus * z_density) / np.sqrt(2.0)
-                minus = np.sum(h_minus * z_density) / np.sqrt(2.0)
-                tt[jb, j] = [[-z, plus, 0.0], [minus, 0.0, plus], [0.0, minus, z]]
+                tt[jb, j] = _tt_block(h_z, h_plus, h_minus, z_density)
     except Exception as exc:
         raise wrap_failure("The SA-CASSCF spin-orbit matrix elements", exc) from exc
+    return SocBlocks(st, tt)
+
+
+def _normalised_amplitudes(td: Any, index: int) -> np.ndarray:
+    """X of root `index` (0-based) as (nocc, nvir), scaled so that sum X^2 = 1/2 (TDDFT's Y is
+    dropped; for TDA PySCF's X already has this norm)."""
+    x = np.asarray(td.xy[index][0], dtype=float)
+    scale: float = 1.0 / np.sqrt(2.0 * float(np.sum(x * x)))
+    return scale * x
+
+
+def response_soc_blocks(
+    mf: Any, td: Any, td_triplet: Any, states: Sequence[StateLabel], h_ao: np.ndarray
+) -> SocBlocks:
+    """The TDA/TDDFT spin-orbit blocks of `states` (S0 the SCF determinant, S_m root m - 1 of
+    `td`, T_n root n - 1 of `td_triplet`) for the operator `h_ao` (3, nao, nao) of
+    `soc_operator`; X only, renormalised per state. The formulas are in the module docstring.
+    """
+    singlets = [s for s in states if s.multiplicity == 1]
+    triplets = [s for s in states if s.multiplicity == 3]
+    n_s, n_t = len(singlets), len(triplets)
+    st = np.zeros((n_s, n_t, 3), dtype=complex)
+    tt = np.zeros((n_t, n_t, 3, 3), dtype=complex)
+    if not n_t:
+        return SocBlocks(st, tt)
+    try:
+        mo = np.asarray(mf.mo_coeff)
+        nocc = int(np.count_nonzero(np.asarray(mf.mo_occ) > 0))
+        n_mo = mo.shape[1]
+        h = np.einsum("pi,kpq,qj->kij", mo, np.asarray(h_ao, dtype=complex), mo)
+        h_z, h_plus, h_minus = h[2], h[0] + 1j * h[1], h[0] - 1j * h[1]
+        occ, vir = slice(0, nocc), slice(nocc, n_mo)
+        xs = [None if s.index == 0 else _normalised_amplitudes(td, s.index - 1) for s in singlets]
+        xt = [_normalised_amplitudes(td_triplet, t.index - 1) for t in triplets]
+        for j, x_t in enumerate(xt):
+            for i, x_s in enumerate(xs):
+                d = np.zeros((n_mo, n_mo))
+                if x_s is None:
+                    d[occ, vir] = -np.sqrt(2.0) * x_t
+                else:
+                    d[vir, vir] = -np.sqrt(2.0) * (x_s.T @ x_t)
+                    d[occ, occ] = np.sqrt(2.0) * (x_t @ x_s.T)
+                st[i, j] = _st_components(h_z, h_plus, h_minus, d)
+            for jb, x_b in enumerate(xt):
+                z_density = np.zeros((n_mo, n_mo))
+                z_density[vir, vir] = x_b.T @ x_t
+                z_density[occ, occ] = x_t @ x_b.T
+                tt[jb, j] = _tt_block(h_z, h_plus, h_minus, z_density)
+    except Exception as exc:
+        raise wrap_failure("The TDA/TDDFT spin-orbit matrix elements", exc) from exc
     return SocBlocks(st, tt)
