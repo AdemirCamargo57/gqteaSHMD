@@ -27,8 +27,23 @@ from gqteashmd.util.fileio import write_text_atomic
 _GENERATION = re.compile(r"gen_(\d{8})")
 
 
-def log_dtype(n_states: int, n_dof: int) -> np.dtype:
+def log_dtype(n_states: int, n_dof: int, *, n_spin_free: int | None = None) -> np.dtype:
+    """The record of steps.log; ``n_states`` columns in the core's (diagonal) basis.
+
+    With triplets (``n_spin_free`` = n + m given; spec 4.1) four MCH columns follow at the end:
+    ``energies_diag`` (n_states), ``active_mch`` (the active spin-free state), ``energies_sf``
+    and ``populations_mch`` (n + m each). Without it the layout is unchanged.
+    """
     n, f = int(n_states), int(n_dof)
+    mch: list[tuple[Any, ...]] = []
+    if n_spin_free is not None:
+        k = int(n_spin_free)
+        mch = [
+            ("energies_diag", "<f8", (n,)),
+            ("active_mch", "<i8"),
+            ("energies_sf", "<f8", (k,)),
+            ("populations_mch", "<f8", (k,)),
+        ]
     return np.dtype(
         [
             ("step", "<i8"),
@@ -52,6 +67,7 @@ def log_dtype(n_states: int, n_dof: int) -> np.dtype:
             ("probabilities", "<f8", (n,)),
             ("q", "<f8", (f,)),
             ("v", "<f8", (f,)),
+            *mch,
         ]
     )
 
@@ -64,9 +80,11 @@ def log_row(dtype: np.dtype, **values: Any) -> np.ndarray:
 
 
 class StepLog:
-    def __init__(self, path: Path, n_states: int, n_dof: int) -> None:
+    def __init__(
+        self, path: Path, n_states: int, n_dof: int, *, n_spin_free: int | None = None
+    ) -> None:
         self.path = Path(path)
-        self.dtype = log_dtype(n_states, n_dof)
+        self.dtype = log_dtype(n_states, n_dof, n_spin_free=n_spin_free)
 
     def __len__(self) -> int:
         if not self.path.exists():
@@ -143,7 +161,8 @@ class RestartStore:
             shutil.rmtree(tmp, ignore_errors=True)
 
 
-def _selected(rows: np.ndarray, output_every: int) -> np.ndarray:
+def _kept(rows: np.ndarray, output_every: int) -> np.ndarray:
+    """The boolean mask of the log rows that output.h5 keeps (ruling R2)."""
     keep = (rows["ticks"] == 0) & (rows["grid_step"] % output_every == 0)
     keep |= rows["hop_to"] >= 0
     keep |= rows["frustrated"] != 0
@@ -151,8 +170,25 @@ def _selected(rows: np.ndarray, output_every: int) -> np.ndarray:
     keep |= rows["rejections"] > 0
     if rows.size:
         keep[-1] = True
-    selected: np.ndarray = rows[keep]
-    return selected
+    mask: np.ndarray = keep
+    return mask
+
+
+def spin_free_hops(rows: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Spin-free ``hop_from``/``hop_to`` of every log row (plan ruling PR1).
+
+    At an accepted hop (``hop_to >= 0``) they are the active spin-free state (``active_mch``)
+    of the previous log row, i.e. the previous accepted (sub)step whether output.h5 keeps it
+    or not, and of this row; -1 elsewhere.
+    """
+    active = np.asarray(rows["active_mch"], dtype=np.int64)
+    hop_from = np.full(active.shape, -1, dtype=np.int64)
+    hop_to = np.full(active.shape, -1, dtype=np.int64)
+    hops = np.flatnonzero(rows["hop_to"] >= 0)
+    hops = hops[hops > 0]  # row 0 is t = 0, never a hop
+    hop_from[hops] = active[hops - 1]
+    hop_to[hops] = active[hops]
+    return hop_from, hop_to
 
 
 def write_output_h5(
@@ -163,43 +199,83 @@ def write_output_h5(
     n_atoms: int,
     output_every: int,
     attrs: Mapping[str, Any],
+    n_singlets: int | None = None,
+    n_triplets: int | None = None,
 ) -> None:
+    """output.h5 from the step log; ``schema_version`` 1, or 2 with triplets (spec 4.2).
+
+    With ``n_triplets > 0`` the log must have the MCH columns (``log_dtype(n_spin_free=)``):
+    ``active``, ``populations``, ``energies``, ``hop_from``/``hop_to`` are then spin-free
+    (PR1), the diagonal ones are ``active_diag``, ``populations_diag``, ``energies_diag``,
+    ``hop_from_diag``/``hop_to_diag``, and the attributes ``n_singlets``, ``n_triplets`` are
+    added. ``coefficients_*`` and ``probabilities`` stay in the diagonal basis.
+    """
     import h5py
 
     path = Path(path)
-    kept = _selected(rows, output_every)
+    triplets = bool(n_triplets)
+    if triplets and not n_singlets:
+        raise ValueError("write_output_h5 with n_triplets > 0 needs n_singlets >= 1")
+    keep = _kept(rows, output_every)
+    kept = rows[keep]
     m = kept.shape[0]
     populations = kept["c_real"] ** 2 + kept["c_imag"] ** 2
+    if triplets:
+        hop_from_sf, hop_to_sf = (a[keep] for a in spin_free_hops(rows))
+        index = "spin-free state index"
+        active = ("active", kept["active_mch"], f"{index} (0 = S0)")
+        hop_from = ("hop_from", hop_from_sf, f"{index} (-1 = no hop)")
+        hop_to = ("hop_to", hop_to_sf, f"{index} (-1 = no hop)")
+        energies = ("energies", kept["energies_sf"], "Eh")
+        spin_free_populations = ("populations", kept["populations_mch"], "-")
+    else:
+        active = ("active", kept["active"], "state index (0 = S0)")
+        hop_from = ("hop_from", kept["hop_from"], "state index (-1 = no hop)")
+        hop_to = ("hop_to", kept["hop_to"], "state index (-1 = no hop)")
+        energies = ("energies", kept["energies"], "Eh")
+        spin_free_populations = ("populations", populations, "-")
     datasets: list[tuple[str, np.ndarray, str]] = [
         ("time_fs", kept["time_au"] * AU_TIME_IN_FS, "fs"),
         ("step", kept["step"], "-"),
         ("grid_step", kept["grid_step"], "-"),
         ("ticks", kept["ticks"], "-"),
         ("depth", kept["depth"], "-"),
-        ("active", kept["active"], "state index (0 = S0)"),
-        ("hop_from", kept["hop_from"], "state index (-1 = no hop)"),
-        ("hop_to", kept["hop_to"], "state index (-1 = no hop)"),
+        active,
+        hop_from,
+        hop_to,
         ("frustrated", kept["frustrated"], "bool"),
         ("rung_changed", kept["rung_changed"], "bool"),
         ("rejections", kept["rejections"], "-"),
         ("random_number", kept["random_number"], "-"),
         ("min_singular_value", kept["min_singular_value"], "-"),
-        ("energies", kept["energies"], "Eh"),
+        energies,
         ("e_total", kept["e_total"], "Eh"),
         ("e_kinetic", kept["e_kinetic"], "Eh"),
-        ("populations", populations, "-"),
+        spin_free_populations,
         ("coefficients_real", kept["c_real"], "-"),
         ("coefficients_imag", kept["c_imag"], "-"),
         ("probabilities", kept["probabilities"], "-"),
         ("positions", kept["q"].reshape(m, n_atoms, 3), "bohr"),
         ("velocities", kept["v"].reshape(m, n_atoms, 3), "bohr per atomic unit of time"),
     ]
+    if triplets:
+        diagonal = "diagonal state index"
+        datasets += [
+            ("active_diag", kept["active"], f"{diagonal} (0 = lowest)"),
+            ("populations_diag", populations, "-"),
+            ("energies_diag", kept["energies_diag"], "Eh"),
+            ("hop_from_diag", kept["hop_from"], f"{diagonal} (-1 = no hop)"),
+            ("hop_to_diag", kept["hop_to"], f"{diagonal} (-1 = no hop)"),
+        ]
     tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
     try:
         with h5py.File(tmp, "w") as f:
-            f.attrs["schema_version"] = 1
+            f.attrs["schema_version"] = 2 if triplets else 1
             f.attrs["state_labels"] = [str(label) for label in labels]
             f.attrs["output_every"] = int(output_every)
+            if triplets:
+                f.attrs["n_singlets"] = int(n_singlets or 0)
+                f.attrs["n_triplets"] = int(n_triplets or 0)
             for key, value in attrs.items():
                 f.attrs[key] = value
             for name, data, units in datasets:

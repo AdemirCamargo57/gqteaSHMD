@@ -1,16 +1,20 @@
 """The trajectory runner on the fake backend (fast tier; spec sections 3.2-6)."""
 
+import dataclasses
 import json
+import shutil
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
 
 from gqteashmd.core.units import AU_TIME_IN_FS, HARTREE_IN_EV
-from gqteashmd.dynamics.driver import initial_state, step
+from gqteashmd.dynamics.driver import initial_state, kinetic_energy, step
 from gqteashmd.dynamics.lvc import LVCModel, lvc_wigner_samples
 from gqteashmd.dynamics.options import DynamicsOptions
 from gqteashmd.dynamics.randomness import GeneratorSource, ReplaySource
+from gqteashmd.dynamics.representation import diagonal_energies, mch_coefficients, mch_state
 from gqteashmd.dynamics.restart import load_state
 from gqteashmd.errors import ElectronicStructureError
 from gqteashmd.testing.fake_backend import ModelBackend, SimulatedCrash
@@ -18,10 +22,12 @@ from gqteashmd.trajectory import runner as runner_module
 from gqteashmd.trajectory.model import BackendModel
 from gqteashmd.trajectory.runner import (
     InitialConditions,
+    Progress,
     RestartError,
     RunSettings,
     TrajectoryRunner,
 )
+from gqteashmd.trajectory.spin_expansion import spin_free_index, spin_free_populations
 from gqteashmd.trajectory.store import RestartStore, StepLog
 
 LVC = Path(__file__).resolve().parents[1] / "data" / "lvc" / "lvc_singlets.template"
@@ -439,3 +445,178 @@ def test_a_persistent_energy_jump_at_a_hop_step_ends_the_trajectory(tmp_path, pe
         assert "energy_jump_limit_eV" in result["message"]
     else:
         assert result["outcome"] == "finished", result
+
+
+# ---------------------------------------------------------------- triplets and SOC (spec 4.1-4.2)
+
+LVC_SOC = LVC.parent / "lvc_soc.template"
+SOC_N = 20
+SOC_LABELS = ["S0", "S1", "T1", "T2"]
+N_SINGLETS, N_TRIPLETS = 2, 2
+SPIN_FREE_ROWS = [0, 1, 2, 3]  # expanded index of S0, S1, T1(-1), T2(-1)
+
+
+def _soc_model(template=LVC_SOC):
+    return LVCModel.from_template(template, spin_orbit=True)
+
+
+def _soc_settings(n=SOC_N, **kwargs):
+    options = DynamicsOptions(
+        dt_au=DT,
+        coupling="overlap",
+        gradient_transformation="none",
+        hop_energy="current",
+        **kwargs.pop("options", {}),
+    )
+    return RunSettings(options, tmax_au=n * DT, **kwargs)
+
+
+def _soc_adapter(template=LVC_SOC, **backend):
+    model = _soc_model(template)
+    return model, BackendModel(ModelBackend(model, **backend), model.masses, coupling="overlap")
+
+
+def _soc_run(tmp_path, *, name="soc", settings=None, active=1, template=LVC_SOC, **backend):
+    model, adapter = _soc_adapter(template, **backend)
+    runner = TrajectoryRunner(adapter, settings or _soc_settings(), tmp_path / name)
+    q, v = lvc_wigner_samples(model, 1, np.random.default_rng(2))
+    initial = InitialConditions(q=q[0], v=v[0], active=active)
+    return runner.run(initial, ReplaySource([0.0] * 400)), tmp_path / name
+
+
+def _soc_log(directory):
+    return StepLog(directory / "steps.log", 8, 9, n_spin_free=4).read()
+
+
+def _h5(path):
+    h5py = pytest.importorskip("h5py")
+    with h5py.File(path, "r") as f:
+        attrs = dict(f.attrs)
+        data = {name: f[name][()] for name in f}
+        units = {name: f[name].attrs["units"] for name in f}
+    return attrs, data, units
+
+
+def test_a_spin_orbit_run_logs_and_stores_the_spin_free_states(tmp_path, monkeypatch):
+    pytest.importorskip("h5py")
+    seen = []
+    original = TrajectoryRunner._append
+
+    def spy(self, state, record, progress, **kwargs):
+        seen.append((state, record))
+        return original(self, state, record, progress, **kwargs)
+
+    monkeypatch.setattr(TrajectoryRunner, "_append", spy)
+    result, d = _soc_run(tmp_path)
+    assert result["outcome"] == "finished" and result["n_hops"] > 0
+    rows = _soc_log(d)
+    assert len(rows) == len(seen) == SOC_N + 1
+    assert "u" not in rows.dtype.names  # U itself is not logged
+    np.testing.assert_allclose(rows["populations_mch"].sum(axis=1), 1.0, rtol=0, atol=1e-12)
+    state0 = seen[0][0]
+    assert seen[0][1] is None and state0.u is not None
+    expected = [spin_free_index(N_SINGLETS, N_TRIPLETS, mch_state(state0.u, state0.active))]
+    expected += [spin_free_index(N_SINGLETS, N_TRIPLETS, r.active_mch) for _, r in seen[1:]]
+    assert list(rows["active_mch"]) == expected
+    assert expected[0] == 1 and np.any(rows["active"] != rows["active_mch"])
+    c0 = mch_coefficients(state0.u, state0.c)
+    np.testing.assert_allclose(
+        rows["populations_mch"][0],
+        spin_free_populations(np.abs(c0) ** 2, N_SINGLETS, N_TRIPLETS),
+        rtol=0,
+        atol=1e-15,
+    )
+    for row, (_, record) in zip(rows[1:], seen[1:], strict=True):
+        np.testing.assert_array_equal(row["energies_diag"], record.energies_diag)
+        np.testing.assert_array_equal(row["energies_sf"], record.energies[SPIN_FREE_ROWS])
+        np.testing.assert_allclose(
+            row["populations_mch"],
+            spin_free_populations(np.abs(record.c_mch) ** 2, N_SINGLETS, N_TRIPLETS),
+            rtol=0,
+            atol=1e-15,
+        )
+    hops = np.flatnonzero(rows["hop_to"] >= 0)
+    assert hops.size and hops[0] > 0
+    assert any(rows["active_mch"][i - 1] < 2 <= rows["active_mch"][i] for i in hops)  # S -> T
+
+    attrs, data, units = _h5(d / "output.h5")
+    assert attrs["schema_version"] == 2
+    assert (attrs["n_singlets"], attrs["n_triplets"]) == (N_SINGLETS, N_TRIPLETS)
+    assert list(attrs["state_labels"]) == SOC_LABELS
+    assert set(units) == set(data)  # every dataset has units
+    np.testing.assert_array_equal(data["active"], rows["active_mch"])
+    np.testing.assert_array_equal(data["populations"], rows["populations_mch"])
+    np.testing.assert_array_equal(data["energies"], rows["energies_sf"])
+    hop_from = np.full(len(rows), -1)
+    hop_to = np.full(len(rows), -1)
+    hop_from[hops] = rows["active_mch"][hops - 1]
+    hop_to[hops] = rows["active_mch"][hops]
+    np.testing.assert_array_equal(data["hop_from"], hop_from)
+    np.testing.assert_array_equal(data["hop_to"], hop_to)
+    np.testing.assert_array_equal(data["active_diag"], rows["active"])
+    np.testing.assert_array_equal(data["hop_from_diag"], rows["hop_from"])
+    np.testing.assert_array_equal(data["hop_to_diag"], rows["hop_to"])
+    assert data["populations_diag"].shape == (len(rows), 8)
+    assert data["energies_diag"].shape == (len(rows), 8)
+    assert data["populations"].shape == (len(rows), 4)
+    progress = json.loads((d / "progress.json").read_text())
+    assert progress["active"] == SOC_LABELS[int(rows["active_mch"][-1])]  # PR6
+
+
+def test_a_spin_orbit_crash_and_resume_is_bit_identical(tmp_path):
+    pytest.importorskip("h5py")
+    _, reference = _soc_run(tmp_path, name="ref")
+    crash = 12  # call 1 is step 0; calls 2..11 are steps 1..10; the kill is in step 11
+    with pytest.raises(SimulatedCrash):
+        _soc_run(tmp_path, name="b", faults={crash: "crash"})
+    assert len(_soc_log(tmp_path / "b")) == 11
+    result, d = _soc_run(tmp_path, name="b", calls=crash - 1)
+    assert result["outcome"] == "finished" and len(result["resumes"]) == 1
+    assert _soc_log(d).tobytes() == _soc_log(reference).tobytes()
+    attrs_a, data_a, _ = _h5(d / "output.h5")
+    attrs_b, data_b, _ = _h5(reference / "output.h5")
+    assert set(data_a) == set(data_b) and attrs_a.keys() == attrs_b.keys()
+    for name in data_a:
+        np.testing.assert_array_equal(data_a[name], data_b[name], err_msg=name)
+    for key, value in attrs_a.items():
+        np.testing.assert_array_equal(value, attrs_b[key], err_msg=key)
+
+
+def test_stop_after_s0_follows_the_active_spin_free_state(tmp_path):
+    """PR8: a triplet below S0 puts the S0-dominant diagonal state at index 3, so the core's
+    diagonal index alone would never count the trajectory as in S0."""
+    template = tmp_path / "lvc_low_t1.template"
+    text = LVC_SOC.read_text()
+    original_t1 = "   3      1 1.400000000000e-01"
+    assert original_t1 in text
+    template.write_text(text.replace(original_t1, "   3      1 -5.000000000000e-02"))
+    shutil.copy(LVC_SOC.parent / "V0.txt", tmp_path / "V0.txt")
+    settings = _soc_settings(10, stop_after_s0_au=3 * DT, options={"hopping": "none"})
+    result, d = _soc_run(tmp_path, settings=settings, active=0, template=template)
+    rows = _soc_log(d)
+    assert rows["active"][0] != 0 and set(rows["active_mch"]) == {0}
+    assert result["outcome"] == "stopped_in_s0" and result["n_grid_steps"] == 3
+
+
+def test_the_energy_jump_fallback_uses_the_diagonal_energy(tmp_path):
+    """A restart without last_e_total_au: E_tot(previous) = E^diag_active + K when U is set."""
+    model, adapter = _soc_adapter()
+    q, v = lvc_wigner_samples(model, 1, np.random.default_rng(2))
+    options = _soc_settings().options
+    state = initial_state(adapter, q[0], v[0], 1, options=options)
+    for _ in range(5):
+        adapter.active, adapter.u = state.active, state.u
+        state, _ = step(adapter, state, options, ReplaySource([0.99]))
+    e_diag = diagonal_energies(state.snapshot.hamiltonian, state.u)
+    gap = np.abs(e_diag - state.snapshot.energies)
+    k = int(np.argmax(gap))
+    assert gap[k] > 1e-3
+    state = dataclasses.replace(state, active=k)
+    limit = float(gap[k]) / 4
+    runner = TrajectoryRunner(adapter, _soc_settings(energy_jump_limit_au=limit), tmp_path / "r")
+    previous = float(e_diag[k]) + kinetic_energy(state.v, adapter.masses)
+    small = SimpleNamespace(e_total=previous + 0.5 * limit, e_total_before_hop=None)
+    large = SimpleNamespace(e_total=previous + 2.0 * limit, e_total_before_hop=None)
+    assert runner._energy_jump(state, small, Progress()) is None
+    jump = runner._energy_jump(state, large, Progress())
+    assert jump == pytest.approx(2.0 * limit, rel=1e-9)
