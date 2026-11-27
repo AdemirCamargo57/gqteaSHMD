@@ -267,10 +267,89 @@ def test_hop_energy_reaches_the_options_and_the_fingerprint_only_when_set(tmp_pa
     assert {k: v for k, v in fp_previous.items() if k != "hop_energy"} == fp_default
 
 
-def test_triplets_are_refused(tmp_path, write_input):
+THIOFORMALDEHYDE = Path(__file__).resolve().parents[1] / "data" / "thioformaldehyde.xyz"
+AMMONIA_XYZ = (
+    "4\nammonia\nN 0.0 0.0 0.1\nH 0.0 0.94 -0.27\nH 0.81 -0.47 -0.27\nH -0.81 -0.47 -0.27\n"
+)
+
+
+def _with_triplets(ctx, geometry, *, soc_operator="effective_charge", triplets=2):
+    electronic = ctx.config.electronic.model_copy(
+        update={"triplets": triplets, "soc_operator": soc_operator}
+    )
+    molecule = ctx.config.molecule.model_copy(update={"geometry": geometry})
+    return ctx.config.model_copy(update={"electronic": electronic, "molecule": molecule})
+
+
+def test_triplets_are_no_longer_refused(tmp_path, write_input):
     ctx = _context(tmp_path, write_input)
     two = ctx.config.electronic.model_copy(update={"triplets": 1})
-    assert _stage().check_config(ctx.config.model_copy(update={"electronic": two})) == [
-        "Stage 'dynamics' with [electronic] triplets > 0 is planned (spin-orbit coupling, "
-        "sub-project 3); set [electronic] triplets = 0"
-    ]
+    problems = _stage().check_config(ctx.config.model_copy(update={"electronic": two}))
+    assert not [p for p in problems if "is planned" in p]
+    assert problems == []
+
+
+def test_the_effective_charge_operator_names_a_missing_element(tmp_path, write_input):
+    ctx = _context(tmp_path, write_input)
+    ammonia = tmp_path / "ammonia.xyz"
+    ammonia.write_text(AMMONIA_XYZ)
+    problems = _stage().check_config(_with_triplets(ctx, ammonia))
+    assert len(problems) == 1
+    assert "effective nuclear charge for N (" in problems[0]  # N only, not H
+    assert "soc_operator" in problems[0] and "triplets" in problems[0]
+
+
+def test_the_effective_charge_operator_accepts_h_c_s(tmp_path, write_input):
+    ctx = _context(tmp_path, write_input)
+    assert _stage().check_config(_with_triplets(ctx, THIOFORMALDEHYDE)) == []
+
+
+def test_the_element_check_applies_only_with_triplets_and_effective_charges(tmp_path, write_input):
+    ctx = _context(tmp_path, write_input)
+    ammonia = tmp_path / "ammonia.xyz"
+    ammonia.write_text(AMMONIA_XYZ)
+    stage = _stage()
+    assert stage.check_config(_with_triplets(ctx, ammonia, soc_operator="somf")) == []
+    assert stage.check_config(_with_triplets(ctx, ammonia, triplets=0)) == []
+
+
+def test_an_unreadable_geometry_is_left_to_prepare(tmp_path, write_input):
+    ctx = _context(tmp_path, write_input)
+    assert _stage().check_config(_with_triplets(ctx, tmp_path / "missing.xyz")) == []
+    broken = tmp_path / "broken.xyz"
+    broken.write_text("not a geometry\n")
+    assert _stage().check_config(_with_triplets(ctx, broken)) == []
+
+
+def test_the_new_keys_are_left_out_of_the_fingerprint_at_their_defaults(tmp_path, write_input):
+    default = _context(tmp_path / "a", write_input)
+    fp_default = _stage().fingerprint_inputs(default)["dynamics"]
+    assert "gradient_transformation" not in fp_default and "eselect_eV" not in fp_default
+    assert set(fp_default) == MAIN_DYNAMICS_FINGERPRINT_KEYS
+    explicit = _context(
+        tmp_path / "b",
+        write_input,
+        dynamics='tmax_fs = 2.0\ndt_fs = 0.25\ngradient_transformation = "ngt"\n',
+    )
+    assert _stage().fingerprint_inputs(explicit)["dynamics"] == fp_default
+    for lines, key, value in (
+        ('gradient_transformation = "none"\n', "gradient_transformation", "none"),
+        ("eselect_eV = 0.5\n", "eselect_eV", 0.5),
+    ):
+        ctx = _context(
+            tmp_path / key, write_input, dynamics="tmax_fs = 2.0\ndt_fs = 0.25\n" + lines
+        )
+        fp = _stage().fingerprint_inputs(ctx)["dynamics"]
+        assert fp[key] == value
+        assert {k: v for k, v in fp.items() if k != key} == fp_default
+
+
+def test_run_settings_passes_the_new_keys(tmp_path, write_input):
+    default = _context(tmp_path / "a", write_input)
+    options = run_settings(default.config.dynamics).options
+    assert options.gradient_transformation == "ngt" and options.eselect_Eh is None
+    lines = 'tmax_fs = 2.0\ndt_fs = 0.25\ngradient_transformation = "none"\neselect_eV = 0.5\n'
+    ctx = _context(tmp_path / "b", write_input, dynamics=lines)
+    options = run_settings(ctx.config.dynamics).options
+    assert options.gradient_transformation == "none"
+    assert options.eselect_Eh == 0.5 / HARTREE_IN_EV

@@ -318,6 +318,8 @@ class DynamicsStageSection(_Section):
     edc_convention: Literal["sharc", "granucci_persico"] = "sharc"
     substep_interpolation: Literal["midpoint", "endpoint"] = "midpoint"
     hop_energy: Literal["current", "previous"] = "current"
+    gradient_transformation: Literal["ngt", "none"] = "ngt"
+    eselect_eV: float | None = Field(default=None, gt=0, allow_inf_nan=False)
     energy_drift_limit_eV: float = Field(default=0.5, gt=0, allow_inf_nan=False)
     energy_jump_limit_eV: float = Field(default=0.1, gt=0, allow_inf_nan=False)
     stop_after_s0_fs: float | None = Field(default=None, gt=0, allow_inf_nan=False)
@@ -396,6 +398,34 @@ class AnalysisSection(_Section):
         return self
 
 
+def _spin_orbit_dynamics_problems(dynamics: DynamicsStageSection, triplets: int) -> list[str]:
+    """The [dynamics] rules of a run with triplets (spin-orbit coupling; spec 2.3)."""
+    with_triplets = f"with [electronic] triplets = {triplets}"
+    problems: list[str] = []
+    if dynamics.coupling != "overlap":
+        problems.append(
+            f"dynamics.coupling = '{dynamics.coupling}' is not available {with_triplets} "
+            "(no triplet-triplet NACs); use coupling = 'overlap'"
+        )
+    if dynamics.gradient_transformation != "none":
+        problems.append(
+            f"dynamics.gradient_transformation = '{dynamics.gradient_transformation}' is not "
+            f"available {with_triplets} (its NAC term needs the NACs between all states); "
+            "set gradient_transformation = 'none'"
+        )
+    if dynamics.hopping == "fssh":
+        problems.append(
+            f"dynamics.hopping = 'fssh' does not work with spin-orbit coupling ({with_triplets}); "
+            "use hopping = 'sharc'"
+        )
+    if dynamics.ekin_correction == "parallel_nac":
+        problems.append(
+            "dynamics.ekin_correction = 'parallel_nac' does not work with spin-orbit coupling "
+            f"({with_triplets}); use ekin_correction = 'parallel_vel'"
+        )
+    return problems
+
+
 class ShmdConfig(_Section):
     schema_version: Literal[1] = 1
     project: ProjectSection
@@ -425,6 +455,12 @@ class ShmdConfig(_Section):
                 "dynamics.coupling = 'nacdr' needs analytic NACs, which exist for "
                 "[electronic] method = 'casscf' only; use coupling = 'overlap'"
             )
+        if (
+            self.dynamics is not None
+            and self.electronic is not None
+            and self.electronic.triplets > 0
+        ):
+            problems += _spin_orbit_dynamics_problems(self.dynamics, self.electronic.triplets)
         if self.electronic is not None and self.molecule.multiplicity != 1:
             problems.append(
                 "the PySCF backend supports closed-shell singlet molecules only "

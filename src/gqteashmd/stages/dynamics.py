@@ -11,6 +11,7 @@ from typing import Any
 
 import numpy as np
 
+from gqteashmd.chem.xyz import parse_xyz
 from gqteashmd.config.schema import DynamicsStageSection, ShmdConfig
 from gqteashmd.core.states import StateLabel
 from gqteashmd.core.units import AU_TIME_IN_FS, DALTON_IN_ME, HARTREE_IN_EV
@@ -18,7 +19,8 @@ from gqteashmd.dynamics.options import DynamicsOptions
 from gqteashmd.dynamics.randomness import GeneratorSource
 from gqteashmd.electronic.base import ElectronicBackend, MoleculeSpec
 from gqteashmd.electronic.factory import electronic_fingerprint
-from gqteashmd.errors import ProjectError, StageFailedError, TaskError
+from gqteashmd.electronic.soc import require_effective_charges
+from gqteashmd.errors import ConfigError, ProjectError, StageFailedError, TaskError
 from gqteashmd.excite.artifacts import read_trajectories_json
 from gqteashmd.stages.base import Stage, StageContext, TaskSpec
 from gqteashmd.stages.geometry import prepared_molecule, stage_backend
@@ -69,6 +71,8 @@ def run_settings(section: DynamicsStageSection) -> RunSettings:
         substep_interpolation=section.substep_interpolation,
         coupling=section.coupling,
         hop_energy=section.hop_energy,
+        gradient_transformation=section.gradient_transformation,
+        eselect_Eh=None if section.eselect_eV is None else section.eselect_eV / HARTREE_IN_EV,
     )
     return RunSettings(
         options,
@@ -81,6 +85,24 @@ def run_settings(section: DynamicsStageSection) -> RunSettings:
         ),
         energy_jump_limit_au=section.energy_jump_limit_eV / HARTREE_IN_EV,
     )
+
+
+def _effective_charge_problem(config: ShmdConfig) -> str | None:
+    """The element check of `soc_operator = "effective_charge"` before any trajectory (spec 2.3).
+    A geometry that cannot be read is left to the `prepare` stage, which reports it."""
+    try:
+        symbols = parse_xyz(config.molecule.geometry.read_text(encoding="utf-8")).symbols
+    except (OSError, UnicodeDecodeError, ValueError):
+        return None
+    try:
+        require_effective_charges(symbols)
+    except ConfigError as exc:
+        assert config.electronic is not None
+        return (
+            f"Stage 'dynamics' with [electronic] triplets = {config.electronic.triplets} and "
+            f"soc_operator = 'effective_charge': {exc}"
+        )
+    return None
 
 
 def _finite_or_none(value: Any) -> float | None:
@@ -121,11 +143,14 @@ class DynamicsStage(Stage):
                 "Stage 'dynamics' needs [electronic] singlets >= 2 (S0 and at least one "
                 "excited state)"
             )
-        if config.electronic is not None and config.electronic.triplets > 0:
-            problems.append(
-                "Stage 'dynamics' with [electronic] triplets > 0 is planned (spin-orbit "
-                "coupling, sub-project 3); set [electronic] triplets = 0"
-            )
+        if (
+            config.electronic is not None
+            and config.electronic.triplets > 0
+            and config.electronic.soc_operator == "effective_charge"
+        ):
+            problem = _effective_charge_problem(config)
+            if problem is not None:
+                problems.append(problem)
         return problems
 
     def fingerprint_inputs(self, ctx: StageContext) -> dict[str, Any]:
@@ -135,6 +160,10 @@ class DynamicsStage(Stage):
         dynamics.pop("max_failed_fraction")  # finalize-only
         if dynamics.get("hop_energy") == "current":
             dynamics.pop("hop_energy")  # hashed only when set: projects made before it stay current
+        if dynamics.get("gradient_transformation") == "ngt":
+            dynamics.pop("gradient_transformation")  # likewise (sub-project 3, spec 2.2)
+        if dynamics.get("eselect_eV") is None:
+            dynamics.pop("eselect_eV", None)
         return {
             "electronic": electronic_fingerprint(ctx.config.electronic),
             "dynamics": dynamics,
