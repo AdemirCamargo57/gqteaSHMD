@@ -12,7 +12,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
-from tests.electronic import soc_reference
+from tests.electronic import soc_reference, soc_testing
 
 from gqteashmd.config.schema import ElectronicSection
 from gqteashmd.core.states import states_from_counts
@@ -55,11 +55,6 @@ def casscf(request):
     return mol, outcome.mc, states
 
 
-def _random_matrix(nao: int, seed: int) -> np.ndarray:
-    rng = np.random.default_rng(seed)
-    return rng.standard_normal((nao, nao)) + 1j * rng.standard_normal((nao, nao))
-
-
 def _operator(mol, mc, kind: str) -> np.ndarray:
     """h_ao (3, nao, nao): the SOMF operator, a random purely imaginary Hermitian one, or a
     random complex Hermitian one."""
@@ -100,12 +95,6 @@ def _reference_blocks(mc, states, h_ao):
                         ref[(t, m - 1)], ref[(tp, mp - 1)], h_mo
                     )
     return st, tt
-
-
-def _in_slot(matrix: np.ndarray, k: int) -> np.ndarray:
-    h = np.zeros((3, *matrix.shape), dtype=complex)
-    h[k] = matrix
-    return h
 
 
 def test_reference_triplet_components_are_orthonormal_and_complete(casscf):
@@ -186,30 +175,6 @@ WE_TT = {
 }
 
 
-def _check_wigner_eckart(st_by_slot, tt_by_slot):
-    """Assert the WE_ST / WE_TT ratios for every pair; return the number of pairs checked."""
-    checked = 0
-    st_z = st_by_slot[2]
-    for i in range(st_z.shape[0]):
-        for j in range(st_z.shape[1]):
-            z0 = st_z[i, j, 1]
-            assert abs(z0) > 1e-8
-            for k in range(3):
-                expected = z0 * WE_ST[k]
-                assert np.abs(st_by_slot[k][i, j] - expected).max() <= RATIO_BOUND * abs(z0)
-            checked += 1
-    tt_z = tt_by_slot[2]
-    for j in range(tt_z.shape[0]):
-        for jp in range(tt_z.shape[1]):
-            z0 = tt_z[j, jp, 2, 2]
-            assert abs(z0) > 1e-8
-            for k in range(3):
-                expected = z0 * WE_TT[k]
-                assert np.abs(tt_by_slot[k][j, jp] - expected).max() <= RATIO_BOUND * abs(z0)
-            checked += 1
-    return checked
-
-
 # On the production code this test checks the assembled formula against the hand-written tables
 # (it caught a transposition); the physical evidence is the same test on the reference and the
 # element-by-element reference comparison.
@@ -217,22 +182,28 @@ def test_the_ms_components_follow_wigner_eckart(casscf):
     from gqteashmd.electronic import soc
 
     mol, mc, states = casscf
-    b = _random_matrix(mol.nao, 7)
-    st = {k: soc.casscf_soc_blocks(mc, states, _in_slot(b, k)).st for k in range(3)}
-    tt = {k: soc.casscf_soc_blocks(mc, states, _in_slot(b, k)).tt for k in range(3)}
+    b = soc_testing.random_matrix(mol.nao, 7)
+    st = {k: soc.casscf_soc_blocks(mc, states, soc_testing.in_slot(b, k)).st for k in range(3)}
+    tt = {k: soc.casscf_soc_blocks(mc, states, soc_testing.in_slot(b, k)).tt for k in range(3)}
     n_s = sum(1 for s in states if s.multiplicity == 1)
     n_t = len(states) - n_s
-    assert _check_wigner_eckart(st, tt) == n_s * n_t + n_t * n_t
+    assert (
+        soc_testing.check_wigner_eckart(st, tt, WE_ST, WE_TT, RATIO_BOUND) == n_s * n_t + n_t * n_t
+    )
 
 
 def test_the_reference_follows_the_same_wigner_eckart_ratios(casscf):
     mol, mc, states = casscf
-    b = _random_matrix(mol.nao, 7)
-    blocks = {k: _reference_blocks(mc, states, _in_slot(b, k)) for k in range(3)}
+    b = soc_testing.random_matrix(mol.nao, 7)
+    blocks = {k: _reference_blocks(mc, states, soc_testing.in_slot(b, k)) for k in range(3)}
     n_s = sum(1 for s in states if s.multiplicity == 1)
     n_t = len(states) - n_s
-    checked = _check_wigner_eckart(
-        {k: v[0] for k, v in blocks.items()}, {k: v[1] for k, v in blocks.items()}
+    checked = soc_testing.check_wigner_eckart(
+        {k: v[0] for k, v in blocks.items()},
+        {k: v[1] for k, v in blocks.items()},
+        WE_ST,
+        WE_TT,
+        RATIO_BOUND,
     )
     assert checked == n_s * n_t + n_t * n_t
 

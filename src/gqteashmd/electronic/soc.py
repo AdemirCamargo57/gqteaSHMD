@@ -111,9 +111,11 @@ the anticommutation rules (``a+_{p beta} a_{q alpha}`` on ``a+_{a alpha} a_{i be
 lands on a single excitation only for q = a, p virtual, giving ``|i->p, beta>``, and for q = j
 occupied, p = i, giving ``-|j->a, alpha>``; on the same ket ``a+_{p alpha} a_{q alpha}`` gives
 ``+a+_{b alpha} a_{i beta}|Phi0>`` for (p, q) = (b, a) and ``a+_{p beta} a_{q beta}`` gives
-``-a+_{a alpha} a_{j beta}|Phi0>`` for (p, q) = (i, j), i != j, while the occupied diagonal
-terms cancel between the alpha and the beta parts of ``S^z_pq``), with ``x^S`` the singlet's and
-``x^T``, ``x^T'`` the triplets' amplitudes (bra first)::
+``-a+_{a alpha} a_{j beta}|Phi0>`` for (p, q) = (i, j), i != j. On the occupied diagonal
+(p = q = k) the alpha part gives ``S I`` (``S = sum x^T x^T'``) and the beta part gives
+``S I - (x^T' x^T^T)[k, k]`` (no beta electron in the hole i = k); only the ``S I`` parts cancel
+in ``S^z_pq``, and the surviving ``(x^T' x^T^T)[k, k]`` is the i = j case of the Z[i, j] formula
+below), with ``x^S`` the singlet's and ``x^T``, ``x^T'`` the triplets' amplitudes (bra first)::
 
     S0-T:   D[i, a]  = -sqrt 2 x^T[i, a]                       (occupied row, virtual column)
     S_m-T:  D[b, a]  = -sqrt 2 (x^S^T x^T)[b, a],   D[i, j] = +sqrt 2 (x^T x^S^T)[i, j]
@@ -319,11 +321,17 @@ def casscf_soc_blocks(mc: Any, states: Sequence[StateLabel], h_ao: np.ndarray) -
     return SocBlocks(st, tt)
 
 
-def _normalised_amplitudes(td: Any, index: int) -> np.ndarray:
-    """X of root `index` (0-based) as (nocc, nvir), scaled so that sum X^2 = 1/2 (TDDFT's Y is
-    dropped; for TDA PySCF's X already has this norm)."""
+def _normalised_amplitudes(td: Any, index: int, shape: tuple[int, int]) -> np.ndarray:
+    """X of root `index` (0-based), which must have `shape` (nocc, nvir), scaled so that
+    sum X^2 = 1/2 (TDDFT's Y is dropped; for TDA PySCF's X already has this norm). A wrong shape
+    (which would broadcast silently into the density blocks) or a zero norm is a ValueError."""
     x = np.asarray(td.xy[index][0], dtype=float)
-    scale: float = 1.0 / np.sqrt(2.0 * float(np.sum(x * x)))
+    if x.shape != shape:
+        raise ValueError(f"response amplitudes of root {index} have shape {x.shape}, not {shape}")
+    norm_squared = float(np.sum(x * x))
+    if not norm_squared > 0.0:
+        raise ValueError(f"response amplitudes of root {index} have zero norm")
+    scale: float = 1.0 / np.sqrt(2.0 * norm_squared)
     return scale * x
 
 
@@ -341,15 +349,24 @@ def response_soc_blocks(
     tt = np.zeros((n_t, n_t, 3, 3), dtype=complex)
     if not n_t:
         return SocBlocks(st, tt)
+    excited = [str(s) for s in singlets if s.index > 0]
+    if excited and td is None:
+        raise ValueError(
+            f"the spin-orbit elements of {', '.join(excited)} need the singlet response object (td)"
+        )
     try:
         mo = np.asarray(mf.mo_coeff)
         nocc = int(np.count_nonzero(np.asarray(mf.mo_occ) > 0))
         n_mo = mo.shape[1]
+        shape = (nocc, n_mo - nocc)
         h = np.einsum("pi,kpq,qj->kij", mo, np.asarray(h_ao, dtype=complex), mo)
         h_z, h_plus, h_minus = h[2], h[0] + 1j * h[1], h[0] - 1j * h[1]
         occ, vir = slice(0, nocc), slice(nocc, n_mo)
-        xs = [None if s.index == 0 else _normalised_amplitudes(td, s.index - 1) for s in singlets]
-        xt = [_normalised_amplitudes(td_triplet, t.index - 1) for t in triplets]
+        xs = [
+            None if s.index == 0 else _normalised_amplitudes(td, s.index - 1, shape)
+            for s in singlets
+        ]
+        xt = [_normalised_amplitudes(td_triplet, t.index - 1, shape) for t in triplets]
         for j, x_t in enumerate(xt):
             for i, x_s in enumerate(xs):
                 d = np.zeros((n_mo, n_mo))
