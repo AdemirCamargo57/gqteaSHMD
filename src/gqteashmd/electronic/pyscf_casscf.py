@@ -413,11 +413,12 @@ def casscf_dipoles(mol: Any, mc: Any, states: Sequence[StateLabel]) -> dict[Stat
     """
     dipoles: dict[StateLabel, np.ndarray] = {}
     try:
-        trans_rdm1 = mc.fcisolver.trans_rdm1
         if state_counts(states)[1]:
             from pyscf.fci import direct_spin1
 
             trans_rdm1 = direct_spin1.trans_rdm1
+        else:
+            trans_rdm1 = mc.fcisolver.trans_rdm1
         r_ints = mol.intor("int1e_r", comp=3)
         mo_cas = mc.mo_coeff[:, mc.ncore : mc.ncore + mc.ncas]
         ci0 = mc.ci[0]  # S0 is the first state

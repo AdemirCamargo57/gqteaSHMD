@@ -321,7 +321,8 @@ def test_triplet_transition_dipoles_are_zero_and_gradients_exist():
     out = pyscf_response.run_response(mf, _triplet_settings(2, 1), states)
     mus = pyscf_response.response_dipoles(out.td, states, "tda")
     np.testing.assert_array_equal(mus[StateLabel(3, 1)], np.zeros(3))
-    assert np.linalg.norm(mus[StateLabel(1, 1)]) >= 0.0
+    assert mus[StateLabel(1, 1)].shape == (3,)
+    assert np.linalg.norm(mus[StateLabel(1, 1)]) > 1e-3
     g = pyscf_response.response_gradients(
         mf, out.td, {StateLabel(3, 1)}, "tda", td_triplet=out.td_triplet
     )

@@ -830,3 +830,18 @@ def test_ethylene_mixed_average_includes_the_triplet(
     plain = pyscf_casscf.run_casscf(mol, mf, make_settings(), states_from_counts(2), None)
     # a different state average gives different orbitals, so a different S0
     assert abs(mixed.energies[S0] - plain.energies[S0]) > 1e-5
+
+
+def test_mixed_sa_singlet_transition_density_equals_the_singlet_solvers(water_mol, make_settings):
+    """The mixed-SA dipoles use direct_spin1.trans_rdm1; on singlet roots it must equal spin0's."""
+    from pyscf.fci import direct_spin0, direct_spin1
+
+    mol, mf = water_mol
+    states = states_from_counts(2, 2)
+    out = pyscf_casscf.run_casscf(mol, mf, _water_cas44(make_settings, 2), states, None)
+    ncas, nelecas = out.mc.ncas, out.mc.nelecas
+    ci0, ci1 = out.mc.ci[0], out.mc.ci[1]
+    t1 = direct_spin1.trans_rdm1(ci0, ci1, ncas, nelecas)
+    t0 = direct_spin0.trans_rdm1(ci0, ci1, ncas, nelecas)
+    assert np.abs(t0).max() > 1e-3
+    np.testing.assert_allclose(t1, t0, atol=1e-12)
