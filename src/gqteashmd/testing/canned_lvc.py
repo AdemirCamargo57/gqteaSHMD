@@ -1,8 +1,10 @@
 """Canned upstream data and a fake backend for dynamics-stage tests (no PySCF needed).
 
-The LVC template comes from the environment variable ``LVC_TEMPLATE_ENV``; the model has no
-spin-orbit coupling. Faults for the fake backend come from ``FAULTS_ENV`` as JSON
-``{"traj_00001": {"5": "kill"}}`` (task id, then 1-based compute call number, then fault kind).
+The LVC template comes from the environment variable ``LVC_TEMPLATE_ENV``; the model has
+spin-orbit coupling only when ``LVC_SOC_ENV`` is ``"1"`` (plan ruling PR5: the canned spin-orbit
+pipeline uses ``tests/data/lvc/lvc_soc.template``). Faults for the fake backend come from
+``FAULTS_ENV`` as JSON ``{"traj_00001": {"5": "kill"}}`` (task id, then 1-based compute call
+number, then fault kind).
 """
 
 from __future__ import annotations
@@ -21,10 +23,12 @@ from gqteashmd.util.fileio import write_json_atomic
 
 LVC_TEMPLATE_ENV = "GQTEASHMD_CANNED_LVC_TEMPLATE"
 FAULTS_ENV = "GQTEASHMD_CANNED_FAULTS"
+LVC_SOC_ENV = "GQTEASHMD_CANNED_LVC_SOC"
 
 
 def canned_model() -> LVCModel:
-    return LVCModel.from_template(Path(os.environ[LVC_TEMPLATE_ENV]), spin_orbit=False)
+    spin_orbit = os.environ.get(LVC_SOC_ENV) == "1"
+    return LVCModel.from_template(Path(os.environ[LVC_TEMPLATE_ENV]), spin_orbit=spin_orbit)
 
 
 def write_canned_molecule(stage_dir: Path, model: LVCModel) -> None:

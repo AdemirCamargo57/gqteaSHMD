@@ -239,6 +239,7 @@ class TrajectoryRunner:
         )
         saved = source.state()
         self.model.active = state.active
+        self.model.u = state.u
         signal: str | None = None
         message = ""
         try:
