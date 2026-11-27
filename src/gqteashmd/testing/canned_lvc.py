@@ -26,9 +26,22 @@ FAULTS_ENV = "GQTEASHMD_CANNED_FAULTS"
 LVC_SOC_ENV = "GQTEASHMD_CANNED_LVC_SOC"
 
 
+def soc() -> bool:
+    """True when the canned pipeline runs the spin-orbit model (``LVC_SOC_ENV`` is "1")."""
+    return os.environ.get(LVC_SOC_ENV) == "1"
+
+
 def canned_model() -> LVCModel:
-    spin_orbit = os.environ.get(LVC_SOC_ENV) == "1"
-    return LVCModel.from_template(Path(os.environ[LVC_TEMPLATE_ENV]), spin_orbit=spin_orbit)
+    return LVCModel.from_template(Path(os.environ[LVC_TEMPLATE_ENV]), spin_orbit=soc())
+
+
+def canned_selection() -> list[tuple[int, str]]:
+    """The (sample, initial state) entries of the canned selection: three trajectories, or
+    with spin-orbit coupling four, all in S1 (that model has two singlets; trajectories start
+    in a singlet)."""
+    if soc():
+        return [(1, "S1"), (2, "S1"), (3, "S1"), (4, "S1")]
+    return [(1, "S1"), (2, "S2"), (3, "S1")]
 
 
 def write_canned_molecule(stage_dir: Path, model: LVCModel) -> None:

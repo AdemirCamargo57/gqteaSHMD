@@ -33,6 +33,7 @@ from gqteashmd.trajectory.runner import (
     RunSettings,
     TrajectoryRunner,
 )
+from gqteashmd.trajectory.spin_expansion import expanded_index
 from gqteashmd.util.fileio import write_json_atomic, write_text_atomic
 from gqteashmd.util.seeds import task_rng
 from gqteashmd.vib.artifacts import read_samples_h5
@@ -247,22 +248,34 @@ class DynamicsStage(Stage):
             )
         backend = self._backend_factory(ctx, molecule, task_dir)
         masses = np.repeat(np.asarray(samples["masses_amu"], dtype=float) * DALTON_IN_ME, 3)
+        settings = run_settings(section)
         try:
-            model = BackendModel(backend, masses, coupling=section.coupling)
-            active = model.labels.index(StateLabel.parse(state))
+            model = BackendModel(
+                backend, masses, coupling=section.coupling, eselect_Eh=settings.options.eselect_Eh
+            )
+            label = StateLabel.parse(state)
+            spin_free = model.labels.index(label)
         except ValueError as exc:
             raise TaskError(f"trajectory {task.task_id}: {exc}", retryable=False) from exc
-        runner = TrajectoryRunner(
-            model,
-            run_settings(section),
-            task_dir,
-            attrs={
-                "symbols": list(samples["symbols"]),
-                "sample": sample,
-                "initial_state": state,
-                "task": task.task_id,
-            },
-        )
+        if label.multiplicity != 1:
+            raise TaskError(
+                f"trajectory {task.task_id} starts in {state}; trajectories start in a singlet "
+                "(an MCH state, P7a-2 ruling R7); rerun with --rerun-from selection",
+                retryable=False,
+            )
+        # the expanded MCH index of the singlet S_I is I, as without triplets (initial_state
+        # takes the active state and c0 in the MCH basis)
+        active = expanded_index(model.n_singlets, model.n_triplets, spin_free)
+        attrs: dict[str, Any] = {
+            "symbols": list(samples["symbols"]),
+            "sample": sample,
+            "initial_state": state,
+            "task": task.task_id,
+        }
+        if model.n_triplets:  # output.h5 schema 2 (spec 4.2); without triplets today's attrs
+            assert ctx.config.electronic is not None
+            attrs["soc_operator"] = ctx.config.electronic.soc_operator
+        runner = TrajectoryRunner(model, settings, task_dir, attrs=attrs)
         initial = InitialConditions(
             np.asarray(samples["positions_bohr"][sample - 1], dtype=float).reshape(-1),
             np.asarray(samples["velocities_au"][sample - 1], dtype=float).reshape(-1),
@@ -294,11 +307,15 @@ class DynamicsStage(Stage):
             r = results[task_id]
             if not (ctx.layout.task_dir(ctx.stage_dir, task_id) / OUTPUT_FILE).exists():
                 missing.append(task_id)
+            # PR6: a triplet run's row names the last record's active spin-free state; a
+            # singlet run's row keeps today's keys
+            final = {"final_state": r.get("final_state")} if "final_state" in r else {}
             rows.append(
                 {
                     "task": task_id,
                     "sample": r.get("sample"),
                     "initial_state": r.get("initial_state"),
+                    **final,
                     "outcome": str(r.get("outcome")),
                     "t_final_fs": _finite_or_none(r.get("t_final_fs")),
                     "n_hops": int(r.get("n_hops", 0)),
@@ -372,15 +389,19 @@ def _markdown(summary: Mapping[str, Any]) -> str:
     ]
     if summary["missing_output"]:
         lines.append("- missing output.h5: " + ", ".join(summary["missing_output"]))
+    final = any("final_state" in r for r in summary["trajectories"])  # triplet runs only
     lines += [
         "",
-        "| task | sample | state | outcome | t_final (fs) | hops | rejections | flagged "
-        "| max drift (eV) | message |",
-        "|---|---|---|---|---|---|---|---|---|---|",
+        "| task | sample | state | "
+        + ("final state | " if final else "")
+        + "outcome | t_final (fs) | hops | rejections | flagged | max drift (eV) | message |",
+        "|---|---|---|" + ("---|" if final else "") + "---|---|---|---|---|---|---|",
     ]
     for r in summary["trajectories"]:
+        final_cell = f"{_fmt(r.get('final_state'))} | " if final else ""
         lines.append(
-            f"| {r['task']} | {_fmt(r['sample'])} | {_fmt(r['initial_state'])} | {r['outcome']} "
+            f"| {r['task']} | {_fmt(r['sample'])} | {_fmt(r['initial_state'])} | {final_cell}"
+            f"{r['outcome']} "
             f"| {_fmt(r['t_final_fs'], '.3f')} | {r['n_hops']} | {r['n_rejections']} "
             f"| {r['n_flagged']} | {_fmt(r['max_drift_eV'], '.4g')} "
             f"| {(r['message'] or '').replace('|', '/')} |"

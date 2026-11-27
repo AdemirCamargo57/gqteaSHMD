@@ -515,8 +515,12 @@ class TrajectoryRunner:
         )
         rows = self.log.read()
         column = "active_mch" if self.triplets else "active"  # PR6: the spin-free state
-        self._write_progress(progress, int(rows[column][-1]) if rows.size else None)
+        final = int(rows[column][-1]) if rows.size else None
+        self._write_progress(progress, final)
         drift = progress.max_drift_au
+        extra: dict[str, Any] = {}
+        if self.triplets:  # PR6: the last record's active spin-free state; without, today's keys
+            extra["final_state"] = None if final is None else str(self.model.labels[final])
         return {
             "outcome": outcome,
             "t_final_fs": self._time_au(progress) * AU_TIME_IN_FS,
@@ -531,4 +535,5 @@ class TrajectoryRunner:
             "max_drift_eV": drift * HARTREE_IN_EV if math.isfinite(drift) else None,
             "message": progress.message,
             "wall_time_s": elapsed,
+            **extra,
         }

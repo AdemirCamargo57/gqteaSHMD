@@ -85,7 +85,8 @@ class CannedSampling(_CannedStage):
     def finalize(self, ctx: StageContext, results: Mapping[str, Mapping[str, Any]]) -> None:
         from gqteashmd.testing import canned_lvc
 
-        canned_lvc.write_canned_samples(ctx.stage_dir, canned_lvc.canned_model(), self.N_SAMPLES)
+        n_samples = len(canned_lvc.canned_selection()) if canned_lvc.soc() else self.N_SAMPLES
+        canned_lvc.write_canned_samples(ctx.stage_dir, canned_lvc.canned_model(), n_samples)
 
 
 class CannedSelection(_CannedStage):
@@ -95,7 +96,7 @@ class CannedSelection(_CannedStage):
         from gqteashmd.testing import canned_lvc
 
         canned_lvc.write_canned_trajectories(
-            ctx.stage_dir, [(1, "S1"), (2, "S2"), (3, "S1")], ctx.config.project.seed
+            ctx.stage_dir, canned_lvc.canned_selection(), ctx.config.project.seed
         )
 
 

@@ -353,3 +353,86 @@ def test_run_settings_passes_the_new_keys(tmp_path, write_input):
     options = run_settings(ctx.config.dynamics).options
     assert options.gradient_transformation == "none"
     assert options.eselect_Eh == 0.5 / HARTREE_IN_EV
+
+
+# ---------------------------------------------------------------- triplets (sub-project 3)
+LVC_SOC = Path(__file__).resolve().parents[1] / "data" / "lvc" / "lvc_soc.template"
+ELECTRONIC_SOC = (
+    '[electronic]\nmethod = "tda"\nbasis = "sto-3g"\nfunctional = "hf"\nsinglets = 2\n'
+    'triplets = 2\nsoc_operator = "effective_charge"\n'
+)
+
+
+def _soc_context(tmp_path, write_input, monkeypatch, entries=((1, "S1"), (2, "S1"))):
+    monkeypatch.setenv(canned_lvc.LVC_TEMPLATE_ENV, str(LVC_SOC))
+    monkeypatch.setenv(canned_lvc.LVC_SOC_ENV, "1")
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    dynamics = '[dynamics]\ntmax_fs = 2.0\ndt_fs = 0.25\ngradient_transformation = "none"\n'
+    cfg = load_config(write_input(tmp_path, extra=ELECTRONIC_SOC + dynamics)).config
+    layout = ProjectLayout(tmp_path / "run")
+    model = canned_lvc.canned_model()
+    dirs = {name: tmp_path / "run" / name for name in ("00_prepare", "01_sampling", "02_selection")}
+    for d in dirs.values():
+        d.mkdir(parents=True)
+    canned_lvc.write_canned_molecule(dirs["00_prepare"], model)
+    canned_lvc.write_canned_samples(dirs["01_sampling"], model, 4)
+    canned_lvc.write_canned_trajectories(dirs["02_selection"], list(entries), cfg.project.seed)
+    upstream = {
+        "prepare": dirs["00_prepare"],
+        "sampling": dirs["01_sampling"],
+        "selection": dirs["02_selection"],
+    }
+    stage_dir = tmp_path / "run" / "03_dynamics"
+    stage_dir.mkdir()
+    return StageContext(cfg, layout, stage_dir, upstream)
+
+
+def _attrs(path):
+    import h5py
+
+    with h5py.File(path, "r") as f:
+        return dict(f.attrs)
+
+
+def test_a_triplet_run_records_the_operator_and_the_final_spin_free_state(
+    tmp_path, write_input, monkeypatch
+):
+    ctx = _soc_context(tmp_path, write_input, monkeypatch)
+    assert ctx.config.electronic.soc_operator == "effective_charge"
+    stage = _stage()
+    results = _run_all(ctx, stage)
+    assert {r["outcome"] for r in results.values()} == {"finished"}
+    for task_id, result in results.items():
+        attrs = _attrs(ctx.stage_dir / "tasks" / task_id / "output.h5")
+        assert attrs["soc_operator"] == "effective_charge" and attrs["schema_version"] == 2
+        assert attrs["initial_state"] == "S1"
+        assert result["final_state"] in ("S0", "S1", "T1", "T2")
+    stage.finalize(ctx, results)
+    summary = json.loads((ctx.stage_dir / "dynamics_summary.json").read_text())
+    for row in summary["trajectories"]:
+        assert row["final_state"] == results[row["task"]]["final_state"]
+    markdown = (ctx.stage_dir / "dynamics_summary.md").read_text()
+    assert "| final state |" in markdown
+
+
+def test_a_triplet_initial_state_is_refused(tmp_path, write_input, monkeypatch):
+    ctx = _soc_context(tmp_path, write_input, monkeypatch, entries=((1, "T1"),))
+    stage = _stage()
+    task = stage.plan(ctx)[0]
+    with pytest.raises(TaskError, match="--rerun-from selection") as info:
+        stage.run_task(ctx, task, ctx.stage_dir / "tasks" / task.task_id)
+    assert info.value.retryable is False and "singlet" in str(info.value)
+
+
+def test_without_triplets_the_output_and_the_summary_are_unchanged(tmp_path, write_input):
+    ctx = _context(tmp_path, write_input)
+    stage = _stage()
+    results = _run_all(ctx, stage)
+    for task_id, result in results.items():
+        assert "final_state" not in result
+        attrs = _attrs(ctx.stage_dir / "tasks" / task_id / "output.h5")
+        assert "soc_operator" not in attrs and attrs["schema_version"] == 1
+    stage.finalize(ctx, results)
+    summary = json.loads((ctx.stage_dir / "dynamics_summary.json").read_text())
+    assert all("final_state" not in row for row in summary["trajectories"])
+    assert "final state" not in (ctx.stage_dir / "dynamics_summary.md").read_text()
