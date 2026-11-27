@@ -17,11 +17,13 @@ from gqteashmd.dynamics.representation import (
     mch_state,
     selection_mask,
 )
+from gqteashmd.dynamics.spin import expanded_states
+from gqteashmd.electronic.base import Request
 from gqteashmd.errors import ElectronicStructureError
 from gqteashmd.overlaps.tracking import lowdin_orthonormalize
 from gqteashmd.testing.fake_backend import ModelBackend
 from gqteashmd.trajectory.model import BackendModel
-from gqteashmd.trajectory.spin_expansion import spin_free_index
+from gqteashmd.trajectory.spin_expansion import expand_overlaps, spin_free_index
 
 LVC = Path(__file__).resolve().parents[1] / "data" / "lvc" / "lvc_singlets.template"
 N_STEPS = 120
@@ -484,3 +486,122 @@ def test_the_runner_hands_the_tracked_u_to_the_adapter(tmp_path, monkeypatch):
     with pytest.raises(_Stop):
         runner._advance(tracked, ReplaySource([0.5]), Progress())
     assert seen["u"] is tracked.u and seen["active"] == 2
+
+
+# ---------------------------------------------------------------- fix round (Task 4 review)
+
+
+class _Replaced(ModelBackend):
+    """Replaces fields of every compute result (``fields`` maps a field to a function of the
+    result giving its new value); ``states`` and ``soc`` override the backend's own."""
+
+    def __init__(self, model, *, states=None, soc=None, **fields):
+        super().__init__(model)
+        self._override_states, self._soc, self._fields = states, soc, fields
+
+    @property
+    def states(self):
+        return super().states if self._override_states is None else self._override_states
+
+    @property
+    def capabilities(self):
+        own = super().capabilities
+        return own if self._soc is None else dataclasses.replace(own, soc=self._soc)
+
+    def compute(self, request):
+        result = super().compute(request)
+        changes = {name: f(result) for name, f in self._fields.items()}
+        return dataclasses.replace(result, **changes) if changes else result
+
+
+def test_the_hamiltonian_labels_must_be_the_canonical_order():
+    model = _soc_model()
+    canonical = tuple(s.label() for s in expanded_states((2, 0, 2)))
+    assert (
+        ModelBackend(model)
+        .compute(Request(np.array(model.reference_q).reshape(-1, 3), soc=True))
+        .hamiltonian_labels
+        == canonical
+    )
+    swapped = canonical[:2] + (canonical[4], canonical[3], canonical[2]) + canonical[5:]
+    backend = _Replaced(model, hamiltonian_labels=lambda r: swapped)
+    adapter = BackendModel(backend, model.masses, coupling="overlap")
+    with pytest.raises(ElectronicStructureError, match="Hamiltonian") as info:
+        adapter.evaluate(np.array(model.reference_q), None)
+    assert info.value.retryable is False
+    assert ", ".join(swapped) in str(info.value) and ", ".join(canonical) in str(info.value)
+    unlabelled = _Replaced(model, hamiltonian_labels=lambda r: None)  # no labels: not checked
+    BackendModel(unlabelled, model.masses, coupling="overlap").evaluate(model.reference_q, None)
+
+
+def test_a_non_hermitian_hamiltonian_is_an_electronic_failure():
+    model = _soc_model()
+
+    def skewed(result):
+        h = np.array(result.hamiltonian, copy=True)
+        h[1, 2] += 1e-9  # its partner h[2, 1] is unchanged
+        return h
+
+    adapter = BackendModel(_Replaced(model, hamiltonian=skewed), model.masses, coupling="overlap")
+    with pytest.raises(ElectronicStructureError, match="Hermitian") as info:
+        adapter.evaluate(np.array(model.reference_q), None)
+    assert info.value.retryable is False
+
+    def nearly(result):  # 1e-13 Eh is round-off: accepted
+        h = np.array(result.hamiltonian, copy=True)
+        h[1, 2] += 1e-13
+        return h
+
+    BackendModel(_Replaced(model, hamiltonian=nearly), model.masses, coupling="overlap").evaluate(
+        np.array(model.reference_q), None
+    )
+
+
+def test_the_constructor_refusals_with_triplets():
+    model = _soc_model()
+    with pytest.raises(ValueError, match=r"S0\.\.S\(n-1\) followed by T1\.\.Tm; got S0, T1, S1"):
+        BackendModel(_Replaced(model, states=(S0, T1, S1, T2)), model.masses, coupling="overlap")
+    with pytest.raises(ValueError, match="Capabilities.soc"):
+        BackendModel(_Replaced(model, soc=False), model.masses, coupling="overlap")
+    for bad in (0.0, -0.1, float("nan"), float("inf")):
+        with pytest.raises(ValueError, match="eselect_Eh"):
+            BackendModel(ModelBackend(model), model.masses, coupling="overlap", eselect_Eh=bad)
+
+
+def test_a_kept_gradient_missing_from_the_window_is_an_electronic_failure():
+    model = _soc_model()
+    spy = _Spy(model)
+    adapter = BackendModel(spy, model.masses, coupling="overlap", eselect_Eh=ESELECT_EH)
+    options = _soc_options(ESELECT_EH)
+    q0, v0 = _soc_start(model)
+    state = initial_state(adapter, q0, v0, 1, options=options)
+    adapter.active, adapter.u = state.active, state.u
+    spy.drop = S1  # the window around the S1-dominant state keeps S1
+    with pytest.raises(ElectronicStructureError, match="no gradient for the state S1") as info:
+        step(adapter, state, options, ReplaySource([0.99]))
+    assert info.value.retryable is False
+    assert spy.more and S1 in spy.more[-1]
+
+
+def test_non_orthogonal_raw_triplet_overlaps_are_lowdin_orthonormalised():
+    model = _soc_model()
+    rng = np.random.default_rng(7)
+
+    def distorted(result):
+        s = np.array(result.overlaps, copy=True)
+        s[:2, :2] += 0.05 * rng.standard_normal((2, 2))
+        s[2:, 2:] += 0.05 * rng.standard_normal((2, 2))  # the cross blocks stay exactly 0
+        distorted.raw = s
+        return s
+
+    backend = _Replaced(model, overlaps=lambda r: None if r.overlaps is None else distorted(r))
+    adapter = BackendModel(backend, model.masses, coupling="overlap")
+    q0, v0 = _soc_start(model)
+    first = adapter.evaluate(q0, None)
+    snap = adapter.evaluate(q0 + 5.0 * v0, first)
+    raw = distorted.raw
+    assert np.max(np.abs(raw.T @ raw - np.eye(4))) > 1e-2  # really non-orthogonal
+    expected = lowdin_orthonormalize(expand_overlaps(raw, 2, 2))
+    np.testing.assert_allclose(snap.overlaps, expected, rtol=0, atol=1e-12)
+    np.testing.assert_allclose(snap.overlaps.T @ snap.overlaps, np.eye(8), rtol=0, atol=1e-12)
+    assert np.all(snap.overlaps[:2, 2:] == 0.0) and np.all(snap.overlaps[2:, :2] == 0.0)

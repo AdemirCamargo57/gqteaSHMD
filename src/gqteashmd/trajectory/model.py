@@ -1,6 +1,6 @@
 """BackendModel: the dynamics core's ElectronicModel over an ElectronicBackend (spec 3.1).
 
-Singlets only (U stays None: the MCH Hamiltonian is diagonal). Each evaluation requests the
+Without triplets (U stays None: the MCH Hamiltonian is diagonal), each evaluation requests the
 energies, the gradient of the active state only (the caller sets ``active`` before every call),
 the overlaps with the previous geometry (always) and, for ``coupling = "nacdr"``, every NAC pair.
 The other gradient rows are NaN, a tripwire: the core reads only the active row (the gradient of
@@ -39,6 +39,7 @@ from gqteashmd.dynamics.representation import (
     mch_state,
     selection_mask,
 )
+from gqteashmd.dynamics.spin import expanded_states
 from gqteashmd.electronic.base import ElectronicBackend, ElectronicResult, Request
 from gqteashmd.errors import ElectronicStructureError
 from gqteashmd.overlaps.tracking import lowdin_orthonormalize
@@ -52,6 +53,7 @@ from gqteashmd.trajectory.spin_expansion import (
 )
 
 FIRST_CASSCF_RUNG = "previous orbitals"
+HERMITICITY_TOLERANCE_EH = 1e-12  # max |H - H^dagger| accepted from the backend (triplets)
 COUPLINGS = ("overlap", "nacdr")
 
 
@@ -276,6 +278,22 @@ class BackendModel:
         if not np.all(np.isfinite(h)):
             raise ElectronicStructureError(
                 "the backend returned a non-finite spin-orbit Hamiltonian", retryable=False
+            )
+        if result.hamiltonian_labels is not None:
+            expected = tuple(s.label() for s in expanded_states(self.state_counts))
+            given = tuple(result.hamiltonian_labels)
+            if given != expected:
+                raise ElectronicStructureError(
+                    f"the backend's spin-orbit Hamiltonian is in the order {', '.join(given)}; "
+                    f"the dynamics needs {', '.join(expected)}",
+                    retryable=False,
+                )
+        deviation = float(np.max(np.abs(h - h.conj().T)))
+        if deviation > HERMITICITY_TOLERANCE_EH:
+            raise ElectronicStructureError(
+                f"the backend's spin-orbit Hamiltonian is not Hermitian: max |H - H^dagger| = "
+                f"{deviation:.3e} Eh exceeds {HERMITICITY_TOLERANCE_EH:.0e} Eh",
+                retryable=False,
             )
         return h
 
