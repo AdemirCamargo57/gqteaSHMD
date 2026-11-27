@@ -495,6 +495,8 @@ class PySCFBackend(ElectronicBackend):
             raise ValueError(
                 "Spin-orbit couplings need triplet states: set [electronic] triplets > 0."
             )
+        if request.soc and self._settings.soc_operator == "effective_charge":
+            soc.require_effective_charges(self._molecule.symbols)  # before any SCF work
         if len(request.coords_bohr) != len(self._molecule.symbols):
             raise ValueError(
                 f"Got coordinates for {len(request.coords_bohr)} atoms; the molecule has "

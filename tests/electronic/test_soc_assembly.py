@@ -6,6 +6,7 @@ import pytest
 
 from gqteashmd.dynamics.spin import expanded_states
 from gqteashmd.electronic import soc
+from gqteashmd.errors import ConfigError
 
 N_S, N_T = 3, 2
 
@@ -96,3 +97,9 @@ def test_the_labels_are_those_of_the_dynamics_spin_layout():
         s.label() for s in expanded_states((N_S, 0, N_T))
     )
     assert soc.hamiltonian_labels(2, 1) == ("S0", "S1", "T1(-1)", "T1(0)", "T1(+1)")
+
+
+def test_the_effective_charge_table_check_names_the_missing_elements():
+    soc.require_effective_charges(["C", "O", "H", "H", "S"])
+    with pytest.raises(ConfigError, match="for N, Br .*use soc_operator = 'somf'"):
+        soc.require_effective_charges(["C", "N", "Br", "N"])

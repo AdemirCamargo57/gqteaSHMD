@@ -349,14 +349,21 @@ def _cmd_single_point(args: argparse.Namespace) -> int:
 
 
 def _complex_cm1(value: complex) -> str:
-    return f"{value.real:.2f}{value.imag:+.2f}j"
+    """``re+imj`` with 2 decimals; a part that rounds to zero prints as 0.00, never -0.00."""
+    real = round(value.real, 2) + 0.0  # -0.0 + 0.0 is +0.0
+    imag = round(value.imag, 2) + 0.0
+    return f"{real:.2f}{imag:+.2f}j"
 
 
 def _print_soc_table(h: np.ndarray, n_s: int, n_t: int, operator: str) -> None:
     """The spin-orbit couplings of the spin-expanded Hamiltonian (canonical order), in cm-1: one
     row per S_I-T_J pair (<S|H|T, Ms> for Ms = -1, 0, +1) and per T_J-T_J' pair with J <= J'
-    (the three elements that fix the rank-1 block, by Ms' - Ms = -1, 0, +1), and the root sum
-    of squares over every Ms component of the pair."""
+    (the three elements that fix the rank-1 block, (M, M') = (+1, 0), (+1, +1), (0, +1)).
+
+    The rss of a pair counts each distinct matrix element once: the 3 elements <S_I|H|T_J, M>;
+    the 9 elements <T_J, M|H|T_J', M'> for J < J' (the T_J'-T_J block is their conjugate); the
+    3 elements with M < M' for J = J' (the others are their conjugates or the energies; for real
+    spin-free states they are zero)."""
 
     def index(j: int, ms: int) -> int:
         return n_s + (ms + 1) * n_t + j
@@ -365,7 +372,7 @@ def _print_soc_table(h: np.ndarray, n_s: int, n_t: int, operator: str) -> None:
     print(f"Spin-orbit coupling (cm-1, {operator})")
     print(
         "S-T rows: <S|H|T,Ms> for Ms = -1, 0, +1; T-T rows: <T,M|H|T',M'> for (M, M') = "
-        "(+1, 0), (+1, +1), (0, +1); rss over every Ms component of the pair"
+        "(+1, 0), (+1, +1), (0, +1); rss counts each distinct element of the pair once"
     )
     print(f"{'pair':<8}{'-1':>18}{'0':>18}{'+1':>18}{'rss':>10}")
 
@@ -387,7 +394,7 @@ def _print_soc_table(h: np.ndarray, n_s: int, n_t: int, operator: str) -> None:
                 cm1[index(j, m), index(jb, mb)]
                 for m in (-1, 0, 1)
                 for mb in (-1, 0, 1)
-                if (j, m) != (jb, mb)
+                if j != jb or m < mb
             ]
             row(f"T{j + 1}-T{jb + 1}", shown, every)
 

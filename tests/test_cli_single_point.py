@@ -1,9 +1,12 @@
 import json
 from pathlib import Path
 
+import numpy as np
 import pytest
 
+from gqteashmd import cli
 from gqteashmd.cli import main
+from gqteashmd.core.units import HARTREE_IN_CM1
 
 pytestmark = pytest.mark.pyscf
 
@@ -165,21 +168,17 @@ def test_single_point_with_triplets_prints_the_spin_orbit_table(tmp_path, capsys
     assert data["soc_operator"] == operator
     labels = data["hamiltonian_labels"]
     assert labels == ["S0", "S1", "S2", "T1(-1)", "T2(-1)", "T1(0)", "T2(0)", "T1(+1)", "T2(+1)"]
-    import numpy as np
-
-    from gqteashmd.core.units import HARTREE_IN_CM1
-
     h = np.array(data["hamiltonian"]["real"]) + 1j * np.array(data["hamiltonian"]["imag"])
     assert h.shape == (9, 9)
     s0_t1 = h[0, [3, 5, 7]] * HARTREE_IN_CM1
     row = rows[0].split()
-    assert row[1:4] == [f"{v.real:.2f}{v.imag:+.2f}j" for v in s0_t1]
+    assert row[1:4] == [cli._complex_cm1(v) for v in s0_t1]
     assert float(row[4]) == pytest.approx(np.sqrt(np.sum(np.abs(s0_t1) ** 2)), abs=0.006)
     assert float(row[4]) > 1.0  # water S0-T1 couples
     t1_t2 = h[[7, 7, 5], [6, 8, 8]] * HARTREE_IN_CM1  # (M, M') = (+1, 0), (+1, +1), (0, +1)
-    assert rows[7].split()[1:4] == [f"{v.real:.2f}{v.imag:+.2f}j" for v in t1_t2]
+    assert rows[7].split()[1:4] == [cli._complex_cm1(v) for v in t1_t2]
     for same in (rows[6], rows[8]):  # T1-T1, T2-T2: the middle element is not the energy
-        assert same.split()[2] in ("0.00+0.00j", "-0.00+0.00j", "0.00-0.00j", "-0.00-0.00j")
+        assert same.split()[2] == "0.00+0.00j"
         assert len(same.split()) == 5
 
 
@@ -190,3 +189,41 @@ def test_single_point_without_triplets_has_no_spin_orbit_output(tmp_path, capsys
     assert "Spin-orbit" not in capsys.readouterr().out
     data = json.loads(out.read_text())
     assert not {"hamiltonian", "hamiltonian_labels", "soc_operator"} & set(data)
+
+
+def test_values_that_round_to_zero_print_without_a_sign():
+    assert cli._complex_cm1(complex(-0.004, 0.001)) == "0.00+0.00j"
+    assert cli._complex_cm1(complex(-1.234, -0.0049)) == "-1.23+0.00j"
+    assert cli._complex_cm1(complex(0.0, -65.113)) == "0.00-65.11j"
+
+
+def test_the_table_counts_each_distinct_element_once(capsys):
+    """1 singlet + 2 triplets with every coupling set: an intra-triplet pair counts its three
+    elements with M < M' once (not their conjugates as well), an S-T pair its 3, a T-T' pair
+    its 9 elements <T, M|H|T', M'>."""
+    n_s, n_t = 1, 2
+    rng = np.random.default_rng(3)
+    n = n_s + 3 * n_t
+    a = rng.standard_normal((n, n)) + 1j * rng.standard_normal((n, n))
+    h = (a + a.conj().T) / HARTREE_IN_CM1
+    np.fill_diagonal(h, -1.0)
+
+    def index(j, m):  # m = 0, 1, 2 for Ms = -1, 0, +1
+        return n_s + m * n_t + j
+
+    cli._print_soc_table(h, n_s, n_t, "somf")
+    rss = {
+        line.split()[0]: float(line.split()[-1])
+        for line in capsys.readouterr().out.splitlines()[3:]
+    }
+    cm1 = h * HARTREE_IN_CM1
+    expected_t1_t1 = np.sqrt(
+        sum(abs(cm1[index(0, m), index(0, mb)]) ** 2 for m in range(3) for mb in range(m + 1, 3))
+    )
+    expected_t1_t2 = np.sqrt(
+        sum(abs(cm1[index(0, m), index(1, mb)]) ** 2 for m in range(3) for mb in range(3))
+    )
+    expected_s0_t2 = np.sqrt(sum(abs(cm1[0, index(1, m)]) ** 2 for m in range(3)))
+    assert rss["T1-T1"] == pytest.approx(expected_t1_t1, abs=0.006)
+    assert rss["T1-T2"] == pytest.approx(expected_t1_t2, abs=0.006)
+    assert rss["S0-T2"] == pytest.approx(expected_s0_t2, abs=0.006)

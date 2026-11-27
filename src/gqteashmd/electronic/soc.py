@@ -169,18 +169,27 @@ def one_electron_operator(mol: Any) -> np.ndarray:
     return _as_operator(_nuclear_term(mol))
 
 
-def effective_charge_operator(mol: Any, zeff: Mapping[str, float] | None = None) -> np.ndarray:
-    """The one-electron operator with effective nuclear charges (default `KOSEKI_ZEFF`)."""
+def require_effective_charges(
+    symbols: Sequence[str], zeff: Mapping[str, float] | None = None
+) -> None:
+    """ConfigError naming every element of `symbols` without an effective charge in `zeff`
+    (default `KOSEKI_ZEFF`); the backend calls it before any SCF work."""
     table = KOSEKI_ZEFF if zeff is None else zeff
-    if any(mol.atom_charge(i) == 0 for i in range(mol.natm)):
-        raise ConfigError("ghost atoms are not supported by the effective-charge operator")
-    symbols = [mol.atom_pure_symbol(i) for i in range(mol.natm)]
     missing = list(dict.fromkeys(s for s in symbols if s not in table))
     if missing:
         raise ConfigError(
             f"no established effective nuclear charge for {', '.join(missing)} "
             f"(available: {', '.join(table)}); use soc_operator = 'somf'"
         )
+
+
+def effective_charge_operator(mol: Any, zeff: Mapping[str, float] | None = None) -> np.ndarray:
+    """The one-electron operator with effective nuclear charges (default `KOSEKI_ZEFF`)."""
+    table = KOSEKI_ZEFF if zeff is None else zeff
+    if any(mol.atom_charge(i) == 0 for i in range(mol.natm)):
+        raise ConfigError("ghost atoms are not supported by the effective-charge operator")
+    symbols = [mol.atom_pure_symbol(i) for i in range(mol.natm)]
+    require_effective_charges(symbols, table)
     spatial = np.zeros((3, mol.nao, mol.nao))
     try:
         for i, symbol in enumerate(symbols):

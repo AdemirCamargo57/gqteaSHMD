@@ -18,6 +18,7 @@ from gqteashmd.dynamics.spin import expanded_states
 from gqteashmd.electronic import soc
 from gqteashmd.electronic.base import MoleculeSpec, Request
 from gqteashmd.electronic.pyscf_backend import PySCFBackend
+from gqteashmd.errors import ConfigError
 
 pytestmark = pytest.mark.pyscf
 DATA = Path(__file__).resolve().parents[1] / "data"
@@ -67,8 +68,10 @@ def _counts(method: str) -> tuple[int, int]:
 
 
 def _pair_rss(h: np.ndarray, n_s: int, n_t: int) -> dict[str, float]:
-    """Root sum of squares (Eh) per spin-free pair: S_I-T_J over its 3 elements, T_J-T_J' (J <=
-    J') over its 9 (6 for J = J', the diagonal being the energies)."""
+    """Root sum of squares (Eh) per spin-free pair, each distinct matrix element counted once
+    (the definition of the `single-point` table): S_I-T_J over its 3 elements <S_I|H|T_J, M>,
+    T_J-T_J' (J < J') over its 9 elements <T_J, M|H|T_J', M'>, T_J-T_J over the 3 elements with
+    M < M' (the others are their conjugates or the energies)."""
 
     def index(j: int, m: int) -> int:
         return n_s + m * n_t + j
@@ -85,7 +88,7 @@ def _pair_rss(h: np.ndarray, n_s: int, n_t: int) -> dict[str, float]:
                 abs(h[index(j, m), index(jb, mb)]) ** 2
                 for m in range(3)
                 for mb in range(3)
-                if (j, m) != (jb, mb)
+                if j != jb or m < mb
             )
             rss[f"T{j + 1}-T{jb + 1}"] = float(np.sqrt(total))
     return rss
@@ -169,6 +172,26 @@ def test_soc_without_triplets_is_refused():
         backend.compute(Request(COORDS, soc=True))
 
 
+@pytest.mark.parametrize("method", list(SETTINGS))
+def test_an_element_without_an_effective_charge_is_refused_before_the_scf(method, monkeypatch):
+    """N has no established effective charge (`KOSEKI_ZEFF`; H2CN+ at the H2CO coordinates):
+    the request is refused with the operator's ConfigError before any SCF, CASSCF or response
+    work."""
+
+    def no_scf(*args, **kwargs):
+        raise AssertionError("the SCF ran")
+
+    backend = PySCFBackend(
+        MoleculeSpec(("C", "N", "H", "H"), charge=1),
+        _settings(method, soc_operator="effective_charge"),
+    )
+    monkeypatch.setattr(backend, "_run_scf", no_scf)
+    with pytest.raises(ConfigError, match="no established effective nuclear charge for N"):
+        backend.compute(Request(COORDS, soc=True))
+    with pytest.raises(AssertionError, match="the SCF ran"):  # no refusal without the request
+        backend.compute(Request(COORDS))
+
+
 def _forbid_spin_orbit_integrals(monkeypatch):
     def refuse(*args, **kwargs):
         raise AssertionError("a spin-orbit integral was computed")
@@ -178,10 +201,12 @@ def _forbid_spin_orbit_integrals(monkeypatch):
     monkeypatch.setattr(soc, "effective_charge_operator", refuse)
 
 
-@pytest.mark.parametrize("triplets", [0, 3])
-def test_no_spin_orbit_integral_without_the_request(triplets, monkeypatch):
+@pytest.mark.parametrize(
+    ("method", "triplets"), [("tda", 0), ("tda", 3), ("casscf", 0), ("casscf", 2)]
+)
+def test_no_spin_orbit_integral_without_the_request(method, triplets, monkeypatch):
     _forbid_spin_orbit_integrals(monkeypatch)
-    backend = _backend("tda", triplets=triplets)
+    backend = _backend(method, triplets=triplets)
     result = backend.compute(Request(COORDS))
     assert result.hamiltonian is None and result.hamiltonian_labels is None
     second = backend.compute(Request(COORDS + 0.01, overlaps=True))  # a tracked geometry too
