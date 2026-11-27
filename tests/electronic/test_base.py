@@ -81,6 +81,12 @@ def test_capabilities_are_frozen():
         caps.nacs = True  # type: ignore[misc]
 
 
+def test_capabilities_report_no_spin_orbit_coupling_by_default():
+    caps = Capabilities(gradients=True, nacs=False, overlaps=True, transition_dipoles=True)
+    assert caps.soc is False
+    assert Capabilities(True, False, True, True, soc=True).soc is True
+
+
 def test_result_json_with_couplings_and_overlaps():
     result = ElectronicResult(
         states=(S0, S1),
@@ -96,3 +102,25 @@ def test_result_json_with_couplings_and_overlaps():
     json.dumps(data)
     empty = ElectronicResult(states=(S0,), energies={S0: -1.0}).to_json()
     assert empty["nacs_per_bohr"] == {} and empty["overlaps"] is None and empty["phases"] is None
+
+
+def test_request_soc_defaults_to_false():
+    assert Request([[0.0, 0.0, 0.0]]).soc is False
+    assert Request([[0.0, 0.0, 0.0]], soc=True).soc is True
+
+
+def test_result_json_writes_the_hamiltonian_only_when_present():
+    plain = ElectronicResult(states=(S0,), energies={S0: -1.0})
+    assert plain.hamiltonian is None and plain.hamiltonian_labels is None
+    assert not {"hamiltonian_hartree", "hamiltonian_labels"} & set(plain.to_json())
+    h = np.array([[-1.0, 0.5j, 0.0], [-0.5j, -0.6, 0.0], [0.0, 0.0, -0.6]])
+    result = ElectronicResult(
+        states=(S0, T1),
+        energies={S0: -1.0, T1: -0.6},
+        hamiltonian=h,
+        hamiltonian_labels=("S0", "T1(-1)", "T1(0)"),
+    )
+    data = json.loads(json.dumps(result.to_json()))
+    assert data["hamiltonian_hartree"] == {"real": h.real.tolist(), "imag": h.imag.tolist()}
+    assert "hamiltonian" not in data  # the key names its unit
+    assert data["hamiltonian_labels"] == ["S0", "T1(-1)", "T1(0)"]

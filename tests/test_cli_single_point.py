@@ -1,9 +1,12 @@
 import json
 from pathlib import Path
 
+import numpy as np
 import pytest
 
+from gqteashmd import cli
 from gqteashmd.cli import main
+from gqteashmd.core.units import HARTREE_IN_CM1
 
 pytestmark = pytest.mark.pyscf
 
@@ -121,3 +124,75 @@ def test_single_point_without_triplets_keeps_its_table(tmp_path, capsys):
     assert lines[1] == HEADER
     assert [line.split()[0] for line in lines[2:]] == ["S0", "S1", "Results"]
     assert "td_triplet" not in json.loads(out.read_text())["meta"]
+
+
+SOC_COLUMNS = f"{'pair':<8}{'-1':>18}{'0':>18}{'+1':>18}{'rss':>10}"
+SOC_TT_COLUMNS = f"{'pair':<8}{'(+1,0)':>18}{'(+1,+1)':>18}{'(0,+1)':>18}{'rss':>10}"
+
+
+def _soc_rows(lines):
+    """(title, data rows): the S-T column header after the note, the T-T column header right
+    before the first T-T row (both checked, neither returned)."""
+    start = next(i for i, line in enumerate(lines) if line.startswith("Spin-orbit coupling"))
+    header = start + 2
+    assert lines[header] == SOC_COLUMNS
+    rows = []
+    for line in lines[header + 1 :]:
+        if not line or line.startswith("Results"):
+            break
+        rows.append(line)
+    tt = next(i for i, line in enumerate(rows) if line.startswith("T"))
+    assert rows[tt - 1] == SOC_TT_COLUMNS
+    return lines[start], rows[: tt - 1] + rows[tt:]
+
+
+@pytest.mark.parametrize("operator", ["somf", "effective_charge"])
+def test_single_point_with_triplets_prints_the_spin_orbit_table(tmp_path, capsys, operator):
+    out = tmp_path / "sp.json"
+    extra = TDA_HF.format(triplets=1).replace("singlets = 2", "singlets = 3")
+    if operator != "somf":
+        extra += f'soc_operator = "{operator}"\n'
+    path = _input(tmp_path, extra=extra.replace("triplets = 1", "triplets = 2"), xyz=WATER)
+    assert main(["single-point", str(path), "--json", str(out)]) == 0
+    lines = capsys.readouterr().out.splitlines()
+    title, rows = _soc_rows(lines)
+    assert title == f"Spin-orbit coupling (cm-1, {operator})"
+    pairs = [row.split()[0] for row in rows]
+    assert pairs == [
+        "S0-T1",
+        "S0-T2",
+        "S1-T1",
+        "S1-T2",
+        "S2-T1",
+        "S2-T2",
+        "T1-T1",
+        "T1-T2",
+        "T2-T2",
+    ]
+    data = json.loads(out.read_text())
+    assert data["soc_operator"] == operator
+    labels = data["hamiltonian_labels"]
+    assert labels == ["S0", "S1", "S2", "T1(-1)", "T2(-1)", "T1(0)", "T2(0)", "T1(+1)", "T2(+1)"]
+    h = np.array(data["hamiltonian_hartree"]["real"]) + 1j * np.array(
+        data["hamiltonian_hartree"]["imag"]
+    )
+    assert h.shape == (9, 9)
+    s0_t1 = h[0, [3, 5, 7]] * HARTREE_IN_CM1
+    row = rows[0].split()
+    assert row[1:4] == [cli._complex_cm1(v) for v in s0_t1]
+    assert float(row[4]) == pytest.approx(np.sqrt(np.sum(np.abs(s0_t1) ** 2)), abs=0.006)
+    assert float(row[4]) > 1.0  # water S0-T1 couples
+    t1_t2 = h[[7, 7, 5], [6, 8, 8]] * HARTREE_IN_CM1  # (M, M') = (+1, 0), (+1, +1), (0, +1)
+    assert rows[7].split()[1:4] == [cli._complex_cm1(v) for v in t1_t2]
+    for same in (rows[6], rows[8]):  # T1-T1, T2-T2: the middle element is not the energy
+        assert same.split()[2] == "0.00+0.00j"
+        assert len(same.split()) == 5
+
+
+def test_single_point_without_triplets_has_no_spin_orbit_output(tmp_path, capsys):
+    out = tmp_path / "sp.json"
+    path = _input(tmp_path, extra=TDA_HF.format(triplets=0), xyz=WATER)
+    assert main(["single-point", str(path), "--json", str(out)]) == 0
+    assert "Spin-orbit" not in capsys.readouterr().out
+    data = json.loads(out.read_text())
+    assert not {"hamiltonian_hartree", "hamiltonian_labels", "soc_operator"} & set(data)

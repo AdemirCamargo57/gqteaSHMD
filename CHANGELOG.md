@@ -6,6 +6,38 @@ Linux only.
 ## Unreleased
 
 ### Added
+- Spin-orbit coupling matrix elements from PySCF (triplets and SOC, sub-project 2;
+  USER_MANUAL 4.2, 5.3, 8.6.10; report
+  `docs/superpowers/reports/2026-11-27-soc-matrix-elements.md`):
+  - `electronic/soc.py`: the spin-orbit mean-field operator (SOMF: the one-electron
+    Breit-Pauli term plus the exact two-electron mean field of the reference density) and the
+    one-electron operator with effective nuclear charges; the singlet-triplet and
+    triplet-triplet matrix elements of SA-CASSCF (from spin-resolved CI transition densities)
+    and of TDA/TDDFT (closed-form contractions of the X amplitudes; for TDDFT X renormalised,
+    Y dropped), every Ms component from the Wigner-Eckart theorem with Condon-Shortley phases.
+  - The backend returns, on request (`Request(soc=True)`, needs triplets), the complex
+    spin-expanded Hamiltonian in the canonical order of the dynamics core (S0 ... S(n-1),
+    then T1 ... Tm with Ms = -1, 0, +1), the spin-free energies on the diagonal and the phased
+    couplings off it, with its labels. `Capabilities.soc` says whether a backend computes
+    them (the PySCF backend with triplets); the test backend refuses the request.
+  - New key `[electronic] soc_operator = "somf" | "effective_charge"` (default `"somf"`).
+    Effective charges exist for H, C, O and S only (the values ORCA 6.1.1 uses, measured);
+    any other element is refused (exit 2).
+  - `single-point` with `triplets > 0` prints a table of the couplings in cm-1 (each pair's
+    Ms components and root sum of squares) and writes `hamiltonian_hartree`,
+    `hamiltonian_labels`
+    and `soc_operator` to its JSON. Without triplets its output is unchanged.
+  - Validated against ORCA 6.1.1 (formaldehyde and thioformaldehyde, SA-CASSCF(4,3) and CIS,
+    both operators; every pair within max(0.05 cm-1, 0.2 %), largest ratio 0.055), a
+    brute-force Slater-Condon reference (9.0e-16 Eh) and internal checks (Hermiticity,
+    invariance, continuity, resume).
+  - **Limitations:** signs and phases are not compared with another program; CIS
+    triplet-triplet elements have no external reference; no SHARC comparison; the TDA
+    spin-free energies differ by 1.3e-8 Eh after a resume at the default SCF criterion;
+    thioformaldehyde CIS 3S+3T/6-31G does not converge at the default `td_conv_tol`;
+    the SOMF operator is expensive (benzene 10-14 s against 0.3-0.7 s for the SCF)
+    and `single-point` with triplets always computes it.
+    The `dynamics` stage still refuses triplets (sub-project 3).
 - Triplet states in the PySCF backend, without spin-orbit coupling (triplets and SOC,
   sub-project 1; USER_MANUAL 4.2, 5.3, 6, 8.6.9; report
   `docs/superpowers/reports/2026-11-26-triplets-backend.md`):
@@ -58,6 +90,12 @@ fingerprint changed). Turning triplets on in an existing project makes it stale:
 project from `optimize` on (the state average, and so S0, changes; `--rerun-from optimize`, or
 `--rerun-from frequencies` without `optimize`), a `tda`/`tddft` project from `excitations` on
 (`--rerun-from excitations`).
+
+The spin-orbit coupling matrix elements make no existing project stale: `soc_operator` at its
+default is left out of every dump, so `config.json` and every fingerprint are unchanged, and no
+stage version changed. Setting `soc_operator = "effective_charge"` in a project changes the
+`excitations` and `dynamics` fingerprints, also with `triplets = 0` (`--rerun-from
+excitations`); `optimize` and `frequencies` are not affected.
 
 ## 0.1.0 - 2026-11-26
 

@@ -20,7 +20,7 @@ from gqteashmd import build_info
 from gqteashmd.chem.xyz import parse_xyz
 from gqteashmd.config.loader import load_config
 from gqteashmd.config.model_dynamics import LvcDynamicsInput, load_model_dynamics
-from gqteashmd.core.units import ANGSTROM_TO_BOHR
+from gqteashmd.core.units import ANGSTROM_TO_BOHR, HARTREE_IN_CM1
 from gqteashmd.dynamics.ensemble import (
     lvc_initial_conditions,
     run_model_ensemble,
@@ -316,10 +316,13 @@ def _cmd_single_point(args: argparse.Namespace) -> int:
         memory_mb=cfg.resources.memory_mb_per_task,
         reference_coords_bohr=coords,
     )
-    result = backend.compute(Request(coords, transition_dipoles=True))
-    data = result.to_json()
     settings = cfg.electronic
     assert settings is not None  # make_backend checked it
+    with_soc = settings.triplets > 0
+    result = backend.compute(Request(coords, transition_dipoles=True, soc=with_soc))
+    data = result.to_json()
+    if with_soc:
+        data["soc_operator"] = settings.soc_operator
     name = f"{settings.method} / {settings.basis}"
     if settings.functional:
         name += f" / {settings.functional}"
@@ -335,10 +338,64 @@ def _cmd_single_point(args: argparse.Namespace) -> int:
             s2 = "-" if row["spin_square"] is None else f"{row['spin_square']:.4f}"
             line += f"{s2:>8}"
         print(line)
+    if with_soc and result.hamiltonian is not None:
+        _print_soc_table(
+            result.hamiltonian, settings.singlets, settings.triplets, settings.soc_operator
+        )
     if args.json is not None:
         write_json_atomic(args.json, data)
         print(f"Results written to {args.json}")
     return 0
+
+
+def _complex_cm1(value: complex) -> str:
+    """``re+imj`` with 2 decimals; a part that rounds to zero prints as 0.00, never -0.00."""
+    real = round(value.real, 2) + 0.0  # -0.0 + 0.0 is +0.0
+    imag = round(value.imag, 2) + 0.0
+    return f"{real:.2f}{imag:+.2f}j"
+
+
+SOC_ST_COLUMNS = f"{'pair':<8}{'-1':>18}{'0':>18}{'+1':>18}{'rss':>10}"
+SOC_TT_COLUMNS = f"{'pair':<8}{'(+1,0)':>18}{'(+1,+1)':>18}{'(0,+1)':>18}{'rss':>10}"
+
+
+def _print_soc_table(h: np.ndarray, n_s: int, n_t: int, operator: str) -> None:
+    """The spin-orbit couplings of the spin-expanded Hamiltonian (canonical order), in cm-1: one
+    row per S_I-T_J pair (<S|H|T, Ms> for Ms = -1, 0, +1) and, under a second column header,
+    one per T_J-T_J' pair with J <= J' (the three elements that fix the rank-1 block,
+    (M, M') = (+1, 0), (+1, +1), (0, +1)). The rss column is `soc.pair_rss` (each distinct
+    matrix element of the pair counted once)."""
+    from gqteashmd.electronic.soc import pair_rss  # NumPy only, imported where it is used
+
+    def index(j: int, ms: int) -> int:
+        return n_s + (ms + 1) * n_t + j
+
+    cm1 = np.asarray(h) * HARTREE_IN_CM1
+    rss = pair_rss(cm1, n_s, n_t)
+    print(f"Spin-orbit coupling (cm-1, {operator})")
+    print(
+        "S-T rows: <S|H|T,Ms> for Ms = -1, 0, +1; T-T rows: <T,M|H|T',M'> for (M, M') = "
+        "(+1, 0), (+1, +1), (0, +1); rss counts each distinct element of the pair once"
+    )
+    print(SOC_ST_COLUMNS)
+
+    def row(pair: str, shown: list[complex]) -> None:
+        values = "".join(f"{_complex_cm1(v):>18}" for v in shown)
+        print(f"{pair:<8}{values}{rss[pair]:>10.2f}")
+
+    for i in range(n_s):
+        for j in range(n_t):
+            row(f"S{i}-T{j + 1}", [cm1[i, index(j, ms)] for ms in (-1, 0, 1)])
+    print(SOC_TT_COLUMNS)
+    for j in range(n_t):
+        for jb in range(j, n_t):
+            # for J = J' the (+1, +1) element is the diagonal, i.e. the energy: its spin-orbit
+            # part is zero (assemble_hamiltonian checks it), so 0 is shown
+            same = complex(0.0) if j == jb else cm1[index(j, 1), index(jb, 1)]
+            row(
+                f"T{j + 1}-T{jb + 1}",
+                [cm1[index(j, 1), index(jb, 0)], same, cm1[index(j, 0), index(jb, 1)]],
+            )
 
 
 def _cmd_model_dynamics(args: argparse.Namespace) -> int:

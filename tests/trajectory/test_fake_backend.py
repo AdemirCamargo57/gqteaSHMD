@@ -40,6 +40,18 @@ def test_energies_gradients_and_nacs_are_the_models():
     assert result.overlaps is None and result.meta["casscf"] == "SCF orbitals"
 
 
+def test_a_spin_orbit_request_is_refused():
+    """ModelBackend has no spin-orbit couplings: a request for them is an error, not a result
+    without a Hamiltonian (sub-project 3 gets a signal)."""
+    model = _model()
+    backend = ModelBackend(model)
+    assert backend.capabilities.soc is False
+    with pytest.raises(ValueError, match="spin-orbit"):
+        backend.compute(Request(_coords(model), soc=True))
+    assert backend.calls == 0  # refused before anything is evaluated
+    assert backend.compute(Request(_coords(model))).hamiltonian is None
+
+
 def test_overlaps_follow_the_previous_geometry_and_state_round_trips(tmp_path):
     model = _model()
     backend = ModelBackend(model)
