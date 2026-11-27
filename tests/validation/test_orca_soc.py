@@ -74,10 +74,12 @@ SETTINGS = {
         "singlets": 3,
         "triplets": 3,
         "scf_conv_tol": 1e-12,
-        # PySCF's Davidson (td_conv_tol is its residual tolerance) stops once the energies have
-        # converged; for thioformaldehyde it leaves residuals of about 2.7e-8 on S2, T2 and T3
-        # (measured), so 1e-8 and below are refused as unconverged. The energy error is second
-        # order in the residual, the coupling error first order (about 1e-6 relative).
+        # In PySCF 2.14 td_conv_tol is the Davidson residual tolerance (tol_residual).
+        # `_lr_eig.eigh` stops with "Linear dependency in trial subspace" once no new trial
+        # vector has xt_norm**2 > td.lindep (default 1e-12). For thioformaldehyde that leaves
+        # residuals of about 2.7e-8 on S2, T2 and T3 (measured), so 1e-8 and below are refused
+        # as unconverged. The energy error is second order in the residual, the coupling error
+        # first order (about 1e-6 relative).
         "td_conv_tol": 1e-7,
     },
 }
@@ -153,6 +155,8 @@ def _run_orca(directory: Path, text: str) -> str:
         raise RuntimeError(
             f"ORCA failed (exit {done.returncode}) in {directory}; see output.out:\n"
             + done.stdout[-2000:]
+            + "\nstderr:\n"
+            + done.stderr[-2000:]
         )
     return done.stdout
 
@@ -265,6 +269,10 @@ def _casscf_soc_lines(out: str) -> dict[frozenset, complex]:
             break
         match = NONZERO_ROW.match(line)
         if not match:
+            if line.strip()[:1].isdigit():
+                raise OrcaOutputError(
+                    f"ORCA output: unreadable line in the '{NONZERO_HEADER}' block: {line!r}"
+                )
             continue
         b1, r1, _, m1, b2, r2, _, m2, re_part, im_part = match.groups()
         key = frozenset({(int(b1), int(r1), float(m1)), (int(b2), int(r2), float(m2))})
@@ -451,3 +459,12 @@ def test_an_incomplete_socme_block_is_refused():
     text = f"{SOCME_HEADER}\n  T  S\n{row}\n\n"
     with pytest.raises(OrcaOutputError, match="has 1 rows"):
         _tda_socme(text)
+
+
+def test_an_unreadable_nonzero_line_is_refused():
+    good = "   0    1  1.0  1.0              0     0  1.0  1.0            0.000             55.943"
+    bad = "   1    0  0.0  0.0              0     0  1.0  0.0           -0.000         ********"
+    text = f"{NONZERO_HEADER}\n{good}\n{bad}\n\nNote: the full matrix follows\n"
+    with pytest.raises(OrcaOutputError, match="unreadable line"):
+        _casscf_soc_lines(text)
+    assert len(_casscf_soc_lines(f"{NONZERO_HEADER}\n{good}\n\nNote:\n")) == 1
