@@ -117,6 +117,9 @@ def test_reference_triplet_components_are_orthonormal_and_complete(casscf):
     assert np.abs(gram - np.eye(len(keys))).max() <= 1e-12
     for t in triplets:  # S_minus |T, -1> = 0
         assert soc_reference.lowering(ref[(t, -1)]).norm() <= 1e-12
+    for s in (s for s in states if s.multiplicity == 1):  # S_minus |S> = 0, |S> normalised
+        assert abs(soc_reference.overlap(ref[(s, 0)], ref[(s, 0)]) - 1.0) <= 1e-12
+        assert soc_reference.lowering(ref[(s, 0)]).norm() <= 1e-12
 
 
 def test_the_blocks_have_only_singlet_triplet_and_triplet_triplet_parts(casscf):
@@ -156,6 +159,8 @@ def test_the_blocks_equal_the_brute_force_reference(request, casscf, kind):
     if kind != "somf" or request.node.callspec.params["casscf"] == "formaldehyde":
         # not a vacuous comparison (ethylene pi-pi* S-T SOMF elements vanish by symmetry)
         assert np.abs(st).max() > 1e-6
+    if kind == "hermitian":  # the T-T comparison is not vacuous either
+        assert np.abs(tt).max() > 1e-6
     assert d_st <= REFERENCE_BOUND
     assert d_tt <= REFERENCE_BOUND
 
@@ -205,6 +210,9 @@ def _check_wigner_eckart(st_by_slot, tt_by_slot):
     return checked
 
 
+# On the production code this test checks the assembled formula against the hand-written tables
+# (it caught a transposition); the physical evidence is the same test on the reference and the
+# element-by-element reference comparison.
 def test_the_ms_components_follow_wigner_eckart(casscf):
     from gqteashmd.electronic import soc
 
