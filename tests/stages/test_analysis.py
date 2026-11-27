@@ -3,6 +3,7 @@
 import json
 import logging
 import types
+from collections import Counter
 
 import h5py
 import numpy as np
@@ -17,7 +18,7 @@ from gqteashmd.stages import analysis as analysis_module
 from gqteashmd.stages.analysis import AnalysisStage
 from gqteashmd.stages.base import StageContext
 from gqteashmd.testing import canned_lvc
-from gqteashmd.trajectory.store import log_dtype, log_row, write_output_h5
+from gqteashmd.trajectory.store import log_dtype, log_row, read_output_h5, write_output_h5
 from gqteashmd.util.fileio import write_json_atomic
 
 ELECTRONIC = '[electronic]\nmethod = "tda"\nbasis = "sto-3g"\nfunctional = "hf"\nsinglets = 2\n'
@@ -1056,6 +1057,21 @@ SOC_TRAJS = [
 ]
 
 
+def _at_hop_pairs(ctx):
+    """The label pairs of the spin-free changes at a hop record, from the output.h5 files,
+    with hop_from/hop_to (PR1) checked against the records' active states."""
+    pairs: Counter = Counter()
+    for path in sorted(ctx.upstream["dynamics"].glob("tasks/traj_*/output.h5")):
+        data = read_output_h5(path)
+        a, hop_from, hop_to = data["active"], data["hop_from"], data["hop_to"]
+        for j in range(1, a.size):
+            if hop_to[j] >= 0:
+                assert (hop_from[j], hop_to[j]) == (a[j - 1], a[j]), (path, j)
+                if a[j] != a[j - 1]:
+                    pairs[f"{data.labels[a[j - 1]]}->{data.labels[a[j]]}"] += 1
+    return dict(pairs)
+
+
 def test_a_triplet_project_reports_its_spin_free_transitions(tmp_path, write_input):
     ctx = _soc_context(tmp_path, write_input, SOC_TRAJS)
     run_stage(ctx)
@@ -1077,6 +1093,11 @@ def test_a_triplet_project_reports_its_spin_free_transitions(tmp_path, write_inp
     }
     # the hop table keeps the hop within T1 (ledger ruling)
     assert data["hops"]["pairs"] == {"S1->T1": 2, "T1->T1": 1, "T2->S0": 1}
+    # every transition at a hop is that hop, so the two pair tables agree on it (Task 7 fix)
+    at_hop = _at_hop_pairs(ctx)
+    assert at_hop == {"S1->T1": 2, "T2->S0": 1}
+    for pair, count in at_hop.items():
+        assert data["hops"]["pairs"][pair] >= count and t["pairs"][pair] >= count
     report_md = (ctx.stage_dir / "report.md").read_text()
     assert "\n## Intersystem crossing\n" in report_md
     assert "- S-T: at hop 2, without hop 0\n" in report_md
@@ -1144,3 +1165,29 @@ def test_spin_counts_that_do_not_fit_the_labels_are_a_task_error(
         run_stage(ctx)
     assert attr in str(info.value) and "traj_00001" in str(info.value)
     assert info.value.retryable is False
+
+
+def test_a_hop_record_that_does_not_follow_the_previous_one_is_a_task_error(tmp_path, write_input):
+    # Task 7 fix ruling: an inconsistent file is refused, the missing change not reconstructed
+    ctx = _soc_context(tmp_path, write_input, SOC_TRAJS)
+    path = ctx.upstream["dynamics"] / "tasks" / "traj_00000" / "output.h5"
+    with h5py.File(path, "a") as f:
+        hop_from = f["hop_from"][()]
+        hop_from[2] = 3  # the hop at record 2 now claims to come from T2, not S1
+        f["hop_from"][...] = hop_from
+    with pytest.raises(TaskError, match="--rerun-from dynamics") as info:
+        run_stage(ctx)
+    assert "traj_00000" in str(info.value) and "record 2" in str(info.value)
+    assert info.value.retryable is False
+
+
+def test_a_singlet_file_with_a_wrong_n_singlets_is_a_task_error(tmp_path, write_input):
+    # n_singlets is compared whenever it is present (Task 7 fix, minor 2)
+    ctx = _context(tmp_path, write_input, [(FIN, [1, 1, 1, 1, 1], {})])
+    path = ctx.upstream["dynamics"] / "tasks" / "traj_00000" / "output.h5"
+    with h5py.File(path, "a") as f:
+        f.attrs["n_singlets"] = 3
+        f.attrs["n_triplets"] = 0
+    with pytest.raises(TaskError, match="n_singlets and n_triplets") as info:
+        run_stage(ctx)
+    assert info.value.retryable is False and "--rerun-from dynamics" in str(info.value)

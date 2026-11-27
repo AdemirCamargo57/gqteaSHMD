@@ -227,7 +227,8 @@ def test_output_h5_schema_2_with_triplets(tmp_path):
     rows = np.stack(
         [
             _soc_row(dtype, 0, active_mch=1),
-            _soc_row(dtype, 1, active_mch=3),  # not kept (output_every = 2)
+            # kept although output_every = 2: the spin-free state changes (Task 7 fix ruling)
+            _soc_row(dtype, 1, active_mch=3),
             _soc_row(dtype, 2, active_mch=2, hop_from=4, hop_to=3),  # T2 -> T1: from row 1
             _soc_row(dtype, 3, active_mch=2),  # not kept
             _soc_row(dtype, 4, active_mch=2),
@@ -252,27 +253,90 @@ def test_output_h5_schema_2_with_triplets(tmp_path):
         assert (f.attrs["n_singlets"], f.attrs["n_triplets"]) == (2, 2)
         assert f.attrs["soc_operator"] == "somf"
         assert list(f.attrs["state_labels"]) == ["S0", "S1", "T1", "T2"]
-        index = [0, 2, 4, 5, 6, 7]
+        index = [0, 1, 2, 4, 5, 6, 7]
         assert list(f["step"][()]) == index
         kept = rows[index]
         np.testing.assert_array_equal(f["active"][()], kept["active_mch"])
         np.testing.assert_array_equal(f["populations"][()], kept["populations_mch"])
         np.testing.assert_array_equal(f["energies"][()], kept["energies_sf"])
-        # spin-free hops (PR1): the active spin-free state of the previous log row (kept or
-        # not) and of this one
-        assert list(f["hop_from"][()]) == [-1, 3, -1, 2, -1, -1]
-        assert list(f["hop_to"][()]) == [-1, 2, -1, 0, -1, -1]
-        assert list(f["hop_from_diag"][()]) == [-1, 4, -1, 3, -1, -1]
-        assert list(f["hop_to_diag"][()]) == [-1, 3, -1, 0, -1, -1]
+        # spin-free hops (PR1): the active spin-free state of the previous log row and of
+        # this one
+        assert list(f["hop_from"][()]) == [-1, -1, 3, -1, 2, -1, -1]
+        assert list(f["hop_to"][()]) == [-1, -1, 2, -1, 0, -1, -1]
+        assert list(f["hop_from_diag"][()]) == [-1, -1, 4, -1, 3, -1, -1]
+        assert list(f["hop_to_diag"][()]) == [-1, -1, 3, -1, 0, -1, -1]
         np.testing.assert_array_equal(f["active_diag"][()], kept["active"])
         np.testing.assert_array_equal(f["energies_diag"][()], kept["energies_diag"])
         np.testing.assert_array_equal(
             f["populations_diag"][()], kept["c_real"] ** 2 + kept["c_imag"] ** 2
         )
-        assert f["populations_diag"].shape == (6, 8) and f["populations"].shape == (6, 4)
-        assert f["coefficients_real"].shape == (6, 8) and f["frustrated"][4] == 1
+        assert f["populations_diag"].shape == (7, 8) and f["populations"].shape == (7, 4)
+        assert f["coefficients_real"].shape == (7, 8) and f["frustrated"][5] == 1
         for name, dataset in f.items():
             assert "units" in dataset.attrs, name
+
+
+def _substep_row(dtype, step, ticks, *, active_mch, hop_to=-1):
+    row = _soc_row(dtype, step, active_mch=active_mch, hop_to=hop_to)
+    row["grid_step"], row["ticks"] = step, ticks
+    return row
+
+
+def test_output_h5_keeps_a_spin_free_change_on_a_substep_row(tmp_path):
+    # Task 7 fix ruling: a substep row of a halved interval with no event is dropped, unless
+    # the active spin-free state changes there; so at every hop record of output.h5 hop_from
+    # is the previous record's active state, also before a hop within T1
+    h5py = pytest.importorskip("h5py")
+    dtype = log_dtype(8, 6, n_spin_free=4)
+    rows = np.stack(
+        [
+            _soc_row(dtype, 0, active_mch=1),  # S1
+            _substep_row(dtype, 0, 1, active_mch=2),  # S1 -> T1 without a hop: kept
+            _substep_row(dtype, 0, 2, active_mch=2),  # no change, no event: dropped
+            _soc_row(dtype, 1, active_mch=0, hop_to=0),  # T1 -> S0 at a hop
+            _substep_row(dtype, 1, 1, active_mch=2),  # S0 -> T1 without a hop: kept
+            _soc_row(dtype, 2, active_mch=2, hop_to=5),  # a hop within T1
+            _soc_row(dtype, 3, active_mch=2),
+        ]
+    )
+    path = tmp_path / "output.h5"
+    write_output_h5(
+        path,
+        rows,
+        labels=["S0", "S1", "T1", "T2"],
+        n_atoms=2,
+        output_every=1,
+        attrs={"outcome": "finished"},
+        n_singlets=2,
+        n_triplets=2,
+    )
+    with h5py.File(path, "r") as f:
+        assert list(f["ticks"][()]) == [0, 1, 0, 1, 0, 0]
+        active, hop_from, hop_to = f["active"][()], f["hop_from"][()], f["hop_to"][()]
+    assert list(active) == [1, 2, 0, 2, 2, 2]
+    assert list(hop_from) == [-1, -1, 2, -1, 2, -1]
+    assert list(hop_to) == [-1, -1, 0, -1, 2, -1]
+    hops = np.flatnonzero(hop_to >= 0)
+    np.testing.assert_array_equal(hop_from[hops], active[hops - 1])
+
+
+def test_the_singlet_output_h5_keeps_the_rows_it_kept_before(tmp_path):
+    # schema 1 is unchanged: a substep row without an event is dropped whatever its `active`
+    h5py = pytest.importorskip("h5py")
+    dtype = log_dtype(2, 6)
+    first, sub, last = _row(dtype, 0), _row(dtype, 0), _row(dtype, 1)
+    sub["ticks"], sub["active"] = 1, 1
+    path = tmp_path / "output.h5"
+    write_output_h5(
+        path,
+        np.stack([first, sub, last]),
+        labels=["S0", "S1"],
+        n_atoms=2,
+        output_every=1,
+        attrs={},
+    )
+    with h5py.File(path, "r") as f:
+        assert list(f["ticks"][()]) == [0, 0] and list(f["grid_step"][()]) == [0, 1]
 
 
 def test_output_h5_without_triplets_keeps_schema_1(tmp_path):

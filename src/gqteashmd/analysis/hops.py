@@ -117,7 +117,21 @@ class Transition:
 
 def transitions(t: Trajectory, *, included: bool, horizon_fs: float) -> list[Transition]:
     """Every change of `t.active` between consecutive records. An accepted hop that keeps the
-    spin-free state (between the Ms components of one triplet) is not a transition."""
+    spin-free state (between the Ms components of one triplet) is not a transition.
+
+    For a schema-2 trajectory (triplets) only: output.h5 keeps every row where the spin-free
+    state changes (Task 7 fix ruling), so a hop record's `hop_from`/`hop_to` must be the
+    previous record's and its own `active`; otherwise ValueError naming the record (an
+    inconsistent file; the missing change is not reconstructed).
+    """
+    for j in np.flatnonzero(t.hop_to[1:] >= 0) + 1:
+        seen = (int(t.hop_from[j]), int(t.hop_to[j]))
+        if seen != (int(t.active[j - 1]), int(t.active[j])):
+            raise ValueError(
+                f"{t.task}: record {j} (t = {float(t.time_fs[j]):g} fs) has a hop "
+                f"{seen[0]} -> {seen[1]} but the active spin-free states are "
+                f"{int(t.active[j - 1])} -> {int(t.active[j])}: the file is inconsistent"
+            )
     changed = np.flatnonzero(t.active[1:] != t.active[:-1]) + 1
     out: list[Transition] = []
     for j in changed:

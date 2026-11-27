@@ -221,11 +221,16 @@ def test_the_canned_spin_orbit_pipeline_through_the_analysis(tmp_path, write_inp
     summary = _analysis(tmp_path)
     assert summary["n_included"] == 4 and summary["stage_failed"] is False
     assert summary["fit"]["states"] == ["S1"]
-    # the transitions equal a recount of the changes of `active` over every record
+    # the transitions equal a recount of the changes of `active` over every record. This check
+    # is structural only: the canned run (default seed, 20 fs) has no spin-free change at all
+    # (one S1 -> S1 diagonal hop; seeds 1-3 the same), so `expected` is all zeros; the counting
+    # itself is tested on hand-built files (tests/stages/test_analysis.py)
     expected = {k: {"at_hop": 0, "without_hop": 0} for k in ("S-S", "S-T", "T-S", "T-T")}
     for t in trajs:
-        a, hop_to = t["active"], t["hop_to"]
+        a, hop_from, hop_to = t["active"], t["hop_from"], t["hop_to"]
         for r in range(1, a.size):
+            if hop_to[r] >= 0:  # PR1 and the Task 7 fix: a hop follows the previous record
+                assert (hop_from[r], hop_to[r]) == (a[r - 1], a[r])
             if a[r] != a[r - 1]:
                 expected[_kind(a[r - 1], a[r])]["at_hop" if hop_to[r] >= 0 else "without_hop"] += 1
     transitions = summary["transitions"]

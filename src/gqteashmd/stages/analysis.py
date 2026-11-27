@@ -343,14 +343,15 @@ class AnalysisStage(Stage):
                     traj, included=traj.task in complete_tasks, horizon_fs=g.horizon_fs
                 )
         hop_stats = hops.hop_statistics(events, complete, labels, g.horizon_fs)
-        if n_triplets:  # spec 4.3: like the hops, over the complete trajectories
+        if n_triplets:  # spec 4.3: like the hops, counted over the complete trajectories
             changes: list[hops.Transition] = []
-            for entry in selected:
-                traj = trajectories[entry.task_id]
-                if traj is not None:
+            for traj in checked:  # every trajectory an estimator uses has its hops checked
+                try:
                     changes += hops.transitions(
                         traj, included=traj.task in complete_tasks, horizon_fs=g.horizon_fs
                     )
+                except ValueError as exc:
+                    raise _task_error(f"{files[traj.task]}: {exc}; {DYNAMICS_ADVICE}") from exc
             summary["transitions"] = hops.transition_statistics(
                 changes, complete, labels, g.horizon_fs
             )
@@ -570,11 +571,10 @@ def _check_consistent(
 def _spin_counts(data: TrajectoryData) -> tuple[int, int]:
     """(singlets including S0, triplets) of an output.h5: its `n_singlets`/`n_triplets`
     attributes (schema 2, spec 4.2); a file without triplets has neither, every state is a
-    singlet."""
+    singlet. A present `n_singlets` is always taken (and so compared with the labels)."""
     n_triplets = int(data.attrs.get("n_triplets", 0))
-    if not n_triplets:
-        return len(data.labels), 0
-    return int(data.attrs.get("n_singlets", 0)), n_triplets
+    default = 0 if n_triplets else len(data.labels)
+    return int(data.attrs.get("n_singlets", default)), n_triplets
 
 
 def _spin_counts_fit(data: TrajectoryData) -> bool:

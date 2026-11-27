@@ -1,4 +1,5 @@
 import numpy as np
+import pytest
 
 from gqteashmd.analysis.grid import Trajectory
 from gqteashmd.analysis.hops import (
@@ -124,6 +125,23 @@ def test_transitions_are_the_changes_of_the_active_spin_free_state():
         Transition("isc", 2.0, 3, 0, True, True, True),
     ]
     assert transitions(STAY, included=True, horizon_fs=2.0) == []
+
+
+@pytest.mark.parametrize(
+    ("active", "hop_from", "hop_to"),
+    [
+        # the reviewer's case: S1, then a hop from T1 to S0 (the S1 -> T1 change not recorded)
+        ([1, 0], [-1, 2], [-1, 0]),
+        # the mirror case: a hop within T1 after an unrecorded S1 -> T1 change
+        ([1, 2], [-1, 2], [-1, 2]),
+        # hop_to is not the record's active state
+        ([1, 2], [-1, 1], [-1, 3]),
+    ],
+)
+def test_a_hop_record_that_does_not_follow_the_previous_record_is_refused(active, hop_from, hop_to):
+    t = soc_traj("bad", active, hop_from, hop_to)
+    with pytest.raises(ValueError, match="record 1 .*inconsistent"):
+        transitions(t, included=True, horizon_fs=2.0)
 
 
 def test_a_hop_within_one_spin_free_state_is_not_a_transition():

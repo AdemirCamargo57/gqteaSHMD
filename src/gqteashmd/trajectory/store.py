@@ -161,13 +161,21 @@ class RestartStore:
             shutil.rmtree(tmp, ignore_errors=True)
 
 
-def _kept(rows: np.ndarray, output_every: int) -> np.ndarray:
-    """The boolean mask of the log rows that output.h5 keeps (ruling R2)."""
+def _kept(rows: np.ndarray, output_every: int, *, spin_free: bool = False) -> np.ndarray:
+    """The boolean mask of the log rows that output.h5 keeps (ruling R2).
+
+    With ``spin_free`` (schema 2, triplets) also every row whose active spin-free state differs
+    from the previous row's (Task 7 fix ruling), so every spin-free change is in output.h5 at
+    the record where it happened and, at a hop record, ``hop_from`` (PR1) is the previous
+    record's ``active``.
+    """
     keep = (rows["ticks"] == 0) & (rows["grid_step"] % output_every == 0)
     keep |= rows["hop_to"] >= 0
     keep |= rows["frustrated"] != 0
     keep |= rows["rung_changed"] != 0
     keep |= rows["rejections"] > 0
+    if spin_free and rows.size > 1:
+        keep[1:] |= rows["active_mch"][1:] != rows["active_mch"][:-1]
     if rows.size:
         keep[-1] = True
     mask: np.ndarray = keep
@@ -216,7 +224,7 @@ def write_output_h5(
     triplets = bool(n_triplets)
     if triplets and not n_singlets:
         raise ValueError("write_output_h5 with n_triplets > 0 needs n_singlets >= 1")
-    keep = _kept(rows, output_every)
+    keep = _kept(rows, output_every, spin_free=triplets)
     kept = rows[keep]
     m = kept.shape[0]
     populations = kept["c_real"] ** 2 + kept["c_imag"] ** 2
