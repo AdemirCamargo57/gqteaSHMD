@@ -118,12 +118,30 @@ def test_the_hamiltonian_layout(computed):
     assert np.max(np.abs(off)) * HARTREE_IN_CM1 > 10.0  # non-vacuous: S0-T1 is about 65 cm-1
 
 
+def test_the_shared_pair_rss_agrees_with_the_independent_copy(computed):
+    """`soc.pair_rss` (used by the `single-point` table and the ORCA test) against this file's
+    own copy of the definition, `_pair_rss`."""
+    method, result = computed
+    n_s, n_t = _counts(method)
+    shared = soc.pair_rss(result.hamiltonian, n_s, n_t)
+    independent = _pair_rss(result.hamiltonian, n_s, n_t)
+    assert list(shared) == list(independent)
+    for pair, value in independent.items():
+        assert shared[pair] == pytest.approx(value, rel=1e-14, abs=1e-20)
+    assert max(shared.values()) * HARTREE_IN_CM1 > 10.0  # non-vacuous
+
+
+@pytest.mark.parametrize(("method", "triplets"), [("tda", 0), ("tda", 3), ("casscf", 2)])
+def test_the_backend_reports_spin_orbit_coupling_with_triplets(method, triplets):
+    assert _backend(method, triplets=triplets).capabilities.soc is (triplets > 0)
+
+
 def test_the_json_carries_the_hamiltonian(computed):
     _, result = computed
     data = result.to_json()
     h = result.hamiltonian
-    assert np.array(data["hamiltonian"]["real"]).tolist() == h.real.tolist()
-    assert np.array(data["hamiltonian"]["imag"]).tolist() == h.imag.tolist()
+    assert np.array(data["hamiltonian_hartree"]["real"]).tolist() == h.real.tolist()
+    assert np.array(data["hamiltonian_hartree"]["imag"]).tolist() == h.imag.tolist()
     assert data["hamiltonian_labels"] == list(result.hamiltonian_labels)
 
 
@@ -212,7 +230,7 @@ def test_no_spin_orbit_integral_without_the_request(method, triplets, monkeypatc
     second = backend.compute(Request(COORDS + 0.01, overlaps=True))  # a tracked geometry too
     assert second.hamiltonian is None
     data = second.to_json()
-    assert "hamiltonian" not in data and "hamiltonian_labels" not in data
+    assert "hamiltonian_hartree" not in data and "hamiltonian_labels" not in data
 
 
 def _rotation(angle_deg: float, axis: np.ndarray) -> np.ndarray:

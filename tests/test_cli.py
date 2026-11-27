@@ -6,10 +6,13 @@ import subprocess
 import sys
 import time
 
+import numpy as np
 import pytest
 
+from gqteashmd import cli
 from gqteashmd.cli import EXIT_STOPPED, main
 from gqteashmd.config.loader import load_config
+from gqteashmd.core.units import HARTREE_IN_CM1
 from gqteashmd.logging_setup import configure_logging
 from gqteashmd.project.layout import ProjectLayout
 from gqteashmd.project.lock import ProjectLock
@@ -380,3 +383,70 @@ def test_other_commands_do_not_look_up_the_commit(tmp_path, monkeypatch):
 
     monkeypatch.setattr(build_info, "commit_info", fail)
     assert main(["init", str(tmp_path / "input.toml")]) == 0
+
+
+# The spin-orbit table of `single-point` (pure formatting: no PySCF, fast tier)
+
+
+def test_values_that_round_to_zero_print_without_a_sign():
+    assert cli._complex_cm1(complex(-0.004, 0.001)) == "0.00+0.00j"
+    assert cli._complex_cm1(complex(-1.234, -0.0049)) == "-1.23+0.00j"
+    assert cli._complex_cm1(complex(0.0, -65.113)) == "0.00-65.11j"
+
+
+def test_the_table_counts_each_distinct_element_once(capsys):
+    """1 singlet + 2 triplets with every coupling set: an intra-triplet pair counts its three
+    elements with M < M' once (not their conjugates as well), an S-T pair its 3, a T-T' pair
+    its 9 elements <T, M|H|T', M'>."""
+    n_s, n_t = 1, 2
+    rng = np.random.default_rng(3)
+    n = n_s + 3 * n_t
+    a = rng.standard_normal((n, n)) + 1j * rng.standard_normal((n, n))
+    h = (a + a.conj().T) / HARTREE_IN_CM1
+    np.fill_diagonal(h, -1.0)
+
+    def index(j, m):  # m = 0, 1, 2 for Ms = -1, 0, +1
+        return n_s + m * n_t + j
+
+    cli._print_soc_table(h, n_s, n_t, "somf")
+    lines = capsys.readouterr().out.splitlines()
+    rss = {line.split()[0]: float(line.split()[-1]) for line in lines[3:] if line[:1] in "ST"}
+    cm1 = h * HARTREE_IN_CM1
+    expected_t1_t1 = np.sqrt(
+        sum(abs(cm1[index(0, m), index(0, mb)]) ** 2 for m in range(3) for mb in range(m + 1, 3))
+    )
+    expected_t1_t2 = np.sqrt(
+        sum(abs(cm1[index(0, m), index(1, mb)]) ** 2 for m in range(3) for mb in range(3))
+    )
+    expected_s0_t2 = np.sqrt(sum(abs(cm1[0, index(1, m)]) ** 2 for m in range(3)))
+    assert rss["T1-T1"] == pytest.approx(expected_t1_t1, abs=0.006)
+    assert rss["T1-T2"] == pytest.approx(expected_t1_t2, abs=0.006)
+    assert rss["S0-T2"] == pytest.approx(expected_s0_t2, abs=0.006)
+
+
+def test_the_triplet_rows_have_their_own_column_header(capsys):
+    """The T-T rows show (M, M') = (+1, 0), (+1, +1), (0, +1), not Ms = -1, 0, +1: a second
+    header line names them, after the S-T rows and before the first T-T row."""
+    n_s, n_t = 2, 2
+    n = n_s + 3 * n_t
+    h = np.zeros((n, n), dtype=complex)
+    np.fill_diagonal(h, -1.0)
+    cli._print_soc_table(h, n_s, n_t, "somf")
+    lines = capsys.readouterr().out.splitlines()
+    first_tt = next(i for i, line in enumerate(lines) if line.startswith("T1-T1"))
+    last_st = max(i for i, line in enumerate(lines) if line.startswith("S"))
+    assert first_tt == last_st + 2
+    assert lines[first_tt - 1] == cli.SOC_TT_COLUMNS
+    assert lines[first_tt - 1].split() == ["pair", "(+1,0)", "(+1,+1)", "(0,+1)", "rss"]
+    assert lines[2] == cli.SOC_ST_COLUMNS
+    assert lines[2].split() == ["pair", "-1", "0", "+1", "rss"]
+
+
+def test_a_one_triplet_table_has_both_headers(capsys):
+    """One singlet and one triplet: one S-T row under its header, one T-T row under its own."""
+    n = 1 + 3
+    h = np.zeros((n, n), dtype=complex)
+    cli._print_soc_table(h, 1, 1, "effective_charge")
+    lines = capsys.readouterr().out.splitlines()
+    assert lines[0] == "Spin-orbit coupling (cm-1, effective_charge)"
+    assert [line.split()[0] for line in lines[2:]] == ["pair", "S0-T1", "pair", "T1-T1"]

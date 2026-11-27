@@ -103,3 +103,44 @@ def test_the_effective_charge_table_check_names_the_missing_elements():
     soc.require_effective_charges(["C", "O", "H", "H", "S"])
     with pytest.raises(ConfigError, match="for N, Br .*use soc_operator = 'somf'"):
         soc.require_effective_charges(["C", "N", "Br", "N"])
+
+
+def test_pair_rss_counts_each_distinct_element_once():
+    """The one rss definition (`soc.pair_rss`): S_I-T_J over its 3 elements, T_J-T_J' (J < J')
+    over its 9, T_J-T_J over the 3 with M < M' (the others are conjugates or energies)."""
+    rng = np.random.default_rng(11)
+    n = N_S + 3 * N_T
+    a = rng.standard_normal((n, n)) + 1j * rng.standard_normal((n, n))
+    h = a + a.conj().T
+    rss = soc.pair_rss(h, N_S, N_T)
+    assert list(rss) == [
+        "S0-T1",
+        "S0-T2",
+        "S1-T1",
+        "S1-T2",
+        "S2-T1",
+        "S2-T2",
+        "T1-T1",
+        "T1-T2",
+        "T2-T2",
+    ]
+    for i in range(N_S):
+        for j in range(N_T):
+            expected = np.sqrt(sum(abs(h[i, _index(j, m)]) ** 2 for m in range(3)))
+            assert rss[f"S{i}-T{j + 1}"] == pytest.approx(expected, rel=1e-14)
+    t1_t2 = np.sqrt(
+        sum(abs(h[_index(0, m), _index(1, mb)]) ** 2 for m in range(3) for mb in range(3))
+    )
+    assert rss["T1-T2"] == pytest.approx(t1_t2, rel=1e-14)
+    for j in range(N_T):
+        same = np.sqrt(
+            sum(
+                abs(h[_index(j, m), _index(j, mb)]) ** 2 for m in range(3) for mb in range(m + 1, 3)
+            )
+        )
+        assert rss[f"T{j + 1}-T{j + 1}"] == pytest.approx(same, rel=1e-14)
+
+
+def test_pair_rss_refuses_a_matrix_of_the_wrong_size():
+    with pytest.raises(ValueError, match="does not fit"):
+        soc.pair_rss(np.zeros((5, 5), dtype=complex), N_S, N_T)

@@ -92,6 +92,8 @@ class ModelBackend(ElectronicBackend):
         )
 
     def compute(self, request: Request) -> ElectronicResult:
+        if request.soc:  # refused, not ignored: a caller must not get a silent None Hamiltonian
+            raise ValueError("ModelBackend does not compute spin-orbit couplings (Request.soc)")
         self.calls += 1
         self._live = None
         self._more_error = False

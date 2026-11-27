@@ -33,6 +33,7 @@ class Capabilities:
     overlaps: bool  # <Psi_I(previous geometry)|Psi_J(current geometry)>
     transition_dipoles: bool
     hessian: bool = False  # analytic S0 Cartesian Hessian
+    soc: bool = False  # the spin-expanded Hamiltonian with spin-orbit couplings (Request.soc)
 
 
 @dataclass(frozen=True, eq=False)
@@ -85,7 +86,7 @@ class ElectronicResult:
     hamiltonian (Request.soc): the complex spin-expanded Hamiltonian (Eh) in the order of
     `hamiltonian_labels` (S0 ... S(n-1), then T1 ... Tm with Ms = -1, 0, +1; the labels of
     `dynamics.spin`): the spin-free energies on the diagonal, the phased spin-orbit couplings
-    off it.
+    off it. `to_json` writes it as ``hamiltonian_hartree`` = ``{"real": ..., "imag": ...}``.
     """
 
     states: tuple[StateLabel, ...]
@@ -138,7 +139,7 @@ class ElectronicResult:
         }
         if self.hamiltonian is not None:  # only when requested: the other outputs are unchanged
             h = np.asarray(self.hamiltonian, dtype=complex)
-            data["hamiltonian"] = {"real": h.real.tolist(), "imag": h.imag.tolist()}
+            data["hamiltonian_hartree"] = {"real": h.real.tolist(), "imag": h.imag.tolist()}
             data["hamiltonian_labels"] = (
                 None if self.hamiltonian_labels is None else list(self.hamiltonian_labels)
             )

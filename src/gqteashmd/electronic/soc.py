@@ -405,6 +405,47 @@ def hamiltonian_labels(n_singlets: int, n_triplets: int) -> tuple[str, ...]:
     return tuple(s.label() for s in expanded_states((n_singlets, 0, n_triplets)))
 
 
+def pair_rss(hamiltonian: np.ndarray, n_singlets: int, n_triplets: int) -> dict[str, float]:
+    """The root sum of squares of the spin-orbit couplings per spin-free pair, in the units of
+    `hamiltonian`: the one definition, used by the `single-point` table and the ORCA test.
+
+    `hamiltonian` is a spin-expanded matrix in the canonical order (`assemble_hamiltonian`).
+    Each distinct matrix element is counted once: S_I-T_J over its 3 elements
+    <S_I|H|T_J, M>; T_J-T_J' (J < J') over its 9 elements <T_J, M|H|T_J', M'> (the T_J'-T_J
+    block is their conjugate); T_J-T_J over the 3 elements with M < M' (the others are their
+    conjugates or the energies; for real spin-free states they are zero). The rss depends
+    neither on the phases nor on the basis of the triplet components. The keys are
+    ``S{I}-T{J}`` (I from 0, J from 1), then ``T{J}-T{J'}`` with J <= J', in that order.
+    """
+    h = np.asarray(hamiltonian)
+    n = n_singlets + 3 * n_triplets
+    if h.shape != (n, n):
+        raise ValueError(
+            f"a matrix of shape {h.shape} does not fit {n_singlets} singlets and {n_triplets} "
+            f"triplets ({n} spin-expanded states)"
+        )
+    magnitude = np.abs(h) ** 2
+
+    def index(j: int, m: int) -> int:  # m = 0, 1, 2 for Ms = -1, 0, +1
+        return n_singlets + m * n_triplets + j
+
+    rss: dict[str, float] = {}
+    for i in range(n_singlets):
+        for j in range(n_triplets):
+            total = sum(magnitude[i, index(j, m)] for m in range(3))
+            rss[f"S{i}-T{j + 1}"] = float(np.sqrt(total))
+    for j in range(n_triplets):
+        for jb in range(j, n_triplets):
+            total = sum(
+                magnitude[index(j, m), index(jb, mb)]
+                for m in range(3)
+                for mb in range(3)
+                if j != jb or m < mb
+            )
+            rss[f"T{j + 1}-T{jb + 1}"] = float(np.sqrt(total))
+    return rss
+
+
 def assemble_hamiltonian(
     energies_s: np.ndarray,
     energies_t: np.ndarray,

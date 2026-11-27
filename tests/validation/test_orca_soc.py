@@ -8,7 +8,7 @@ weights, and CIS (TDA-HF) 3 singlets (S0 included) + 3 triplets; the SOMF operat
 The compared quantity is the root sum of squares per spin-free pair, which does not depend on the
 triplet basis: ORCA's TDA prints the Cartesian components Z, X, Y of <T|H|S>, its CASSCF the Ms
 components, and ours are Ms components. Each distinct matrix element is counted once (the
-definition of the `single-point` table, `cli._print_soc_table`): S_I-T_J over its 3 elements,
+definition of `soc.pair_rss`, also used by the `single-point` table): S_I-T_J over its 3 elements,
 T_J-T_J' (J < J') over its 9, T_J-T_J over the 3 with M < M' (zero for real states). Signs and
 phases are not compared (the CI phases are arbitrary).
 
@@ -38,14 +38,12 @@ from gqteashmd.chem.xyz import parse_xyz
 from gqteashmd.config.schema import ElectronicSection
 from gqteashmd.core.states import StateLabel
 from gqteashmd.core.units import ANGSTROM_TO_BOHR, HARTREE_IN_CM1
+from gqteashmd.electronic import soc
 from gqteashmd.electronic.base import MoleculeSpec, Request
 from gqteashmd.electronic.pyscf_backend import PySCFBackend
 
-pytestmark = [
-    pytest.mark.orca,
-    pytest.mark.pyscf,
-    pytest.mark.skipif(not os.environ.get("ORCA_EXE"), reason="needs ORCA_EXE"),
-]
+# Only the comparison needs ORCA and PySCF; the parser tests below run in the fast tier.
+needs_orca = pytest.mark.skipif(not os.environ.get("ORCA_EXE"), reason="needs ORCA_EXE")
 DATA = Path(__file__).resolve().parents[1] / "data"
 MOLECULES = ("formaldehyde", "thioformaldehyde")
 
@@ -314,29 +312,9 @@ def _check_s0(ours: float, orca: float) -> None:
 
 
 def _our_pairs(h: np.ndarray, n_s: int, n_t: int) -> dict[str, float]:
-    """Root sum of squares (cm-1) per spin-free pair of our spin-expanded Hamiltonian (canonical
-    order S0..S(n-1), then T1..Tm for Ms = -1, 0, +1), each distinct element counted once."""
-    cm1 = h * HARTREE_IN_CM1
-
-    def index(j: int, m: int) -> int:
-        return n_s + m * n_t + j
-
-    pairs = {}
-    for i in range(n_s):
-        for j in range(n_t):
-            pairs[f"S{i}-T{j + 1}"] = float(
-                np.sqrt(sum(abs(cm1[i, index(j, m)]) ** 2 for m in range(3)))
-            )
-    for j in range(n_t):
-        for jb in range(j, n_t):
-            total = sum(
-                abs(cm1[index(j, m), index(jb, mb)]) ** 2
-                for m in range(3)
-                for mb in range(3)
-                if j != jb or m < mb
-            )
-            pairs[f"T{j + 1}-T{jb + 1}"] = float(np.sqrt(total))
-    return pairs
+    """Root sum of squares (cm-1) per spin-free pair of our spin-expanded Hamiltonian: the one
+    definition, `soc.pair_rss` (each distinct element counted once)."""
+    return {pair: value * HARTREE_IN_CM1 for pair, value in soc.pair_rss(h, n_s, n_t).items()}
 
 
 def _ours(molecule: str, method: str, operator: str):
@@ -412,6 +390,9 @@ def _orca_casscf_pairs(out: str, ours: dict[int, list[float]]) -> dict[str, floa
     return pairs
 
 
+@pytest.mark.orca
+@pytest.mark.pyscf
+@needs_orca
 @pytest.mark.parametrize("operator", list(ORCA_OPERATOR))
 @pytest.mark.parametrize("method", list(SETTINGS))
 @pytest.mark.parametrize("molecule", MOLECULES)

@@ -306,6 +306,7 @@ class PySCFBackend(ElectronicBackend):
             overlaps=True,
             transition_dipoles=True,
             hessian=self._settings.method != "casscf",
+            soc=self._settings.triplets > 0,
         )
 
     def ground_state_hessian(self, coords_bohr: ArrayLike) -> np.ndarray:

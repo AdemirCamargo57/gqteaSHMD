@@ -31,6 +31,9 @@ def electronic_fingerprint(settings: ElectronicSection) -> dict[str, Any]:
     `soc_operator` is hashed only when it is not the default "somf" (the `hop_energy` rule), so
     the fingerprints of projects made before the key existed are unchanged."""
     dumped = settings.model_dump(mode="json")
+    # Deliberate belt and braces: the ElectronicSection serializer already drops the default
+    # soc_operator from every dump, so this pop normally finds nothing; it keeps the fingerprint
+    # rule stated here, next to the start-rule marker, should the serializer ever change.
     if dumped.get("soc_operator", "somf") == "somf":
         dumped.pop("soc_operator", None)
     if settings.method == "casscf":

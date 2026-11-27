@@ -355,48 +355,47 @@ def _complex_cm1(value: complex) -> str:
     return f"{real:.2f}{imag:+.2f}j"
 
 
+SOC_ST_COLUMNS = f"{'pair':<8}{'-1':>18}{'0':>18}{'+1':>18}{'rss':>10}"
+SOC_TT_COLUMNS = f"{'pair':<8}{'(+1,0)':>18}{'(+1,+1)':>18}{'(0,+1)':>18}{'rss':>10}"
+
+
 def _print_soc_table(h: np.ndarray, n_s: int, n_t: int, operator: str) -> None:
     """The spin-orbit couplings of the spin-expanded Hamiltonian (canonical order), in cm-1: one
-    row per S_I-T_J pair (<S|H|T, Ms> for Ms = -1, 0, +1) and per T_J-T_J' pair with J <= J'
-    (the three elements that fix the rank-1 block, (M, M') = (+1, 0), (+1, +1), (0, +1)).
-
-    The rss of a pair counts each distinct matrix element once: the 3 elements <S_I|H|T_J, M>;
-    the 9 elements <T_J, M|H|T_J', M'> for J < J' (the T_J'-T_J block is their conjugate); the
-    3 elements with M < M' for J = J' (the others are their conjugates or the energies; for real
-    spin-free states they are zero)."""
+    row per S_I-T_J pair (<S|H|T, Ms> for Ms = -1, 0, +1) and, under a second column header,
+    one per T_J-T_J' pair with J <= J' (the three elements that fix the rank-1 block,
+    (M, M') = (+1, 0), (+1, +1), (0, +1)). The rss column is `soc.pair_rss` (each distinct
+    matrix element of the pair counted once)."""
+    from gqteashmd.electronic.soc import pair_rss  # NumPy only, imported where it is used
 
     def index(j: int, ms: int) -> int:
         return n_s + (ms + 1) * n_t + j
 
     cm1 = np.asarray(h) * HARTREE_IN_CM1
+    rss = pair_rss(cm1, n_s, n_t)
     print(f"Spin-orbit coupling (cm-1, {operator})")
     print(
         "S-T rows: <S|H|T,Ms> for Ms = -1, 0, +1; T-T rows: <T,M|H|T',M'> for (M, M') = "
         "(+1, 0), (+1, +1), (0, +1); rss counts each distinct element of the pair once"
     )
-    print(f"{'pair':<8}{'-1':>18}{'0':>18}{'+1':>18}{'rss':>10}")
+    print(SOC_ST_COLUMNS)
 
-    def row(pair: str, shown: list[complex], every: list[complex]) -> None:
-        rss = float(np.sqrt(sum(abs(v) ** 2 for v in every)))
-        print(f"{pair:<8}" + "".join(f"{_complex_cm1(v):>18}" for v in shown) + f"{rss:>10.2f}")
+    def row(pair: str, shown: list[complex]) -> None:
+        values = "".join(f"{_complex_cm1(v):>18}" for v in shown)
+        print(f"{pair:<8}{values}{rss[pair]:>10.2f}")
 
     for i in range(n_s):
         for j in range(n_t):
-            elements = [cm1[i, index(j, ms)] for ms in (-1, 0, 1)]
-            row(f"S{i}-T{j + 1}", elements, elements)
+            row(f"S{i}-T{j + 1}", [cm1[i, index(j, ms)] for ms in (-1, 0, 1)])
+    print(SOC_TT_COLUMNS)
     for j in range(n_t):
         for jb in range(j, n_t):
             # for J = J' the (+1, +1) element is the diagonal, i.e. the energy: its spin-orbit
             # part is zero (assemble_hamiltonian checks it), so 0 is shown
             same = complex(0.0) if j == jb else cm1[index(j, 1), index(jb, 1)]
-            shown = [cm1[index(j, 1), index(jb, 0)], same, cm1[index(j, 0), index(jb, 1)]]
-            every = [
-                cm1[index(j, m), index(jb, mb)]
-                for m in (-1, 0, 1)
-                for mb in (-1, 0, 1)
-                if j != jb or m < mb
-            ]
-            row(f"T{j + 1}-T{jb + 1}", shown, every)
+            row(
+                f"T{j + 1}-T{jb + 1}",
+                [cm1[index(j, 1), index(jb, 0)], same, cm1[index(j, 0), index(jb, 1)]],
+            )
 
 
 def _cmd_model_dynamics(args: argparse.Namespace) -> int:
