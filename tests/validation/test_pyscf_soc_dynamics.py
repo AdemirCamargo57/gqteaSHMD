@@ -13,9 +13,10 @@ trajectory finishes; every log record is finite; the spin-free MCH populations s
 state labels of output.h5 (schema 2). Nothing is asserted about energy conservation (owner
 decision 4 of the spec).
 
-Changed after the measured numbers were seen (Task 8): the CIS run has no hop in its 8 steps
-(every hopping probability is exactly 0), so its hop assertion is a strict xfail with the
-measured numbers; the CASSCF run hops. The system, dt, step count and settings are the plan's.
+Changed after the measured numbers were seen (Task 8, controller ruling): the CIS run has no hop
+in its 8 steps (every hopping probability is exactly 0), so the hop is asserted for CASSCF only
+and the CIS run instead asserts that population reached the triplets through the spin-orbit
+coupling. The system, dt, step count and settings are the plan's.
 """
 
 from __future__ import annotations
@@ -210,24 +211,23 @@ def test_a_spin_orbit_trajectory_runs_on_thioformaldehyde(soc_run):
     assert output["populations"].shape[1] == len(LABELS[method])
 
 
-# The CIS trajectory has no hop (measured at d1e77b1, after the plan fixed the assertion): every
-# hopping probability of its 8 records is exactly 0, because the population of the active
-# diagonal state (S1-like) rises at every step, 0.99769 -> 0.99818 over 2 fs, and the SHARC
-# probabilities are zero unless it falls. The settings were not changed to force a hop.
-CIS_HAS_NO_HOP = pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason=(
-        "changed after the measured numbers were seen (Task 8): no hop in the 8 CIS steps; every "
-        "hopping probability is exactly 0 (the active diagonal population rises at every step, "
-        "0.99769 -> 0.99818); the CASSCF run hops (5 hops, S1 -> S0 at step 1)"
-    ),
-)
-
-
-@pytest.mark.parametrize(
-    "soc_run", ["casscf", pytest.param("cis", marks=CIS_HAS_NO_HOP)], indirect=True
-)
+@pytest.mark.parametrize("soc_run", ["casscf"], indirect=True)
 def test_a_spin_orbit_trajectory_hops(soc_run):
     rows, numbers = soc_run["rows"], soc_run["numbers"]
     assert soc_run["result"]["n_hops"] >= 1 and np.any(rows["hop_to"] >= 0), numbers
+
+
+# No CIS hop at these settings: the active diagonal population rises every step (0.99769 ->
+# 0.99818), so every SHARC probability is 0; decided after the numbers were seen, no setting
+# changed (Task 8, controller ruling). Instead the spin-orbit path is checked: the summed triplet
+# population at the last record (2 fs) was measured at about 2.1e-3 (T2 2.0e-3, T3 1.1e-4, T1
+# 7.6e-12); the bound 1e-4 is a factor of about 20 below it.
+CIS_TRIPLET_POPULATION_BOUND = 1e-4
+
+
+@pytest.mark.parametrize("soc_run", ["cis"], indirect=True)
+def test_population_reaches_the_triplets_in_the_cis_run(soc_run):
+    rows, numbers = soc_run["rows"], soc_run["numbers"]
+    n_singlets = sum(1 for label in LABELS["cis"] if label.startswith("S"))
+    triplets = float(rows["populations_mch"][-1, n_singlets:].sum())
+    assert triplets > CIS_TRIPLET_POPULATION_BOUND, f"triplet population {triplets:.3e}; {numbers}"
