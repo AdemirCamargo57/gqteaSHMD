@@ -62,15 +62,47 @@ Effective nuclear charges: the one-electron term with each ``Z_A`` replaced by `
     h[k] = 1j (alpha^2 / 2) (-sum_A Z_eff,A prinvxp(R_A)[k])
 
 which equals the one-electron Breit-Pauli term for ``Z_eff = Z``.
+
+Matrix elements (spec 3.2)
+--------------------------
+With ``h_plus = h_x + i h_y``, ``h_minus = h_x - i h_y`` the operator is
+``H_SO = sum_pq [h_z,pq S^z_pq + h_plus,pq S^-_pq / 2 + h_minus,pq S^+_pq / 2]`` with
+``S^-_pq = a+_{p beta} a_{q alpha}``, ``S^+_pq = a+_{p alpha} a_{q beta}``,
+``S^z_pq = (a+_{p alpha} a_{q alpha} - a+_{p beta} a_{q beta}) / 2``; ``S_- = sum_p S^-_pp``,
+``S_+ = S_-^dagger`` and ``|T, M - 1> = S_- |T, M> / sqrt(2)`` (Condon-Shortley). From
+``[a+_i a_j, a+_k a_l] = delta_jk a+_i a_l - delta_il a+_k a_j``:
+``[S^+_pq, S_-] = 2 S^z_pq``, ``[S^z_pq, S_-] = -S^-_pq``, ``[S^-_pq, S_-] = 0``,
+``[S^-_pq, S_+] = -2 S^z_pq``, ``[S^z_pq, S_+] = S^+_pq``. Every element reduces to the Ms = +1
+CI vectors (``<S| S_- = 0``, ``S_+ |T, +1> = 0``):
+
+- Singlet-triplet, with the spin-flip density ``D_pq = <S| a+_{p beta} a_{q alpha} |T, +1>``::
+
+      <S|H|T, +1> = (1/2) sum h_plus D,  <S|H|T, 0> = -(1/sqrt 2) sum h_z D,
+      <S|H|T, -1> = -(1/2) sum h_minus D           (sum = sum_pq of the elementwise product)
+
+- Triplet-triplet, with ``Z_pq = <T, +1| S^z_pq |T', +1>``: within the two triplets every
+  spin-tensor density is Z times the spin-1 matrix (``<M|S^z_pq|M'> = Z_pq (J_z)_MM'``,
+  ``<M|S^-_pq|M'> = Z_pq (J_-)_MM'``, ``<M|S^+_pq|M'> = Z_pq (J_+)_MM'``), so with
+  ``z = sum h_z Z``, ``p = sum h_plus Z``, ``m = sum h_minus Z`` the 3 x 3 block (rows M, columns
+  M', order -1, 0, +1) is::
+
+      [[-z,          p / sqrt 2,  0         ],
+       [ m / sqrt 2,  0,          p / sqrt 2],
+       [ 0,           m / sqrt 2, z         ]]
+
+The doubly occupied core contributes nothing (a spin flip or S^z on a closed shell vanishes); it
+enters only through the SOMF density. Only active-orbital indices appear.
 """
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
 
+from gqteashmd.core.states import StateLabel
 from gqteashmd.core.units import SPEED_OF_LIGHT_AU
 from gqteashmd.electronic.pyscf_errors import wrap_failure
 from gqteashmd.errors import ConfigError
@@ -154,3 +186,85 @@ def soc_operator(mol: Any, dm: np.ndarray, kind: str) -> np.ndarray:
     if kind == "effective_charge":
         return effective_charge_operator(mol)
     raise ValueError(f"unknown spin-orbit operator {kind!r} (expected one of {SOC_OPERATORS})")
+
+
+@dataclass(frozen=True)
+class SocBlocks:
+    """Spin-orbit blocks (Eh) of one geometry, the M index 0, 1, 2 = Ms -1, 0, +1.
+
+    st: (n_singlets, n_triplets, 3) = <S_I|H_SO|T_J, M>; tt: (n_triplets, n_triplets, 3, 3) =
+    <T_J, M|H_SO|T_J', M'>. Singlet-singlet elements are zero and not stored.
+    """
+
+    st: np.ndarray
+    tt: np.ndarray
+
+
+def _ci_matrix(ci: Any, ncas: int, nelec: tuple[int, int]) -> np.ndarray:
+    from pyscf.fci import cistring
+
+    shape = (cistring.num_strings(ncas, nelec[0]), cistring.num_strings(ncas, nelec[1]))
+    return np.asarray(ci, dtype=float).reshape(shape)
+
+
+def _excitations(
+    ket: np.ndarray, ncas: int, nelec: tuple[int, int], destroy: str, create: str
+) -> np.ndarray:
+    """(ncas, ncas, ...) images ``a+_{p create} a_{q destroy} |ket>`` for every (p, q)."""
+    from pyscf.fci import addons
+
+    mid = (nelec[0] - (destroy == "a"), nelec[1] - (destroy == "b"))
+    destroy_op = addons.des_a if destroy == "a" else addons.des_b
+    create_op = addons.cre_a if create == "a" else addons.cre_b
+    images = []
+    for p in range(ncas):
+        row = []
+        for q in range(ncas):
+            removed = destroy_op(ket, ncas, nelec, q)
+            row.append(create_op(removed, ncas, mid, p))
+        images.append(row)
+    return np.array(images)
+
+
+def casscf_soc_blocks(mc: Any, states: Sequence[StateLabel], h_ao: np.ndarray) -> SocBlocks:
+    """The SA-CASSCF spin-orbit blocks of `states` (mc.ci in their order: singlets with
+    mc.nelecas, triplets at Ms = +1 with one more alpha and one fewer beta active electron) for
+    the operator `h_ao` (3, nao, nao) of `soc_operator`; the formulas are in the module docstring.
+    """
+    singlets = [ci for s, ci in zip(states, mc.ci, strict=True) if s.multiplicity == 1]
+    triplets = [ci for s, ci in zip(states, mc.ci, strict=True) if s.multiplicity == 3]
+    n_s, n_t = len(singlets), len(triplets)
+    st = np.zeros((n_s, n_t, 3), dtype=complex)
+    tt = np.zeros((n_t, n_t, 3, 3), dtype=complex)
+    if not n_t:
+        return SocBlocks(st, tt)
+    ncore, ncas = int(mc.ncore), int(mc.ncas)
+    n_alpha, n_beta = (int(n) for n in mc.nelecas)
+    s_nelec = (n_alpha, n_beta)
+    t_nelec = (n_alpha + 1, n_beta - 1)
+    mo = np.asarray(mc.mo_coeff)[:, ncore : ncore + ncas]
+    h = np.einsum("pi,kpq,qj->kij", mo, np.asarray(h_ao, dtype=complex), mo)
+    h_z, h_plus, h_minus = h[2], h[0] + 1j * h[1], h[0] - 1j * h[1]
+    try:
+        s_ci = [_ci_matrix(ci, ncas, s_nelec) for ci in singlets]
+        t_ci = [_ci_matrix(ci, ncas, t_nelec) for ci in triplets]
+        for j, ket in enumerate(t_ci):
+            flips = _excitations(ket, ncas, t_nelec, "a", "b")
+            for i, bra in enumerate(s_ci):
+                d = np.einsum("ab,pqab->pq", bra, flips)
+                st[i, j, 2] = 0.5 * np.sum(h_plus * d)
+                st[i, j, 1] = -np.sum(h_z * d) / np.sqrt(2.0)
+                st[i, j, 0] = -0.5 * np.sum(h_minus * d)
+            alpha = _excitations(ket, ncas, t_nelec, "a", "a")
+            beta = _excitations(ket, ncas, t_nelec, "b", "b") if t_nelec[1] else None
+            for jb, bra in enumerate(t_ci):
+                z_density = 0.5 * np.einsum("ab,pqab->pq", bra, alpha)
+                if beta is not None:
+                    z_density -= 0.5 * np.einsum("ab,pqab->pq", bra, beta)
+                z = np.sum(h_z * z_density)
+                plus = np.sum(h_plus * z_density) / np.sqrt(2.0)
+                minus = np.sum(h_minus * z_density) / np.sqrt(2.0)
+                tt[jb, j] = [[-z, plus, 0.0], [minus, 0.0, plus], [0.0, minus, z]]
+    except Exception as exc:
+        raise wrap_failure("The SA-CASSCF spin-orbit matrix elements", exc) from exc
+    return SocBlocks(st, tt)
