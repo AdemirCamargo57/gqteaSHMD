@@ -77,9 +77,9 @@ from gqteashmd.errors import ConfigError
 
 # Effective nuclear charges of the one-electron spin-orbit operator: the values ORCA 6.1.1 uses
 # (measured by atomic ratios of its SOCType 1 to its one-electron Breit-Pauli elements, SOC
-# sub-project 2, Task 1: H 1.000, C 3.600, O 5.600, S 13.600, each to about 1e-4), which are the
-# commonly quoted values of S. Koseki, M. W. Schmidt, M. S. Gordon, J. Phys. Chem. 96, 10768
-# (1992) and S. Koseki, M. S. Gordon, M. W. Schmidt, N. Matsunaga, J. Phys. Chem. 99, 12764 (1995).
+# sub-project 2, Task 1: H 1.000, C 3.600, O 5.600, S 13.600, each to about 1e-4). ORCA attributes
+# its table to S. Koseki, M. W. Schmidt, M. S. Gordon, J. Phys. Chem. 96, 10768 (1992) and later
+# papers; these four values were not checked against the papers' tables.
 # Only elements whose value is established are listed; any other element is refused.
 KOSEKI_ZEFF: dict[str, float] = {"H": 1.0, "C": 3.6, "O": 5.6, "S": 13.6}
 
@@ -107,6 +107,8 @@ def one_electron_operator(mol: Any) -> np.ndarray:
 def effective_charge_operator(mol: Any, zeff: Mapping[str, float] | None = None) -> np.ndarray:
     """The one-electron operator with effective nuclear charges (default `KOSEKI_ZEFF`)."""
     table = KOSEKI_ZEFF if zeff is None else zeff
+    if any(mol.atom_charge(i) == 0 for i in range(mol.natm)):
+        raise ConfigError("ghost atoms are not supported by the effective-charge operator")
     symbols = [mol.atom_pure_symbol(i) for i in range(mol.natm)]
     missing = list(dict.fromkeys(s for s in symbols if s not in table))
     if missing:
@@ -128,10 +130,10 @@ def somf_operator(mol: Any, dm: np.ndarray, *, two_electron: bool = True) -> np.
     """The SOMF operator of the total AO density ``dm`` (the module docstring has the formula)."""
     spatial = _nuclear_term(mol)
     if two_electron:
-        from pyscf.scf import jk
-
         dm = np.asarray(dm, dtype=float)
         try:
+            from pyscf.scf import jk
+
             coulomb, exchange_1, exchange_2 = jk.get_jk(
                 mol,
                 [dm, dm, dm],

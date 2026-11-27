@@ -97,6 +97,32 @@ def test_the_mean_field_equals_the_explicit_contraction_of_the_integrals():
     assert np.abs(mean_field - expected).max() <= 1e-12
 
 
+def test_the_one_electron_integral_is_the_curl_of_the_nuclear_potential():
+    """Pins the sign and the x, y, z order the convention rests on (STO-3G):
+    int1e_pnucxp[k] = eps_kab <d_a p| V_N |d_b q>, with V_N = -sum Z/r negative."""
+    from pyscf import gto
+
+    mol = gto.M(atom=str(DATA / "formaldehyde.xyz"), basis="sto-3g", verbose=0)
+    grad_grad = mol.intor("int1e_ipnucip", comp=9).reshape(3, 3, mol.nao, mol.nao)
+    eps = np.zeros((3, 3, 3))
+    for k, a, b in ((0, 1, 2), (1, 2, 0), (2, 0, 1)):
+        eps[k, a, b], eps[k, b, a] = 1.0, -1.0
+    curl = np.einsum("kab,abpq->kpq", eps, grad_grad)
+    pnucxp = mol.intor("int1e_pnucxp", comp=3)
+    assert np.abs(pnucxp - curl).max() <= 1e-10 * np.abs(pnucxp).max()
+    assert np.diag(mol.intor("int1e_nuc")).max() < 0.0
+
+
+def test_a_ghost_atom_is_refused_by_the_effective_charge_operator():
+    from pyscf import gto
+
+    from gqteashmd.electronic import soc
+
+    mol = gto.M(atom="O 0 0 0; ghost-H 0 0 1.8", basis="sto-3g", verbose=0, spin=0, charge=0)
+    with pytest.raises(ConfigError, match="ghost"):
+        soc.effective_charge_operator(mol)
+
+
 def test_a_missing_effective_charge_is_a_config_error_naming_the_element(formaldehyde):
     from gqteashmd.electronic import soc
 
