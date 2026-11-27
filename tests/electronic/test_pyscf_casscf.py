@@ -4,7 +4,7 @@ import logging
 import numpy as np
 import pytest
 
-from gqteashmd.core.states import StateLabel
+from gqteashmd.core.states import StateLabel, states_from_counts
 from gqteashmd.electronic import pyscf_casscf
 from gqteashmd.electronic.base import MoleculeSpec, Request
 from gqteashmd.electronic.pyscf_backend import PySCFBackend, require_pyscf
@@ -655,3 +655,193 @@ def test_reference_coordinates_are_validated(ethylene_symbols, make_settings):
     bad[0, 0] = np.nan
     with pytest.raises(ValueError, match="reference_coords_bohr"):
         _backend(ethylene_symbols, make_settings(basis="sto-3g"), reference_coords_bohr=bad)
+
+
+# --- SA-CASSCF with triplet states (one equal-weight state average over both spins) ---
+
+
+def _water_cas44(make_settings, triplets):
+    return make_settings(
+        basis="sto-3g",
+        singlets=2,
+        triplets=triplets,
+        casscf={"ncas": 4, "nelecas": 4, "conv_tol": 1e-10, "conv_tol_grad": 1e-6},
+    )
+
+
+def test_state_counts():
+    assert pyscf_casscf.state_counts(states_from_counts(3, 2)) == (3, 2)
+    assert pyscf_casscf.state_counts(states_from_counts(2)) == (2, 0)
+
+
+def test_mixed_sa_casscf_has_the_right_spins_and_matches_a_direct_mix(water_mol, make_settings):
+    mol, mf = water_mol
+    settings = _water_cas44(make_settings, 2)
+    states = states_from_counts(2, 2)
+    out = pyscf_casscf.run_casscf(mol, mf, settings, states, None)
+    assert [round(out.spin_squares[s]) for s in states] == [0, 0, 2, 2]
+    for s in states:
+        target = 0.0 if s.multiplicity == 1 else 2.0
+        assert abs(out.spin_squares[s] - target) <= pyscf_casscf.SPIN_TOLERANCE
+    from pyscf import fci, mcscf
+
+    mc = mcscf.CASSCF(mf, 4, 4)
+    s1 = fci.solver(mol, singlet=True)
+    s1.nroots = 2
+    s1.spin = 0
+    s3 = fci.solver(mol, singlet=False)
+    s3.nroots = 2
+    s3.spin = 2
+    mc = mcscf.state_average_mix_(mc, [s1, s3], [0.25] * 4)
+    mc.conv_tol = 1e-10
+    mc.conv_tol_grad = 1e-6
+    mc.kernel()
+    # per-state energies are first order in the orbital gradient (conv_tol_grad 1e-6) and scatter
+    # by up to ~2.5e-7 Eh across BLAS kernels; the SA energy is variational, so it is held tighter
+    ours = [out.energies[s] for s in states]
+    assert np.mean(ours) == pytest.approx(np.mean(mc.e_states), abs=1e-8)
+    for s, e in zip(states, mc.e_states, strict=True):
+        assert out.energies[s] == pytest.approx(e, abs=1e-6)
+
+
+def test_triplet_triplet_nacs_are_refused(water_mol, make_settings):
+    mol, mf = water_mol
+    states = states_from_counts(2, 2)
+    out = pyscf_casscf.run_casscf(mol, mf, _water_cas44(make_settings, 2), states, None)
+    t1, t2 = StateLabel(3, 1), StateLabel(3, 2)
+
+    def no_call():
+        raise AssertionError("nac_method was called")
+
+    out.mc.nac_method = no_call
+    with pytest.raises(ValueError, match="T1-T2: nonadiabatic coupling vectors between triplet"):
+        pyscf_casscf.casscf_nacs(
+            out.mc, {(StateLabel(1, 0), StateLabel(1, 1)), (t1, t2)}, states, 3
+        )
+
+
+def test_the_backend_refuses_a_triplet_triplet_nac_request(make_settings, monkeypatch):
+    from gqteashmd.core.units import ANGSTROM_TO_BOHR
+
+    def no_solve(*args, **kwargs):
+        raise AssertionError("the request was not refused before the solve")
+
+    monkeypatch.setattr(PySCFBackend, "_build_mol", no_solve)
+    coords = np.array([[0, 0, 0.1173], [0, 0.7572, -0.4692], [0, -0.7572, -0.4692]])
+    backend = _backend(("O", "H", "H"), _water_cas44(make_settings, 2))
+    pair = (StateLabel(3, 1), StateLabel(3, 2))
+    with pytest.raises(ValueError, match="T1-T2: .*use coupling = 'overlap'"):
+        backend.compute(Request(coords * ANGSTROM_TO_BOHR, nacs=frozenset({pair})))
+
+
+def test_singlet_triplet_nacs_and_triplet_dipoles_are_zero(water_mol, make_settings):
+    mol, mf = water_mol
+    settings = _water_cas44(make_settings, 2)
+    states = states_from_counts(2, 2)
+    out = pyscf_casscf.run_casscf(mol, mf, settings, states, None)
+    s1, t1, t2 = StateLabel(1, 1), StateLabel(3, 1), StateLabel(3, 2)
+    nacs = pyscf_casscf.casscf_nacs(out.mc, {(s1, t1)}, states, mol.natm)
+    np.testing.assert_array_equal(nacs[(s1, t1)], np.zeros((mol.natm, 3)))
+    mus = pyscf_casscf.casscf_dipoles(mol, out.mc, states)
+    np.testing.assert_array_equal(mus[t1], np.zeros(3))
+    g = pyscf_casscf.casscf_gradients(out.mc, {t2}, states)
+    assert g[t2].shape == (mol.natm, 3) and np.all(np.isfinite(g[t2]))
+
+
+def test_singlet_quantities_of_the_mixed_average_use_the_state_position(water_mol, make_settings):
+    """S0-S1 NAC and S0 -> S1 dipole of the mixed SA come from roots 0 and 1 and are not zero."""
+    mol, mf = water_mol
+    states = states_from_counts(2, 2)
+    out = pyscf_casscf.run_casscf(mol, mf, _water_cas44(make_settings, 2), states, None)
+    s0, s1 = StateLabel(1, 0), StateLabel(1, 1)
+    nacs = pyscf_casscf.casscf_nacs(out.mc, {(s0, s1)}, states, mol.natm)
+    assert nacs[(s0, s1)].shape == (mol.natm, 3) and np.abs(nacs[(s0, s1)]).max() > 1e-3
+    mus = pyscf_casscf.casscf_dipoles(mol, out.mc, states)
+    assert set(mus) == set(states[1:]) and np.abs(mus[s1]).max() > 1e-3
+
+
+def test_block_expansions(water_mol, make_settings):
+    mol, mf = water_mol
+    settings = _water_cas44(make_settings, 2)
+    states = states_from_counts(2, 2)
+    out = pyscf_casscf.run_casscf(mol, mf, settings, states, None)
+    singlet, triplet = pyscf_casscf.casscf_expansions(out.mc, states)
+    assert singlet.n_states == 2 and triplet is not None and triplet.n_states == 2
+    assert triplet.alpha.shape[1] == singlet.alpha.shape[1] + 1  # Ms = +1
+    assert triplet.beta.shape[1] == singlet.beta.shape[1] - 1
+    eye = np.eye(np.asarray(out.mc.mo_coeff).shape[1])
+    np.testing.assert_allclose(state_overlaps(triplet, triplet, eye), np.eye(2), atol=1e-8)
+    np.testing.assert_allclose(state_overlaps(singlet, singlet, eye), np.eye(2), atol=1e-8)
+
+
+def test_block_expansions_without_triplets_equal_the_single_expansion(water_mol, make_settings):
+    mol, mf = water_mol
+    states = states_from_counts(2, 0)
+    out = pyscf_casscf.run_casscf(mol, mf, _water_cas44(make_settings, 0), states, None)
+    singlet, triplet = pyscf_casscf.casscf_expansions(out.mc, states)
+    single = pyscf_casscf.casscf_expansion(out.mc)
+    assert triplet is None
+    np.testing.assert_array_equal(singlet.alpha, single.alpha)
+    np.testing.assert_array_equal(singlet.beta, single.beta)
+    np.testing.assert_array_equal(singlet.coeffs, single.coeffs)
+
+
+def test_without_triplets_the_singlet_solver_is_used(monkeypatch, water_mol, make_settings):
+    def boom(*args, **kwargs):
+        raise AssertionError("the mixed solver ran with triplets = 0")
+
+    monkeypatch.setattr(pyscf_casscf, "mixed_solver", boom)
+    mol, mf = water_mol
+    settings = _water_cas44(make_settings, 0)
+    out = pyscf_casscf.run_casscf(mol, mf, settings, states_from_counts(2, 0), None)
+    assert len(out.energies) == 2
+
+
+def test_a_wrong_spin_with_triplets_names_the_expected_spin(monkeypatch, water_mol, make_settings):
+    mol, mf = water_mol
+    states = states_from_counts(2, 2)
+
+    def wrong(mc, labels):
+        return {label: 1.0 for label in labels}, [f"{labels[2]} <S^2> = 1.0000"]
+
+    monkeypatch.setattr(pyscf_casscf, "_spins", wrong)
+    with pytest.raises(ElectronicStructureError, match="not all roots have the expected spin"):
+        pyscf_casscf.run_casscf(mol, mf, _water_cas44(make_settings, 2), states, None)
+
+
+def test_ethylene_mixed_average_includes_the_triplet(
+    ethylene_symbols, ethylene_bohr, make_settings
+):
+    from pyscf import gto, scf
+
+    mol = gto.M(
+        atom=[(s, tuple(c)) for s, c in zip(ethylene_symbols, ethylene_bohr, strict=True)],
+        unit="Bohr",
+        basis="6-31g*",
+        verbose=0,
+    )
+    mf = scf.RHF(mol).run(conv_tol=1e-11)
+    mixed_states = states_from_counts(2, 1)
+    mixed = pyscf_casscf.run_casscf(mol, mf, make_settings(triplets=1), mixed_states, None)
+    assert [round(mixed.spin_squares[s]) for s in mixed_states] == [0, 0, 2]
+    for s in mixed_states:
+        target = 0.0 if s.multiplicity == 1 else 2.0
+        assert abs(mixed.spin_squares[s] - target) <= pyscf_casscf.SPIN_TOLERANCE
+    plain = pyscf_casscf.run_casscf(mol, mf, make_settings(), states_from_counts(2), None)
+    # a different state average gives different orbitals, so a different S0
+    assert abs(mixed.energies[S0] - plain.energies[S0]) > 1e-5
+
+
+def test_mixed_sa_singlet_transition_density_equals_the_singlet_solvers(water_mol, make_settings):
+    """The mixed-SA dipoles use direct_spin1.trans_rdm1; on singlet roots it must equal spin0's."""
+    from pyscf.fci import direct_spin0, direct_spin1
+
+    mol, mf = water_mol
+    states = states_from_counts(2, 2)
+    out = pyscf_casscf.run_casscf(mol, mf, _water_cas44(make_settings, 2), states, None)
+    ncas, nelecas = out.mc.ncas, out.mc.nelecas
+    ci0, ci1 = out.mc.ci[0], out.mc.ci[1]
+    t1 = direct_spin1.trans_rdm1(ci0, ci1, ncas, nelecas)
+    t0 = direct_spin0.trans_rdm1(ci0, ci1, ncas, nelecas)
+    assert np.abs(t0).max() > 1e-3
+    np.testing.assert_allclose(t1, t0, atol=1e-12)

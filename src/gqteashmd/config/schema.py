@@ -123,6 +123,15 @@ def n_singlet_csfs(ncas: int, nelecas: int) -> int:
     return math.comb(n + 1, half) * math.comb(n + 1, half + 1) // (n + 1)
 
 
+def n_triplet_csfs(ncas: int, nelecas: int) -> int:
+    """Number of triplet CSFs of a CAS(nelecas, ncas) space (Weyl formula with S = 1, nelecas
+    even): 3/(n+1) C(n+1, N/2 - 1) C(n+1, N/2 + 2)."""
+    n, half = ncas, nelecas // 2
+    if half < 1:
+        return 0
+    return 3 * math.comb(n + 1, half - 1) * math.comb(n + 1, half + 2) // (n + 1)
+
+
 class CasscfSection(_Section):
     ncas: int = Field(ge=1)
     nelecas: int = Field(ge=1)
@@ -160,11 +169,6 @@ class ElectronicSection(_Section):
     @model_validator(mode="after")
     def _method_options(self) -> ElectronicSection:
         problems: list[str] = []
-        if self.triplets:
-            problems.append(
-                "electronic.triplets > 0 is not supported yet (planned together with "
-                "intersystem crossing); set triplets = 0"
-            )
         if self.method == "casscf":
             if self.casscf is None:
                 problems.append(
@@ -177,6 +181,13 @@ class ElectronicSection(_Section):
                 if self.singlets > available:
                     problems.append(
                         f"electronic.singlets = {self.singlets} exceeds the {available} singlet "
+                        f"states of CAS({self.casscf.nelecas},{self.casscf.ncas}) "
+                        f"(nelecas = {self.casscf.nelecas}, ncas = {self.casscf.ncas})"
+                    )
+                available_t = n_triplet_csfs(self.casscf.ncas, self.casscf.nelecas)
+                if self.triplets > available_t:
+                    problems.append(
+                        f"electronic.triplets = {self.triplets} exceeds the {available_t} triplet "
                         f"states of CAS({self.casscf.nelecas},{self.casscf.ncas}) "
                         f"(nelecas = {self.casscf.nelecas}, ncas = {self.casscf.ncas})"
                     )

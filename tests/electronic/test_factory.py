@@ -97,3 +97,17 @@ def test_stage_backend_starts_a_displaced_casscf_solve_from_the_reference(tmp_pa
     result = backend.compute(Request(displaced, gradients=frozenset({StateLabel(1, 0)})))
     assert result.meta["casscf"] == "reference orbitals"
     assert isinstance(result.meta["casscf_reference"], dict)
+
+
+def test_ground_state_settings_drop_triplets_for_scf_methods(make_settings):
+    from gqteashmd.electronic.factory import ground_state_fingerprint, ground_state_settings
+
+    tda0 = make_settings(method="tda", functional="hf", singlets=3, triplets=0, casscf=None)
+    tda2 = make_settings(method="tda", functional="hf", singlets=3, triplets=2, casscf=None)
+    gs = ground_state_settings(tda2)
+    assert gs.triplets == 0 and gs.singlets == 1
+    assert ground_state_fingerprint(tda0) == ground_state_fingerprint(tda2)
+    cas0 = make_settings(method="casscf", singlets=2, triplets=0)
+    cas2 = make_settings(method="casscf", singlets=2, triplets=1)
+    assert ground_state_settings(cas2).triplets == 1
+    assert ground_state_fingerprint(cas0) != ground_state_fingerprint(cas2)

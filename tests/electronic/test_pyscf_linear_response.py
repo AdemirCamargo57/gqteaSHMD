@@ -1,9 +1,10 @@
 import numpy as np
 import pytest
-from pyscf import dft, gto, scf, tddft
+from pyscf import dft, gto, scf, tddft, tdscf
 from scipy.linalg import block_diag
 
-from gqteashmd.core.states import StateLabel
+from gqteashmd.config.schema import ElectronicSection
+from gqteashmd.core.states import StateLabel, states_from_counts
 from gqteashmd.electronic import pyscf_response
 from gqteashmd.electronic.base import MoleculeSpec, Request
 from gqteashmd.electronic.properties import oscillator_strength
@@ -269,3 +270,86 @@ def test_first_rung_requests_three_extra_roots_and_keeps_the_lowest(make_setting
     assert calls == [(5, 2, 5)] and out.rung == "default"
     assert set(out.energies) == {S0, S1, S2}
     assert abs(out.energies[S2] - (mf.e_tot + out.td.e[1])) < 1e-12
+
+
+WATER = "O 0 0 0.1173; H 0 0.7572 -0.4692; H 0 -0.7572 -0.4692"
+
+
+def _water_rhf():
+    mol = gto.M(atom=WATER, basis="sto-3g", verbose=0)
+    return scf.RHF(mol).run(conv_tol=1e-11)
+
+
+def _triplet_settings(singlets, triplets):
+    return ElectronicSection.model_validate(
+        {
+            "method": "tda",
+            "basis": "sto-3g",
+            "functional": "hf",
+            "singlets": singlets,
+            "triplets": triplets,
+            "td_conv_tol": 1e-9,
+        }
+    )
+
+
+def test_triplet_energies_equal_a_direct_triplet_tda():
+    mf = _water_rhf()
+    states = states_from_counts(2, 3)
+    out = pyscf_response.run_response(mf, _triplet_settings(2, 3), states)
+    td = tdscf.TDA(mf)
+    td.singlet = False
+    td.nstates = 6
+    td.conv_tol = 1e-9
+    td.kernel()
+    for i in range(3):
+        assert out.energies[StateLabel(3, i + 1)] == pytest.approx(mf.e_tot + td.e[i], abs=1e-9)
+    assert out.td_triplet is not None and out.triplet_rung == "default"
+
+
+def test_singlets_do_not_change_when_triplets_are_added():
+    mf = _water_rhf()
+    a = pyscf_response.run_response(mf, _triplet_settings(3, 0), states_from_counts(3, 0))
+    b = pyscf_response.run_response(mf, _triplet_settings(3, 2), states_from_counts(3, 2))
+    for label, e in a.energies.items():
+        assert b.energies[label] == pytest.approx(e, abs=1e-12)
+
+
+def test_triplet_transition_dipoles_are_zero_and_gradients_exist():
+    mf = _water_rhf()
+    states = states_from_counts(2, 1)
+    out = pyscf_response.run_response(mf, _triplet_settings(2, 1), states)
+    mus = pyscf_response.response_dipoles(out.td, states, "tda")
+    np.testing.assert_array_equal(mus[StateLabel(3, 1)], np.zeros(3))
+    assert mus[StateLabel(1, 1)].shape == (3,)
+    assert np.linalg.norm(mus[StateLabel(1, 1)]) > 1e-3
+    g = pyscf_response.response_gradients(
+        mf, out.td, {StateLabel(3, 1)}, "tda", td_triplet=out.td_triplet
+    )
+    assert g[StateLabel(3, 1)].shape == (3, 3) and np.all(np.isfinite(g[StateLabel(3, 1)]))
+
+
+def test_the_triplet_expansion_is_orthonormal_and_orthogonal_to_the_singlets():
+    mf = _water_rhf()
+    states = states_from_counts(3, 3)
+    out = pyscf_response.run_response(mf, _triplet_settings(3, 3), states)
+    singlet = truncate(pyscf_response.response_expansion(mf, out.td, 2), 1.0)
+    triplet = truncate(pyscf_response.response_triplet_expansion(mf, out.td_triplet, 3), 1.0)
+    eye = np.eye(mf.mo_coeff.shape[1])
+    np.testing.assert_allclose(state_overlaps(triplet, triplet, eye), np.eye(3), atol=1e-8)
+    np.testing.assert_allclose(state_overlaps(singlet, triplet, eye), 0.0, atol=1e-10)
+
+
+def test_without_triplets_no_triplet_solve_runs(monkeypatch):
+    def boom(*args, **kwargs):
+        raise AssertionError("a triplet solve ran with triplets = 0")
+
+    monkeypatch.setattr(pyscf_response, "solve_triplets", boom)
+    mf = _water_rhf()
+    out = pyscf_response.run_response(mf, _triplet_settings(3, 0), states_from_counts(3, 0))
+    assert out.td_triplet is None
+
+
+def test_a_triplet_gradient_without_the_triplet_object_is_a_value_error():
+    with pytest.raises(ValueError, match="td_triplet"):
+        pyscf_response.response_gradients(None, None, {StateLabel(3, 1)}, "tda")

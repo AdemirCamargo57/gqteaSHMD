@@ -33,8 +33,13 @@ def write_excitations_h5(
     oscillator_strengths: ArrayLike,
     reference: dict[str, Any] | None = None,
     project_seed: int | None = None,
+    triplet_labels: Sequence[str] = (),
+    triplet_energies_eV: ArrayLike | None = None,
 ) -> None:
     """Write vertical excitations of all samples (NaN rows for failed samples).
+
+    ``triplet_labels`` and ``triplet_energies_eV`` (n_samples, n_triplets; S0 -> T excitation
+    energies) are written only when there are triplets; the reference group has no triplet data.
 
     ``reference`` (optional) holds ``energies_hartree`` (1, n_states), ``transition_dipoles_au``
     (1, n_states-1, 3), ``oscillator_strengths`` (1, n_states-1) and ``coordinates_bohr``.
@@ -69,6 +74,12 @@ def write_excitations_h5(
                 ("oscillator_strengths", oscillator_strengths, "-"),
             ):
                 f.create_dataset(name, data=np.asarray(data, dtype=float)).attrs["units"] = units
+            if len(triplet_labels) > 0:
+                t_energies = np.asarray(triplet_energies_eV, dtype=float)
+                f.create_dataset(
+                    "triplet_labels", data=np.array(list(triplet_labels), dtype=string)
+                ).attrs["units"] = "-"
+                f.create_dataset("triplet_energies", data=t_energies).attrs["units"] = "eV"
             if reference is not None:
                 g = f.create_group("reference")
                 ref_e = np.asarray(reference["energies_hartree"], dtype=float)
@@ -113,7 +124,12 @@ def read_excitations_h5(path: Path) -> dict[str, Any]:
                 "transition_dipoles_au": _floats(f["transition_dipoles"]),
                 "oscillator_strengths": _floats(f["oscillator_strengths"]),
                 "reference": None,
+                "triplet_labels": (),
+                "triplet_energies_eV": None,
             }
+            if "triplet_labels" in f:
+                data["triplet_labels"] = _text(f["triplet_labels"][()])
+                data["triplet_energies_eV"] = _floats(f["triplet_energies"])
             if "reference" in f:
                 g = f["reference"]
                 data["reference"] = {
@@ -133,6 +149,11 @@ def read_excitations_h5(path: Path) -> dict[str, Any]:
         "transition_dipoles": (data["transition_dipoles_au"].shape, (n, ns - 1, 3)),
         "oscillator_strengths": (data["oscillator_strengths"].shape, (n, ns - 1)),
     }
+    if data["triplet_energies_eV"] is not None:
+        expected["triplet_energies"] = (
+            data["triplet_energies_eV"].shape,
+            (n, len(data["triplet_labels"])),
+        )
     for name, (got, want) in expected.items():
         if got != want:
             raise ValueError(

@@ -53,3 +53,19 @@ def test_pick_lowest_takes_the_first_within_the_tie_tolerance(energies, expected
 def test_pick_lowest_needs_candidates():
     with pytest.raises(ValueError, match="no candidate"):
         pick_lowest([])
+
+
+@pytest.mark.pyscf
+def test_the_reference_search_counts_guesses_with_the_right_spins(water_mol, make_settings):
+    from gqteashmd.core.states import states_from_counts
+    from gqteashmd.electronic import pyscf_casscf
+
+    mol, mf = water_mol
+    settings = make_settings(
+        basis="sto-3g",
+        singlets=2,
+        triplets=2,
+        casscf={"ncas": 4, "nelecas": 4, "conv_tol": 1e-10, "conv_tol_grad": 1e-6},
+    )
+    reference, problems = pyscf_casscf.find_reference(mol, mf, settings, states_from_counts(2, 2))
+    assert reference is not None and reference.n_counted >= 1, problems

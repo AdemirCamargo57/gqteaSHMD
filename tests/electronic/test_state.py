@@ -7,6 +7,7 @@ import numpy as np
 import pytest
 
 from gqteashmd.core.states import StateLabel
+from gqteashmd.core.units import ANGSTROM_TO_BOHR
 from gqteashmd.electronic.base import MoleculeSpec, Request
 from gqteashmd.electronic.pyscf_backend import PySCFBackend
 
@@ -232,3 +233,65 @@ def test_save_state_write_failure_is_a_retryable_electronic_error(
     with pytest.raises(ElectronicStructureError, match="No space left") as info:
         backend.save_state(tmp_path / "s.npz")
     assert info.value.retryable is True
+
+
+WATER_SYMBOLS = ("O", "H", "H")
+WATER_BOHR = (
+    np.array([[0.0, 0.0, 0.1173], [0.0, 0.7572, -0.4692], [0.0, -0.7572, -0.4692]])
+    * ANGSTROM_TO_BOHR
+)
+
+
+def _water_tda(make_settings, triplets):
+    settings = make_settings(
+        method="tda", basis="sto-3g", functional="hf", casscf=None, singlets=2, triplets=triplets
+    )
+    return PySCFBackend(MoleculeSpec(WATER_SYMBOLS), settings)
+
+
+def _water_state(tmp_path, make_settings, triplets, name):
+    backend = _water_tda(make_settings, triplets)
+    backend.compute(Request(WATER_BOHR))
+    path = tmp_path / name
+    backend.save_state(path)
+    return path
+
+
+def test_the_saved_state_format_follows_the_triplets(tmp_path, make_settings):
+    singlet_file = _water_state(tmp_path, make_settings, 0, "singlets.npz")
+    with np.load(singlet_file) as data:
+        assert int(data["format"]) == 1
+        assert sorted(data.files) == sorted(
+            ["format", "fingerprint", "coords", "mo_coeff", "density", "alpha", "beta", "coeffs"]
+        )
+    triplet_file = _water_state(tmp_path, make_settings, 2, "triplets.npz")
+    with np.load(triplet_file) as data:
+        assert int(data["format"]) == 2
+        assert {"t_alpha", "t_beta", "t_coeffs"} <= set(data.files)
+        assert data["t_coeffs"].shape[0] == 2
+    _water_tda(make_settings, 2).load_state(triplet_file)  # format 2 reads back
+
+
+def test_a_triplet_backend_refuses_a_state_without_the_triplet_block(tmp_path, make_settings):
+    singlet_file = _water_state(tmp_path, make_settings, 0, "singlets.npz")
+    with pytest.raises(ValueError):
+        _water_tda(make_settings, 2).load_state(singlet_file)
+    # the same fingerprint but no triplet block: the format-2 file cut back to format 1
+    triplet_file = _water_state(tmp_path, make_settings, 2, "triplets.npz")
+    cut = tmp_path / "cut.npz"
+    _rewrite(triplet_file, cut, format=np.array(1), t_alpha=None, t_beta=None, t_coeffs=None)
+    with pytest.raises(ValueError, match="missing the triplet expansion"):
+        _water_tda(make_settings, 2).load_state(cut)
+
+
+def test_a_singlet_backend_refuses_a_state_with_a_triplet_block(tmp_path, make_settings):
+    singlet_file = _water_state(tmp_path, make_settings, 0, "singlets.npz")
+    triplet_file = _water_state(tmp_path, make_settings, 2, "triplets.npz")
+    with np.load(triplet_file) as data:
+        extra = {k: np.array(data[k]) for k in ("t_alpha", "t_beta", "t_coeffs")}
+    grown = tmp_path / "grown.npz"
+    _rewrite(singlet_file, grown, format=np.array(2), **extra)
+    backend = _water_tda(make_settings, 0)
+    with pytest.raises(ValueError, match="unexpected triplet expansion"):
+        backend.load_state(grown)
+    assert backend._snapshot is None

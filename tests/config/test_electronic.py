@@ -1,7 +1,7 @@
 import pytest
 
 from gqteashmd.config.loader import load_config
-from gqteashmd.config.schema import n_singlet_csfs
+from gqteashmd.config.schema import ElectronicSection, n_singlet_csfs, n_triplet_csfs
 from gqteashmd.errors import ConfigError
 
 CAS = (
@@ -48,7 +48,6 @@ def test_tda_section(tmp_path, write_input):
             "electronic.functional is required",
         ),
         (TDA + "[electronic.casscf]\nncas = 2\nnelecas = 2\n", "only used by method = 'casscf'"),
-        (TDA.replace("singlets = 3", "singlets = 3\ntriplets = 1"), "triplets"),
         (CAS.replace("nelecas = 2", "nelecas = 3"), "even"),
         (CAS.replace("nelecas = 2", "nelecas = 6"), "at most 2"),
         (TDA.replace('"tda"', '"cc2"'), "method"),
@@ -95,3 +94,35 @@ def test_overlap_norm_kept(tmp_path, write_input):
                 write_input,
                 CAS.replace("singlets = 2", f"singlets = 2\noverlap_norm_kept = {bad}"),
             )
+
+
+def test_triplet_csf_counts():
+    assert n_triplet_csfs(2, 2) == 1
+    assert n_triplet_csfs(3, 2) == 3
+    assert n_triplet_csfs(4, 4) == 15
+    assert n_singlet_csfs(4, 4) == 20  # unchanged
+
+
+def test_triplets_are_accepted():
+    for method, extra in (
+        ("tda", {"functional": "hf"}),
+        ("tddft", {"functional": "b3lyp"}),
+        ("casscf", {"casscf": {"ncas": 2, "nelecas": 2}}),
+    ):
+        s = ElectronicSection.model_validate(
+            {"method": method, "basis": "sto-3g", "singlets": 2, "triplets": 1, **extra}
+        )
+        assert s.triplets == 1
+
+
+def test_casscf_triplets_beyond_the_active_space_are_refused():
+    with pytest.raises(ValueError, match="electronic.triplets = 2 exceeds the 1 triplet states"):
+        ElectronicSection.model_validate(
+            {
+                "method": "casscf",
+                "basis": "sto-3g",
+                "singlets": 2,
+                "triplets": 2,
+                "casscf": {"ncas": 2, "nelecas": 2},
+            }
+        )

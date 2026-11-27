@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import math
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -42,6 +42,8 @@ def _invalid_excitations(
     energies: list[float],
     dipoles: list[list[float]],
     strengths: list[float],
+    triplet_labels: Sequence[str] = (),
+    triplet_energies: Sequence[float] = (),
 ) -> str | None:
     """Why a computed sample cannot be used (non-finite values, an excited state at or below
     S0), or None. Such a sample is recorded as failed, so ``dE > 0`` and finite values hold for
@@ -56,6 +58,13 @@ def _invalid_excitations(
             return f"non-finite oscillator strength of {label} ({strengths[j]!r})"
     for j, label in enumerate(labels[1:]):
         de_ev = (energies[j + 1] - energies[0]) * HARTREE_IN_EV
+        if de_ev <= 0.0:
+            return f"excitation energy of {label} is not positive ({de_ev:.6g} eV)"
+    for label, energy in zip(triplet_labels, triplet_energies, strict=True):
+        if not math.isfinite(energy):
+            return f"non-finite energy of {label} ({energy!r} Eh)"
+    for label, energy in zip(triplet_labels, triplet_energies, strict=True):
+        de_ev = (energy - energies[0]) * HARTREE_IN_EV
         if de_ev <= 0.0:
             return f"excitation energy of {label} is not positive ({de_ev:.6g} eV)"
     return None
@@ -135,8 +144,10 @@ class ExcitationsStage(Stage):
             backend.reset()
             try:
                 result = backend.compute(Request(coords, transition_dipoles=True))
-                states = result.states
+                states = [s for s in result.states if s.multiplicity == 1]
+                triplets = [s for s in result.states if s.multiplicity == 3]
                 energies = [float(result.energies[s]) for s in states]
+                triplet_energies = [float(result.energies[t]) for t in triplets]
                 dipoles = [
                     np.asarray(result.transition_dipoles[s], dtype=float).tolist()
                     for s in states[1:]
@@ -151,20 +162,28 @@ class ExcitationsStage(Stage):
                 log.warning("Stage excitations: sample %d failed: %s", sample, exc)
                 rows.append({"sample": sample, "ok": False, "error": str(exc)})
                 continue
-            problem = _invalid_excitations([str(s) for s in states], energies, dipoles, strengths)
+            problem = _invalid_excitations(
+                [str(s) for s in states],
+                energies,
+                dipoles,
+                strengths,
+                [str(t) for t in triplets],
+                triplet_energies,
+            )
             if problem is not None:
                 log.warning("Stage excitations: sample %d failed: %s", sample, problem)
                 rows.append({"sample": sample, "ok": False, "error": problem})
                 continue
-            rows.append(
-                {
-                    "sample": sample,
-                    "ok": True,
-                    "energies_hartree": energies,
-                    "transition_dipoles_au": dipoles,
-                    "oscillator_strengths": strengths,
-                }
-            )
+            row: dict[str, Any] = {
+                "sample": sample,
+                "ok": True,
+                "energies_hartree": energies,
+                "transition_dipoles_au": dipoles,
+                "oscillator_strengths": strengths,
+            }
+            if triplets:
+                row["triplet_energies_hartree"] = triplet_energies
+            rows.append(row)
         return {"samples": rows}
 
     def finalize(self, ctx: StageContext, results: Mapping[str, Mapping[str, Any]]) -> None:
@@ -174,6 +193,11 @@ class ExcitationsStage(Stage):
         assert electronic is not None
         labels = [str(s) for s in states_from_counts(electronic.singlets)]
         n_states = len(labels)
+        triplet_labels = [
+            str(s)
+            for s in states_from_counts(electronic.singlets, electronic.triplets)
+            if s.multiplicity == 3
+        ]
         n_samples = config.sampling.n_samples
         try:
             samples = read_samples_h5(ctx.upstream_dir("sampling") / "samples.h5")
@@ -195,7 +219,14 @@ class ExcitationsStage(Stage):
 
         failed = [rows[k] for k in range(1, n_samples + 1) if not rows[k]["ok"]]
 
-        def summary(per_state: dict[str, Any] | None, error: str | None) -> None:
+        def summary(
+            per_state: dict[str, Any] | None,
+            error: str | None,
+            per_triplet: dict[str, Any] | None = None,
+        ) -> None:
+            extra: dict[str, Any] = {}
+            if triplet_labels:
+                extra = {"triplet_labels": triplet_labels, "triplet_states": per_triplet}
             write_json_atomic(
                 ctx.stage_dir / "excitations.json",
                 {
@@ -214,6 +245,7 @@ class ExcitationsStage(Stage):
                     "broadening_fwhm_eV": options.broadening_fwhm_eV,
                     "spectrum_step_eV": options.spectrum_step_eV,
                     "error": error,
+                    **extra,
                 },
             )
 
@@ -255,6 +287,7 @@ class ExcitationsStage(Stage):
         energies = np.full((n_samples, n_states), np.nan)
         dipoles = np.full((n_samples, n_exc, 3), np.nan)
         strengths = np.full((n_samples, n_exc), np.nan)
+        t_energies = np.full((n_samples, len(triplet_labels)), np.nan)
         ok = np.zeros(n_samples, dtype=bool)
         for k in range(1, n_samples + 1):
             row = rows[k]
@@ -263,6 +296,10 @@ class ExcitationsStage(Stage):
                 energies[k - 1] = row["energies_hartree"]
                 dipoles[k - 1] = row["transition_dipoles_au"]
                 strengths[k - 1] = row["oscillator_strengths"]
+                if triplet_labels:
+                    t_energies[k - 1] = (
+                        np.asarray(row["triplet_energies_hartree"]) - row["energies_hartree"][0]
+                    ) * HARTREE_IN_EV
         write_excitations_h5(
             ctx.stage_dir / "excitations.h5",
             symbols=samples["symbols"],
@@ -274,6 +311,8 @@ class ExcitationsStage(Stage):
             oscillator_strengths=strengths,
             reference=reference,
             project_seed=config.project.seed,
+            triplet_labels=triplet_labels,
+            triplet_energies_eV=t_energies if triplet_labels else None,
         )
         de_ev = (energies[ok][:, 1:] - energies[ok][:, :1]) * HARTREE_IN_EV
         f_ok = strengths[ok]
@@ -319,4 +358,26 @@ class ExcitationsStage(Stage):
                 entry["std_oscillator_strength"],
                 int(ok.sum()),
             )
-        summary(per_state, None)
+        per_triplet: dict[str, Any] = {}
+        for j, label in enumerate(triplet_labels):
+            t_ok = t_energies[ok][:, j]
+            t_entry: dict[str, Any] = {
+                "mean_excitation_eV": float(t_ok.mean()),
+                "std_excitation_eV": float(t_ok.std()),
+                "reference_excitation_eV": None,
+            }
+            if options.include_reference:
+                t_ref = rows[0]
+                t_entry["reference_excitation_eV"] = float(
+                    (t_ref["triplet_energies_hartree"][j] - t_ref["energies_hartree"][0])
+                    * HARTREE_IN_EV
+                )
+            per_triplet[label] = t_entry
+            log.info(
+                "Stage excitations: %s  mean dE = %.3f +- %.3f eV (%d ok)",
+                label,
+                t_entry["mean_excitation_eV"],
+                t_entry["std_excitation_eV"],
+                int(ok.sum()),
+            )
+        summary(per_state, None, per_triplet)
