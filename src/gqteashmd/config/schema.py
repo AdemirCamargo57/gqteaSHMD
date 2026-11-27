@@ -5,9 +5,17 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    SerializerFunctionWrapHandler,
+    field_validator,
+    model_serializer,
+    model_validator,
+)
 
 
 class _Section(BaseModel):
@@ -164,7 +172,20 @@ class ElectronicSection(_Section):
     scf_max_cycle: int = Field(default=100, ge=1)
     td_conv_tol: float = Field(default=1e-8, gt=0)
     overlap_norm_kept: float = Field(default=0.9999, gt=0.9, le=1.0)
+    soc_operator: Literal["somf", "effective_charge"] = "somf"
     casscf: CasscfSection | None = None
+
+    @model_serializer(mode="wrap")
+    def _leave_out_default_soc_operator(
+        self, handler: SerializerFunctionWrapHandler
+    ) -> dict[str, Any]:
+        """The default `soc_operator` is not dumped, so the config snapshot and every dump of a
+        section written before the key existed stay byte-identical; a missing key loads as the
+        default, so the dump still round-trips."""
+        dumped: dict[str, Any] = handler(self)
+        if self.soc_operator == "somf":
+            dumped.pop("soc_operator", None)
+        return dumped
 
     @model_validator(mode="after")
     def _method_options(self) -> ElectronicSection:

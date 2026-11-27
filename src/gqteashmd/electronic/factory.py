@@ -26,8 +26,13 @@ CASSCF_START_RULE = "reference-1"
 
 
 def electronic_fingerprint(settings: ElectronicSection) -> dict[str, Any]:
-    """The whole [electronic] section as JSON data, plus the start-rule marker for CASSCF."""
+    """The whole [electronic] section as JSON data, plus the start-rule marker for CASSCF.
+
+    `soc_operator` is hashed only when it is not the default "somf" (the `hop_energy` rule), so
+    the fingerprints of projects made before the key existed are unchanged."""
     dumped = settings.model_dump(mode="json")
+    if dumped.get("soc_operator", "somf") == "somf":
+        dumped.pop("soc_operator", None)
     if settings.method == "casscf":
         dumped["start_rule"] = CASSCF_START_RULE
     return dumped
@@ -37,9 +42,10 @@ def ground_state_fingerprint(settings: ElectronicSection) -> dict[str, Any]:
     """The settings that determine the S0 surface, as JSON-compatible data (for fingerprints).
 
     Response-only keys (`td_conv_tol`, `overlap_norm_kept`, and `singlets` for the non-CASSCF
-    methods) do not change S0 and are left out; CASSCF carries the start-rule marker."""
+    methods) do not change S0 and are left out, as is `soc_operator` (the spin-orbit operator is
+    not part of any S0 calculation); CASSCF carries the start-rule marker."""
     dumped = electronic_fingerprint(ground_state_settings(settings))
-    for key in ("td_conv_tol", "overlap_norm_kept"):
+    for key in ("td_conv_tol", "overlap_norm_kept", "soc_operator"):
         dumped.pop(key, None)
     if settings.method != "casscf":
         dumped.pop("singlets", None)

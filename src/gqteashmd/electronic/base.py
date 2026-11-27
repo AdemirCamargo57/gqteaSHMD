@@ -43,6 +43,7 @@ class Request:
     overlaps: return the overlaps with the previous geometry and the phases in the result. Phase
     continuity is the job of the backend: whenever it holds a previous geometry and overlaps are
     available, it tracks the states and applies the phases, requested or not.
+    soc: return the spin-expanded Hamiltonian with the spin-orbit couplings (needs triplets).
     """
 
     coords_bohr: np.ndarray
@@ -50,6 +51,7 @@ class Request:
     transition_dipoles: bool = False
     nacs: frozenset[tuple[StateLabel, StateLabel]] = frozenset()
     overlaps: bool = False
+    soc: bool = False
 
     def __init__(
         self,
@@ -58,6 +60,7 @@ class Request:
         transition_dipoles: bool = False,
         nacs: frozenset[tuple[StateLabel, StateLabel]] = frozenset(),
         overlaps: bool = False,
+        soc: bool = False,
     ) -> None:
         coords = np.asarray(coords_bohr, dtype=float)
         if coords.ndim != 2 or coords.shape[1] != 3:
@@ -71,12 +74,19 @@ class Request:
         object.__setattr__(self, "transition_dipoles", transition_dipoles)
         object.__setattr__(self, "nacs", pairs)
         object.__setattr__(self, "overlaps", overlaps)
+        object.__setattr__(self, "soc", soc)
 
 
 @dataclass(frozen=True, eq=False)
 class ElectronicResult:
     """Energies (Eh), gradients (Eh/bohr), NACs d_IJ (1/bohr), S0→state transition dipoles (e·a0),
-    ⟨S²⟩, and the overlaps with the previous geometry and the phases that align the states."""
+    ⟨S²⟩, and the overlaps with the previous geometry and the phases that align the states.
+
+    hamiltonian (Request.soc): the complex spin-expanded Hamiltonian (Eh) in the order of
+    `hamiltonian_labels` (S0 ... S(n-1), then T1 ... Tm with Ms = -1, 0, +1; the labels of
+    `dynamics.spin`): the spin-free energies on the diagonal, the phased spin-orbit couplings
+    off it.
+    """
 
     states: tuple[StateLabel, ...]
     energies: Mapping[StateLabel, float]
@@ -87,6 +97,8 @@ class ElectronicResult:
     overlaps: np.ndarray | None = None
     phases: np.ndarray | None = None
     meta: Mapping[str, Any] = field(default_factory=dict)
+    hamiltonian: np.ndarray | None = None
+    hamiltonian_labels: tuple[str, ...] | None = None
 
     def excitation_energy(self, label: StateLabel) -> float:
         return self.energies[label] - self.energies[self.states[0]]
@@ -109,7 +121,7 @@ class ElectronicResult:
                     "spin_square": None if spin is None else float(spin),
                 }
             )
-        return {
+        data: dict[str, Any] = {
             "schema_version": 1,
             "states": rows,
             "gradients_hartree_per_bohr": {
@@ -124,6 +136,13 @@ class ElectronicResult:
             "phases": None if self.phases is None else [float(p) for p in self.phases],
             "meta": dict(self.meta),
         }
+        if self.hamiltonian is not None:  # only when requested: the other outputs are unchanged
+            h = np.asarray(self.hamiltonian, dtype=complex)
+            data["hamiltonian"] = {"real": h.real.tolist(), "imag": h.imag.tolist()}
+            data["hamiltonian_labels"] = (
+                None if self.hamiltonian_labels is None else list(self.hamiltonian_labels)
+            )
+        return data
 
 
 class ElectronicBackend(ABC):

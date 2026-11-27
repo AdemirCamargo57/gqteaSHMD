@@ -28,7 +28,7 @@ from gqteashmd.chem.electrons import count_electrons
 from gqteashmd.chem.elements import atomic_number
 from gqteashmd.config.schema import ElectronicSection
 from gqteashmd.core.states import StateLabel, states_from_counts
-from gqteashmd.electronic import pyscf_casscf, pyscf_response
+from gqteashmd.electronic import pyscf_casscf, pyscf_response, soc
 from gqteashmd.electronic.base import (
     Capabilities,
     ElectronicBackend,
@@ -255,6 +255,7 @@ class PySCFBackend(ElectronicBackend):
             live = _Live(mol, mf, solver, energies, phases, triplet_solver)
             gradients, nacs = self._derivatives(live, request.gradients, request.nacs)
             dipoles = self._dipoles(live, request.transition_dipoles)
+            hamiltonian = self._spin_orbit_hamiltonian(live) if request.soc else None
         self._snapshot = _Snapshot(
             np.array(request.coords_bohr),
             mo_coeff,
@@ -284,6 +285,12 @@ class PySCFBackend(ElectronicBackend):
             overlaps=overlaps,
             phases=None if overlaps is None else phases,
             meta=meta,
+            hamiltonian=hamiltonian,
+            hamiltonian_labels=(
+                None
+                if hamiltonian is None
+                else soc.hamiltonian_labels(*pyscf_casscf.state_counts(self._states))
+            ),
         )
 
     def reset(self) -> None:
@@ -484,6 +491,10 @@ class PySCFBackend(ElectronicBackend):
 
     def _validate(self, request: Request) -> None:
         self._check_labels(request.gradients, request.nacs)
+        if request.soc and not self._settings.triplets:
+            raise ValueError(
+                "Spin-orbit couplings need triplet states: set [electronic] triplets > 0."
+            )
         if len(request.coords_bohr) != len(self._molecule.symbols):
             raise ValueError(
                 f"Got coordinates for {len(request.coords_bohr)} atoms; the molecule has "
@@ -568,6 +579,31 @@ class PySCFBackend(ElectronicBackend):
             (a, b): d * self._phase(live, a) * self._phase(live, b) for (a, b), d in raw.items()
         }
         return grads, phased
+
+    def _spin_orbit_hamiltonian(self, live: _Live) -> np.ndarray:
+        """The phased spin-expanded Hamiltonian (Eh) at the geometry of `live`.
+
+        The SOMF reference density (plan ruling PR4) is the state-averaged one of the SA-CASSCF
+        solver and the SCF density for TDA/TDDFT; `effective_charge` uses no density."""
+        try:
+            if self._settings.method == "casscf":
+                density = np.asarray(live.solver.make_rdm1())
+            else:
+                density = np.asarray(live.mf.make_rdm1())
+        except Exception as exc:
+            raise wrap_failure("The spin-orbit reference density", exc) from exc
+        h_ao = soc.soc_operator(live.mol, density, self._settings.soc_operator)
+        if self._settings.method == "casscf":
+            blocks = soc.casscf_soc_blocks(live.solver, self._states, h_ao)
+        else:
+            blocks = soc.response_soc_blocks(
+                live.mf, live.solver, live.triplet_solver, self._states, h_ao
+            )
+        n_s = pyscf_casscf.state_counts(self._states)[0]
+        energies = np.array([live.energies[s] for s in self._states])
+        return soc.assemble_hamiltonian(
+            energies[:n_s], energies[n_s:], blocks, live.phases[:n_s], live.phases[n_s:]
+        )
 
     def _dipoles(self, live: _Live, wanted: bool) -> dict[StateLabel, np.ndarray]:
         if not wanted:

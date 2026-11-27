@@ -136,6 +136,7 @@ import numpy as np
 
 from gqteashmd.core.states import StateLabel
 from gqteashmd.core.units import SPEED_OF_LIGHT_AU
+from gqteashmd.dynamics.spin import expanded_states
 from gqteashmd.electronic.pyscf_errors import wrap_failure
 from gqteashmd.errors import ConfigError
 
@@ -384,3 +385,73 @@ def response_soc_blocks(
     except Exception as exc:
         raise wrap_failure("The TDA/TDDFT spin-orbit matrix elements", exc) from exc
     return SocBlocks(st, tt)
+
+
+# A spin-orbit Hamiltonian further than this from Hermitian (Eh) is an internal error (spec 3.3).
+HERMITIAN_TOLERANCE = 1e-12
+
+
+def hamiltonian_labels(n_singlets: int, n_triplets: int) -> tuple[str, ...]:
+    """The labels of the spin-expanded states in the canonical order of `dynamics.spin`."""
+    return tuple(s.label() for s in expanded_states((n_singlets, 0, n_triplets)))
+
+
+def assemble_hamiltonian(
+    energies_s: np.ndarray,
+    energies_t: np.ndarray,
+    blocks: SocBlocks,
+    phases_s: np.ndarray,
+    phases_t: np.ndarray,
+) -> np.ndarray:
+    """The complex spin-expanded Hamiltonian (Eh) in the canonical order S0 ... S(n-1), then
+    T1 ... Tm with Ms = -1, then 0, then +1 (`dynamics.spin`).
+
+    The diagonal holds the spin-free energies (each triplet energy at its three components); the
+    S-T blocks hold ``p_I p_J st``, the T-S blocks their conjugates, the T-T blocks
+    ``p_J p_J' tt`` (the three components of a triplet share its phase); S-S elements are zero.
+    Hermiticity is checked, not imposed: a T-T block further than `HERMITIAN_TOLERANCE` from
+    Hermitian, or a spin-orbit element on the diagonal (zero for real spin-free states), raises
+    AssertionError (an internal error).
+    """
+    e_s = np.asarray(energies_s, dtype=float)
+    e_t = np.asarray(energies_t, dtype=float)
+    n_s, n_t = e_s.size, e_t.size
+    st, tt = np.asarray(blocks.st), np.asarray(blocks.tt)
+    if st.shape != (n_s, n_t, 3) or tt.shape != (n_t, n_t, 3, 3):
+        raise ValueError(
+            f"spin-orbit blocks of shape {st.shape} and {tt.shape} do not fit {n_s} singlets "
+            f"and {n_t} triplets"
+        )
+    p_s = np.asarray(phases_s, dtype=float)
+    p_t = np.asarray(phases_t, dtype=float)
+    if p_s.shape != (n_s,) or p_t.shape != (n_t,):
+        raise ValueError(
+            f"phases of shape {p_s.shape} and {p_t.shape} do not fit {n_s} singlets and "
+            f"{n_t} triplets"
+        )
+    # (J, M) -> n_s + M n_t + J: M outermost, the state index innermost
+    st_flat = (
+        (p_s[:, None, None] * p_t[None, :, None] * st).transpose(0, 2, 1).reshape(n_s, 3 * n_t)
+    )
+    tt_phased = p_t[:, None, None, None] * p_t[None, :, None, None] * tt
+    tt_flat = tt_phased.transpose(2, 0, 3, 1).reshape(3 * n_t, 3 * n_t)
+    diagonal_soc = float(np.max(np.abs(np.diag(tt_flat)), initial=0.0))
+    if diagonal_soc > HERMITIAN_TOLERANCE:
+        raise AssertionError(
+            f"the spin-orbit block has an element {diagonal_soc:.3e} Eh on its diagonal "
+            f"(tolerance {HERMITIAN_TOLERANCE:g})"
+        )
+    deviation = float(np.max(np.abs(tt_flat - tt_flat.conj().T), initial=0.0))
+    if deviation > HERMITIAN_TOLERANCE:
+        raise AssertionError(
+            f"the triplet-triplet spin-orbit block is not Hermitian: deviation {deviation:.3e} Eh "
+            f"(tolerance {HERMITIAN_TOLERANCE:g})"
+        )
+    n = n_s + 3 * n_t
+    h = np.zeros((n, n), dtype=complex)
+    h[:n_s, n_s:] = st_flat
+    h[n_s:, :n_s] = st_flat.conj().T
+    h[n_s:, n_s:] = tt_flat
+    # the diagonal is the spin-free energies; the T-T diagonal was checked to be below 1e-12 Eh
+    h[np.diag_indices(n)] = np.concatenate([e_s, np.tile(e_t, 3)])
+    return h

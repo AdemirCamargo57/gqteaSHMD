@@ -20,7 +20,7 @@ from gqteashmd import build_info
 from gqteashmd.chem.xyz import parse_xyz
 from gqteashmd.config.loader import load_config
 from gqteashmd.config.model_dynamics import LvcDynamicsInput, load_model_dynamics
-from gqteashmd.core.units import ANGSTROM_TO_BOHR
+from gqteashmd.core.units import ANGSTROM_TO_BOHR, HARTREE_IN_CM1
 from gqteashmd.dynamics.ensemble import (
     lvc_initial_conditions,
     run_model_ensemble,
@@ -316,10 +316,13 @@ def _cmd_single_point(args: argparse.Namespace) -> int:
         memory_mb=cfg.resources.memory_mb_per_task,
         reference_coords_bohr=coords,
     )
-    result = backend.compute(Request(coords, transition_dipoles=True))
-    data = result.to_json()
     settings = cfg.electronic
     assert settings is not None  # make_backend checked it
+    with_soc = settings.triplets > 0
+    result = backend.compute(Request(coords, transition_dipoles=True, soc=with_soc))
+    data = result.to_json()
+    if with_soc:
+        data["soc_operator"] = settings.soc_operator
     name = f"{settings.method} / {settings.basis}"
     if settings.functional:
         name += f" / {settings.functional}"
@@ -335,10 +338,58 @@ def _cmd_single_point(args: argparse.Namespace) -> int:
             s2 = "-" if row["spin_square"] is None else f"{row['spin_square']:.4f}"
             line += f"{s2:>8}"
         print(line)
+    if with_soc and result.hamiltonian is not None:
+        _print_soc_table(
+            result.hamiltonian, settings.singlets, settings.triplets, settings.soc_operator
+        )
     if args.json is not None:
         write_json_atomic(args.json, data)
         print(f"Results written to {args.json}")
     return 0
+
+
+def _complex_cm1(value: complex) -> str:
+    return f"{value.real:.2f}{value.imag:+.2f}j"
+
+
+def _print_soc_table(h: np.ndarray, n_s: int, n_t: int, operator: str) -> None:
+    """The spin-orbit couplings of the spin-expanded Hamiltonian (canonical order), in cm-1: one
+    row per S_I-T_J pair (<S|H|T, Ms> for Ms = -1, 0, +1) and per T_J-T_J' pair with J <= J'
+    (the three elements that fix the rank-1 block, by Ms' - Ms = -1, 0, +1), and the root sum
+    of squares over every Ms component of the pair."""
+
+    def index(j: int, ms: int) -> int:
+        return n_s + (ms + 1) * n_t + j
+
+    cm1 = np.asarray(h) * HARTREE_IN_CM1
+    print(f"Spin-orbit coupling (cm-1, {operator})")
+    print(
+        "S-T rows: <S|H|T,Ms> for Ms = -1, 0, +1; T-T rows: <T,M|H|T',M'> for (M, M') = "
+        "(+1, 0), (+1, +1), (0, +1); rss over every Ms component of the pair"
+    )
+    print(f"{'pair':<8}{'-1':>18}{'0':>18}{'+1':>18}{'rss':>10}")
+
+    def row(pair: str, shown: list[complex], every: list[complex]) -> None:
+        rss = float(np.sqrt(sum(abs(v) ** 2 for v in every)))
+        print(f"{pair:<8}" + "".join(f"{_complex_cm1(v):>18}" for v in shown) + f"{rss:>10.2f}")
+
+    for i in range(n_s):
+        for j in range(n_t):
+            elements = [cm1[i, index(j, ms)] for ms in (-1, 0, 1)]
+            row(f"S{i}-T{j + 1}", elements, elements)
+    for j in range(n_t):
+        for jb in range(j, n_t):
+            # for J = J' the (+1, +1) element is the diagonal, i.e. the energy: its spin-orbit
+            # part is zero (assemble_hamiltonian checks it), so 0 is shown
+            same = complex(0.0) if j == jb else cm1[index(j, 1), index(jb, 1)]
+            shown = [cm1[index(j, 1), index(jb, 0)], same, cm1[index(j, 0), index(jb, 1)]]
+            every = [
+                cm1[index(j, m), index(jb, mb)]
+                for m in (-1, 0, 1)
+                for mb in (-1, 0, 1)
+                if (j, m) != (jb, mb)
+            ]
+            row(f"T{j + 1}-T{jb + 1}", shown, every)
 
 
 def _cmd_model_dynamics(args: argparse.Namespace) -> int:

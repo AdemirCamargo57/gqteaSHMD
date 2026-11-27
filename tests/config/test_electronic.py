@@ -126,3 +126,34 @@ def test_casscf_triplets_beyond_the_active_space_are_refused():
                 "casscf": {"ncas": 2, "nelecas": 2},
             }
         )
+
+
+def _tda(**fields) -> ElectronicSection:
+    return ElectronicSection.model_validate(
+        {"method": "tda", "basis": "sto-3g", "functional": "hf", "singlets": 2, **fields}
+    )
+
+
+def test_soc_operator_defaults_to_somf_and_accepts_effective_charges():
+    assert _tda().soc_operator == "somf"
+    assert _tda(soc_operator="effective_charge").soc_operator == "effective_charge"
+    with pytest.raises(ValueError, match="soc_operator"):
+        _tda(soc_operator="amfi")
+
+
+def test_the_default_soc_operator_is_left_out_of_the_dump():
+    """So that the config snapshot of a project written before the key is unchanged, and the
+    dump still round-trips the value."""
+    assert "soc_operator" not in _tda().model_dump(mode="json")
+    assert "soc_operator" not in _tda(soc_operator="somf").model_dump_json()
+    dumped = _tda(soc_operator="effective_charge").model_dump(mode="json")
+    assert dumped["soc_operator"] == "effective_charge"
+    assert ElectronicSection.model_validate(dumped).soc_operator == "effective_charge"
+    assert ElectronicSection.model_validate_json(_tda().model_dump_json()).soc_operator == "somf"
+
+
+def test_an_unknown_soc_operator_in_the_input_is_a_config_error(tmp_path, write_input):
+    with pytest.raises(ConfigError, match="soc_operator"):
+        _load(tmp_path, write_input, TDA + 'soc_operator = "amfi"\n')
+    cfg = _load(tmp_path, write_input, TDA + 'soc_operator = "effective_charge"\n')
+    assert cfg.electronic.soc_operator == "effective_charge"

@@ -96,3 +96,24 @@ def test_result_json_with_couplings_and_overlaps():
     json.dumps(data)
     empty = ElectronicResult(states=(S0,), energies={S0: -1.0}).to_json()
     assert empty["nacs_per_bohr"] == {} and empty["overlaps"] is None and empty["phases"] is None
+
+
+def test_request_soc_defaults_to_false():
+    assert Request([[0.0, 0.0, 0.0]]).soc is False
+    assert Request([[0.0, 0.0, 0.0]], soc=True).soc is True
+
+
+def test_result_json_writes_the_hamiltonian_only_when_present():
+    plain = ElectronicResult(states=(S0,), energies={S0: -1.0})
+    assert plain.hamiltonian is None and plain.hamiltonian_labels is None
+    assert not {"hamiltonian", "hamiltonian_labels"} & set(plain.to_json())
+    h = np.array([[-1.0, 0.5j, 0.0], [-0.5j, -0.6, 0.0], [0.0, 0.0, -0.6]])
+    result = ElectronicResult(
+        states=(S0, T1),
+        energies={S0: -1.0, T1: -0.6},
+        hamiltonian=h,
+        hamiltonian_labels=("S0", "T1(-1)", "T1(0)"),
+    )
+    data = json.loads(json.dumps(result.to_json()))
+    assert data["hamiltonian"] == {"real": h.real.tolist(), "imag": h.imag.tolist()}
+    assert data["hamiltonian_labels"] == ["S0", "T1(-1)", "T1(0)"]

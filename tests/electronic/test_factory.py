@@ -111,3 +111,23 @@ def test_ground_state_settings_drop_triplets_for_scf_methods(make_settings):
     cas2 = make_settings(method="casscf", singlets=2, triplets=1)
     assert ground_state_settings(cas2).triplets == 1
     assert ground_state_fingerprint(cas0) != ground_state_fingerprint(cas2)
+
+
+def test_the_default_soc_operator_is_not_in_the_fingerprints(make_settings):
+    """Existing fingerprints stay unchanged: the default is left out (the hop_energy rule); the
+    other operator is hashed by the excited-state stages but not by the S0 stages."""
+    from gqteashmd.electronic.factory import electronic_fingerprint, ground_state_fingerprint
+
+    for method, extra in (("tda", {"functional": "hf", "casscf": None}), ("casscf", {})):
+        implicit = make_settings(method=method, triplets=1, **extra)
+        explicit = make_settings(method=method, triplets=1, soc_operator="somf", **extra)
+        zeff = make_settings(method=method, triplets=1, soc_operator="effective_charge", **extra)
+        assert "soc_operator" not in electronic_fingerprint(implicit)
+        assert electronic_fingerprint(explicit) == electronic_fingerprint(implicit)
+        before = implicit.model_dump(mode="json")  # what the section dumped before the key
+        before.pop("soc_operator", None)
+        if method == "casscf":
+            before["start_rule"] = "reference-1"
+        assert electronic_fingerprint(implicit) == before
+        assert electronic_fingerprint(zeff)["soc_operator"] == "effective_charge"
+        assert ground_state_fingerprint(zeff) == ground_state_fingerprint(implicit)
