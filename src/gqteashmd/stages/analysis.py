@@ -152,11 +152,17 @@ class AnalysisStage(Stage):
 
         if first is not None:
             labels = list(first.labels)
+            n_singlets, n_triplets = _spin_counts(first)
         else:
             electronic = ctx.config.electronic
-            singlets = electronic.singlets if electronic is not None else 1
-            labels = [str(label) for label in states_from_counts(singlets)]
-        fit_states = list(section.fit_states) if section.fit_states else labels[1:]
+            n_singlets = electronic.singlets if electronic is not None else 1
+            n_triplets = electronic.triplets if electronic is not None else 0
+            labels = [str(label) for label in states_from_counts(n_singlets, n_triplets)]
+        fit_states = (
+            list(section.fit_states)
+            if section.fit_states
+            else _default_fit_states(labels, n_singlets, n_triplets)
+        )
         unknown = [s for s in fit_states if s not in labels]
         if unknown:
             raise _task_error(
@@ -218,6 +224,7 @@ class AnalysisStage(Stage):
             outcomes,
             dt_out,
             horizon_capped=horizon_capped,
+            triplets=n_triplets > 0,
         )
 
         if not in_use:
@@ -336,6 +343,17 @@ class AnalysisStage(Stage):
                     traj, included=traj.task in complete_tasks, horizon_fs=g.horizon_fs
                 )
         hop_stats = hops.hop_statistics(events, complete, labels, g.horizon_fs)
+        if n_triplets:  # spec 4.3: like the hops, over the complete trajectories
+            changes: list[hops.Transition] = []
+            for entry in selected:
+                traj = trajectories[entry.task_id]
+                if traj is not None:
+                    changes += hops.transitions(
+                        traj, included=traj.task in complete_tasks, horizon_fs=g.horizon_fs
+                    )
+            summary["transitions"] = hops.transition_statistics(
+                changes, complete, labels, g.horizon_fs
+            )
 
         drifts = [
             energy.max_drift_eV(t.e_total[t.time_fs <= g.horizon_fs + _TIME_TOLERANCE_FS])
@@ -539,8 +557,41 @@ def _check_consistent(
         raise fail("task", f"{task!r} is not {entry.task_id!r}")
     if initial not in labels:
         raise fail("initial_state", f"{initial!r} is not among the state_labels {list(labels)}")
+    if not _spin_counts_fit(data):  # schema 2 only; a schema-1 file is checked as before
+        raise fail(
+            "n_singlets and n_triplets",
+            f"({data.attrs.get('n_singlets')!r}, {data.attrs.get('n_triplets')!r}) do not fit "
+            f"the state_labels {list(labels)}",
+        )
     if data["populations"].ndim != 2 or data["populations"].shape[1] != len(labels):
         raise fail("populations", f"do not have {len(labels)} states per record")
+
+
+def _spin_counts(data: TrajectoryData) -> tuple[int, int]:
+    """(singlets including S0, triplets) of an output.h5: its `n_singlets`/`n_triplets`
+    attributes (schema 2, spec 4.2); a file without triplets has neither, every state is a
+    singlet."""
+    n_triplets = int(data.attrs.get("n_triplets", 0))
+    if not n_triplets:
+        return len(data.labels), 0
+    return int(data.attrs.get("n_singlets", 0)), n_triplets
+
+
+def _spin_counts_fit(data: TrajectoryData) -> bool:
+    """True for a file without spin counts (schema 1) or whose counts give its labels."""
+    if "n_singlets" not in data.attrs and "n_triplets" not in data.attrs:
+        return True
+    try:
+        n_singlets, n_triplets = _spin_counts(data)
+        return [str(s) for s in states_from_counts(n_singlets, n_triplets)] == list(data.labels)
+    except (TypeError, ValueError):
+        return False
+
+
+def _default_fit_states(labels: Sequence[str], n_singlets: int, n_triplets: int) -> list[str]:
+    """The fit default: every excited state without triplets (P8), the excited singlets
+    S1 ... S(n-1) with triplets (spec 4.3, owner decision 6)."""
+    return list(labels[1:n_singlets]) if n_triplets else list(labels[1:])
 
 
 def _check_included(t: grid.Trajectory, path: Path) -> None:
@@ -624,10 +675,12 @@ def _base_summary(
     dt_out: float,
     *,
     horizon_capped: bool,
+    triplets: bool = False,
 ) -> dict[str, Any]:
     """Every key of analysis.json; `None` for what is not computed (yet). The top-level
     `n_included`, `included`, `excluded`, `small_ensemble`, `fit` and `table` belong to the
-    estimator in use; `estimators` holds both (ruling PR4)."""
+    estimator in use; `estimators` holds both (ruling PR4). `transitions` exists only with
+    triplets (spec 4.3), so a singlet project's analysis.json is unchanged."""
     return {
         "schema_version": 3,
         "estimator": section.estimator,
@@ -664,6 +717,7 @@ def _base_summary(
         "estimators": None,
         "tau_range_fs": None,
         "hops": None,
+        **({"transitions": None} if triplets else {}),
         "energy": None,
         "consistency": None,
         "table": None,

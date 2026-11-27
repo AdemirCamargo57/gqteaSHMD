@@ -180,3 +180,57 @@ def test_a_killed_controller_resumes_through_the_analysis(tmp_path, write_input)
     assert _main(path) == 0
     a, b = (r / "run" / "04_analysis" / "populations.csv" for r in (ref, run))
     assert a.read_bytes() == b.read_bytes()
+
+
+# ---------------------------------------------------------------- triplets (sub-project 3)
+LVC_SOC = Path(__file__).resolve().parents[1] / "data" / "lvc" / "lvc_soc.template"
+ELECTRONIC_SOC = (
+    '[electronic]\nmethod = "tda"\nbasis = "sto-3g"\nfunctional = "hf"\nsinglets = 2\n'
+    "triplets = 2\n"
+)
+SOC_LABELS = ["S0", "S1", "T1", "T2"]
+
+
+def _kind(i, j):
+    return f"{SOC_LABELS[i][0]}-{SOC_LABELS[j][0]}"
+
+
+def test_the_canned_spin_orbit_pipeline_through_the_analysis(tmp_path, write_input, monkeypatch):
+    # plan ruling PR5: lvc_soc.template, 2 singlets + 2 triplets, four trajectories from S1
+    monkeypatch.setenv(canned_lvc.LVC_TEMPLATE_ENV, str(LVC_SOC))
+    monkeypatch.setenv(canned_lvc.LVC_SOC_ENV, "1")
+    path = write_input(
+        tmp_path,
+        execution=FAST,
+        extra=ELECTRONIC_SOC
+        + '[dynamics]\ntmax_fs = 20.0\ndt_fs = 0.25\ngradient_transformation = "none"\n',
+    )
+    assert _main(path) == 0
+    trajs = [read_output_h5(p) for p in sorted(_dyn(tmp_path).glob("tasks/traj_*/output.h5"))]
+    assert len(trajs) == 4 and all(list(t.labels) == SOC_LABELS for t in trajs)
+    full = [t["ticks"] == 0 for t in trajs]
+    active = np.stack([t["active"][f] for t, f in zip(trajs, full, strict=True)])
+    pops = np.stack([t["populations"][f] for t, f in zip(trajs, full, strict=True)])
+    with h5py.File(_ana(tmp_path) / "populations.h5") as f:
+        for j in range(len(SOC_LABELS)):
+            np.testing.assert_array_equal(f["classical"][()][:, j], (active == j).mean(axis=0))
+        np.testing.assert_allclose(f["quantum"][()], pops.mean(axis=0), rtol=0, atol=1e-15)
+        assert list(f.attrs["fit_states"]) == ["S1"]
+        np.testing.assert_array_equal(f["fit_target"][()], f["classical"][()][:, 1])
+    assert pops[:, :, 2:].sum(axis=2).max() > 1e-3  # the triplets are populated
+    summary = _analysis(tmp_path)
+    assert summary["n_included"] == 4 and summary["stage_failed"] is False
+    assert summary["fit"]["states"] == ["S1"]
+    # the transitions equal a recount of the changes of `active` over every record
+    expected = {k: {"at_hop": 0, "without_hop": 0} for k in ("S-S", "S-T", "T-S", "T-T")}
+    for t in trajs:
+        a, hop_to = t["active"], t["hop_to"]
+        for r in range(1, a.size):
+            if a[r] != a[r - 1]:
+                expected[_kind(a[r - 1], a[r])]["at_hop" if hop_to[r] >= 0 else "without_hop"] += 1
+    transitions = summary["transitions"]
+    assert transitions["kinds"] == expected
+    first = transitions["first_singlet_to_triplet_fs"]
+    assert sorted(first["per_trajectory"]) == [f"traj_{k:05d}" for k in range(4)]
+    assert first["n_crossed"] + first["n_censored"] == 4
+    assert "\n## Intersystem crossing\n" in (_ana(tmp_path) / "report.md").read_text()

@@ -46,6 +46,27 @@ def _items(d: Any) -> str:
     return ", ".join(f"{k} {_n(v)}" for k, v in d.items())
 
 
+def _isc_lines(transitions: Any) -> list[str]:
+    """The intersystem-crossing block: the transitions by kind (S-T and T-S first), the pairs
+    and the first singlet-to-triplet time, censored like the S0 arrival."""
+    if not isinstance(transitions, Mapping):
+        return ["not computed"]
+    out = ["Changes of the active spin-free state (complete trajectories, up to the horizon)"]
+    kinds = transitions.get("kinds") or {}
+    for kind in ("S-T", "T-S", "S-S", "T-T"):
+        k = kinds.get(kind) or {}
+        out.append(
+            f"- {kind}: at hop {_n(k.get('at_hop'))}, without hop {_n(k.get('without_hop'))}"
+        )
+    out.append(f"- pairs: {_items(transitions.get('pairs'))}")
+    # fixed order: analysis.json is written with sorted keys
+    first = transitions.get("first_singlet_to_triplet_fs") or {}
+    stats = {k: first.get(k) for k in ("n_crossed", "n_censored", "mean", "median")}
+    out.append(f"- first S-to-T time (fs): {_items(stats)}")
+    out.append(f"- first S-to-T time per trajectory (fs): {_items(first.get('per_trajectory'))}")
+    return out
+
+
 def analysis_markdown(summary: Mapping[str, Any]) -> str:
     s = summary
     out: list[str] = ["# Analysis", "", "## Settings"]
@@ -165,6 +186,8 @@ def analysis_markdown(summary: Mapping[str, Any]) -> str:
     out.append(f"- hops per trajectory: {_items(hops.get('per_trajectory'))}")
     out.append(f"- first hop (fs): {_items(hops.get('first_hop_fs'))}")
     out.append(f"- first S0 arrival (fs): {_items(hops.get('first_s0_arrival_fs'))}")
+    if "transitions" in s:  # only a project with triplets has the key (spec 4.3)
+        out += ["", "## Intersystem crossing", *_isc_lines(s.get("transitions"))]
 
     energy = s.get("energy") or {}
     out += ["", "## Energy (complete trajectories)"]

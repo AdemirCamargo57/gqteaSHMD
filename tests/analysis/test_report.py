@@ -170,3 +170,51 @@ def test_markdown_shows_the_lifetime_range(summary_example):
     assert text.index("## Other estimator") < text.index("## Lifetime range")
     empty = analysis_markdown(summary_example).split("## Lifetime range\n", 1)[1]
     assert "- range: -" in empty
+
+
+TRANSITIONS = {
+    "kinds": {
+        "S-S": {"at_hop": 0, "without_hop": 0},
+        "S-T": {"at_hop": 3, "without_hop": 1},
+        "T-S": {"at_hop": 2, "without_hop": 0},
+        "T-T": {"at_hop": 0, "without_hop": 4},
+    },
+    "pairs": {"S1->T1": 3, "T1->S0": 2},
+    "first_singlet_to_triplet_fs": {
+        "per_trajectory": {"traj_00000": 12.5, "traj_00001": None},
+        "n_crossed": 1,
+        "n_censored": 1,
+        "mean": 12.5,
+        "median": 12.5,
+    },
+}
+
+
+def test_markdown_has_an_intersystem_crossing_block_with_triplets(summary_example):
+    text = analysis_markdown({**summary_example, "transitions": TRANSITIONS})
+    section = text.split("\n## Intersystem crossing\n", 1)[1].split("\n## ", 1)[0]
+    assert section.startswith(
+        "Changes of the active spin-free state (complete trajectories, up to the horizon)\n"
+    )
+    assert "- S-T: at hop 3, without hop 1\n" in section
+    assert "- T-S: at hop 2, without hop 0\n" in section
+    assert "- S-S: at hop 0, without hop 0\n" in section
+    assert "- T-T: at hop 0, without hop 4\n" in section
+    assert "- pairs: S1->T1 3, T1->S0 2\n" in section
+    assert "- first S-to-T time (fs): n_crossed 1, n_censored 1, mean 12.5, median 12.5\n" in (
+        section
+    )
+    assert "- first S-to-T time per trajectory (fs): traj_00000 12.5, traj_00001 -" in section
+    assert text.index("## Hops (complete trajectories)") < text.index("## Intersystem crossing")
+    assert text.index("## Intersystem crossing") < text.index("## Energy (complete trajectories)")
+
+
+def test_markdown_of_an_uncomputed_transitions_block(summary_example):
+    # a triplet project whose analysis stopped: the key exists with null
+    text = analysis_markdown({**summary_example, "transitions": None})
+    section = text.split("\n## Intersystem crossing\n", 1)[1].split("\n## ", 1)[0]
+    assert section == "not computed\n"
+
+
+def test_markdown_without_triplets_has_no_intersystem_crossing_block(summary_example):
+    assert "Intersystem crossing" not in analysis_markdown(summary_example)
