@@ -363,11 +363,14 @@ ELECTRONIC_SOC = (
 )
 
 
-def _soc_context(tmp_path, write_input, monkeypatch, entries=((1, "S1"), (2, "S1"))):
+def _soc_context(
+    tmp_path, write_input, monkeypatch, entries=((1, "S1"), (2, "S1")), dynamics_extra=""
+):
     monkeypatch.setenv(canned_lvc.LVC_TEMPLATE_ENV, str(LVC_SOC))
     monkeypatch.setenv(canned_lvc.LVC_SOC_ENV, "1")
     tmp_path.mkdir(parents=True, exist_ok=True)
     dynamics = '[dynamics]\ntmax_fs = 2.0\ndt_fs = 0.25\ngradient_transformation = "none"\n'
+    dynamics += dynamics_extra
     cfg = load_config(write_input(tmp_path, extra=ELECTRONIC_SOC + dynamics)).config
     layout = ProjectLayout(tmp_path / "run")
     model = canned_lvc.canned_model()
@@ -436,3 +439,27 @@ def test_without_triplets_the_output_and_the_summary_are_unchanged(tmp_path, wri
     summary = json.loads((ctx.stage_dir / "dynamics_summary.json").read_text())
     assert all("final_state" not in row for row in summary["trajectories"])
     assert "final state" not in (ctx.stage_dir / "dynamics_summary.md").read_text()
+
+
+@pytest.mark.parametrize("eselect_eV", [None, 0.5])
+def test_eselect_reaches_the_backend_model(tmp_path, write_input, monkeypatch, eselect_eV):
+    from gqteashmd.stages import dynamics as dynamics_module
+    from gqteashmd.trajectory.model import BackendModel
+
+    built = []
+
+    class Recording(BackendModel):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            built.append(self)
+
+    monkeypatch.setattr(dynamics_module, "BackendModel", Recording)
+    extra = "" if eselect_eV is None else f"eselect_eV = {eselect_eV}\n"
+    ctx = _soc_context(
+        tmp_path, write_input, monkeypatch, entries=((1, "S1"),), dynamics_extra=extra
+    )
+    results = _run_all(ctx, _stage())
+    assert results["traj_00000"]["outcome"] == "finished"
+    assert len(built) == 1
+    expected = None if eselect_eV is None else eselect_eV / HARTREE_IN_EV
+    assert built[0].eselect_Eh == expected

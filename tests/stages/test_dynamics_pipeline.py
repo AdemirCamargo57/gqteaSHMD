@@ -145,16 +145,17 @@ def _read_h5(path):
 def _direct(root, path, task_index, n_steps):
     """The canned spin-orbit LVC model run by the core alone (no adapter, runner or stage),
     from the stage's initial conditions with the trajectory's task_rng stream: the spin-free
-    populations and positions of every record, t = 0 included."""
+    populations, positions and active spin-free states of every record, t = 0 included, and
+    the random number of every step."""
     import numpy as np
 
     from gqteashmd.config.loader import load_config
     from gqteashmd.core.units import AU_TIME_IN_FS
     from gqteashmd.dynamics.driver import initial_state, run_trajectory
     from gqteashmd.dynamics.randomness import GeneratorSource
-    from gqteashmd.dynamics.representation import mch_coefficients
+    from gqteashmd.dynamics.representation import mch_coefficients, mch_state
     from gqteashmd.stages.dynamics import run_settings
-    from gqteashmd.trajectory.spin_expansion import spin_free_populations
+    from gqteashmd.trajectory.spin_expansion import spin_free_index, spin_free_populations
     from gqteashmd.util.seeds import task_rng
     from gqteashmd.vib.artifacts import read_samples_h5
 
@@ -173,7 +174,15 @@ def _direct(root, path, task_index, n_steps):
     populations = [spin_free_populations(np.abs(mch_coefficients(state.u, state.c)) ** 2, 2, 2)]
     populations += [spin_free_populations(np.abs(r.c_mch) ** 2, 2, 2) for r in records]
     positions = [q0] + [r.q for r in records]
-    return np.array(populations), np.array(positions)
+    # the active spin-free state of every record (t = 0 from the initial state)
+    active = [spin_free_index(2, 2, mch_state(state.u, state.active))]
+    active += [spin_free_index(2, 2, mch_state(r.u, r.active)) for r in records]
+    return {
+        "populations": np.array(populations),
+        "positions": np.array(positions),
+        "active": np.array(active),
+        "random_number": np.array([r.random_number for r in records]),  # one per step
+    }
 
 
 def _assert_matches_the_direct_run(root, path, n_steps):
@@ -184,12 +193,17 @@ def _assert_matches_the_direct_run(root, path, n_steps):
         row = next(r for r in summary["trajectories"] if r["task"] == task)
         assert row["outcome"] == "finished" and row["n_rejections"] == 0  # one step per record
         _, data = _read_h5(_output(root, task))
-        populations, positions = _direct(root, path, k, n_steps)
-        assert data["populations"].shape == populations.shape == (n_steps + 1, 4)
-        np.testing.assert_allclose(data["populations"], populations, rtol=0, atol=1e-10)
+        direct = _direct(root, path, k, n_steps)
+        assert data["populations"].shape == direct["populations"].shape == (n_steps + 1, 4)
+        np.testing.assert_allclose(data["populations"], direct["populations"], rtol=0, atol=1e-10)
         np.testing.assert_allclose(
-            data["positions"].reshape(n_steps + 1, -1), positions, rtol=0, atol=1e-10
+            data["positions"].reshape(n_steps + 1, -1), direct["positions"], rtol=0, atol=1e-10
         )
+        # the random stream is the trajectory's own (a neighbour's leaves q and P unchanged
+        # when no hop happens); the t = 0 record has no random number (NaN)
+        np.testing.assert_array_equal(data["random_number"][1:], direct["random_number"])
+        np.testing.assert_array_equal(data["active"], direct["active"])
+        assert row["final_state"] == SOC_LABELS[int(direct["active"][-1])]
 
 
 def test_the_canned_spin_orbit_pipeline_runs_and_follows_the_model(tmp_path, write_input, soc):
