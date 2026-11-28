@@ -18,6 +18,16 @@ def test_indices_follow_the_canonical_order(n, m):
         assert sx.expanded_index(n, m, i) == i and sx.spin_free_index(n, m, i) == i
 
 
+@pytest.mark.parametrize(("n", "m"), [(2, 0), (2, 1), (3, 3), (1, 2)])
+def test_spin_free_rows_pick_one_expanded_row_per_spin_free_state(n, m):
+    rows = sx.spin_free_rows(n, m)
+    assert rows == [sx.expanded_index(n, m, i) for i in range(n + m)]
+    assert rows == list(range(n + m))  # the Ms = -1 block of each triplet comes first
+    assert [sx.spin_free_index(n, m, k) for k in rows] == list(range(n + m))
+    e = np.arange(n + m, dtype=float)
+    assert np.array_equal(sx.expand_energies(e, n, m)[rows], e)
+
+
 def test_energies_and_gradients_repeat_each_triplet_three_times():
     e = np.array([0.0, 0.1, 0.2, 0.3])  # S0 S1 T1 T2
     g = np.arange(8.0).reshape(4, 2)

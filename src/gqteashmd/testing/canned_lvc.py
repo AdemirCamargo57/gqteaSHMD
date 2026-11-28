@@ -4,7 +4,9 @@ The LVC template comes from the environment variable ``LVC_TEMPLATE_ENV``; the m
 spin-orbit coupling only when ``LVC_SOC_ENV`` is ``"1"`` (plan ruling PR5: the canned spin-orbit
 pipeline uses ``tests/data/lvc/lvc_soc.template``). Faults for the fake backend come from
 ``FAULTS_ENV`` as JSON ``{"traj_00001": {"5": "kill"}}`` (task id, then 1-based compute call
-number, then fault kind).
+number, then fault kind). ``lvc_backend_factory`` builds a fresh ``ModelBackend`` with
+``calls = 0`` on every worker start, so after a kill (or a retry) the scripted faults are numbered
+from the restart: call ``5`` is the fifth compute call of that worker, not of the trajectory.
 """
 
 from __future__ import annotations

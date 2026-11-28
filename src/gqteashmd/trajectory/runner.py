@@ -29,9 +29,9 @@ from gqteashmd.errors import ElectronicStructureError
 from gqteashmd.trajectory.model import BackendModel
 from gqteashmd.trajectory.outcomes import TrajectoryOutcome
 from gqteashmd.trajectory.spin_expansion import (
-    expanded_index,
     spin_free_index,
     spin_free_populations,
+    spin_free_rows,
 )
 from gqteashmd.trajectory.store import RestartStore, StepLog, log_row, write_output_h5
 from gqteashmd.util.fileio import read_json, write_json_atomic
@@ -462,7 +462,7 @@ class TrajectoryRunner:
                 raise ValueError("a step record of a triplet run lacks its MCH data")
             energies, energies_diag = record.energies, record.energies_diag
             c_mch, active_mch = record.c_mch, record.active_mch
-        rows = [expanded_index(n, m, i) for i in range(n + m)]
+        rows = spin_free_rows(n, m)
         return {
             "energies_diag": energies_diag,
             "active_mch": spin_free_index(n, m, active_mch),

@@ -6,9 +6,10 @@ Pre-registered (spec 5.1, fixed before any comparison): thioformaldehyde 6-31G, 
 ``nogradcorrect``, the diagonal surface, ``ekincorrect parallel_vel``, EDC (0.1 Eh), ``endpoint``
 interpolation; start in S1 from the Wigner sample of each method chosen by the start rule of (b)
 (``tests/data/h2cs_soc_swap_start.json``: project seed 2029, RHF/6-31G* frequencies, T = 0, the
-first sample whose SHARC run with ``rngseed`` 2029 has a singlet-triplet hop within 200 steps;
-sample 0 when none of samples 0-19 has one). Our runner's step rejection is kept out of the way
-(SHARC has none; ``run_sharc_soc_swap.run_ours``).
+first sample whose SHARC run with ``rngseed`` 2029 has a singlet-triplet hop within 200 steps).
+The fallback to sample 0 for (a) when none of samples 0-19 has one was decided after the search
+found no SA-CASSCF hop; it was not pre-registered (spec 5.1 assumed one start per method). Our
+runner's step rejection is kept out of the way (SHARC has none; ``run_sharc_soc_swap.run_ours``).
 
 Start search (plan Task 1 Step 3, done in Task 9): CIS sample 7, first singlet-triplet hop at
 step 64, so (b) compares steps 0-84; SA-CASSCF: no hop of any kind in samples 0-19, so (b) is

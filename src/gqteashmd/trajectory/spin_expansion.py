@@ -21,6 +21,11 @@ def expanded_index(n: int, m: int, spin_free: int, m_index: int = 0) -> int:
     return int(n + m_index * m + (spin_free - n))
 
 
+def spin_free_rows(n: int, m: int) -> list[int]:
+    """One expanded row per spin-free state (a triplet's Ms = -1 row), in spin-free order."""
+    return [expanded_index(n, m, i) for i in range(int(n) + int(m))]
+
+
 def spin_free_index(n: int, m: int, k: int) -> int:
     return int(k) if k < n else int(n + (k - n) % m)
 

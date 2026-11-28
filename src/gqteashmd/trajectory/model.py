@@ -47,9 +47,9 @@ from gqteashmd.trajectory.spin_expansion import (
     expand_energies,
     expand_gradients,
     expand_overlaps,
-    expanded_index,
     expanded_size,
     spin_free_index,
+    spin_free_rows,
 )
 
 FIRST_CASSCF_RUNG = "previous orbitals"
@@ -346,7 +346,7 @@ class BackendModel:
         # the next step's (1): the mask around E^diag_lambda of the state with its own U
         e_reference = float(diagonal_energies(snap.hamiltonian, state.u)[state.active])
         kept = self._window(snap.energies, e_reference)
-        rows = [expanded_index(n, m, i) for i in range(self.n_spin_free)]
+        rows = spin_free_rows(n, m)
         gradients_sf = np.array(snap.gradients, dtype=float)[rows]
         missing = frozenset(
             label
