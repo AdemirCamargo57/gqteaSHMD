@@ -94,3 +94,101 @@ def hop_statistics(
             "frustrated": sum(1 for e in events if e.frustrated),
         },
     }
+
+
+# --------------------------------------------- spin-free transitions (triplets, spec 4.3)
+KINDS = ("S-S", "S-T", "T-S", "T-T")
+
+
+@dataclass(frozen=True)
+class Transition:
+    """A change of the active spin-free state between consecutive records; `at_hop` when the
+    later record carries an accepted hop (otherwise the MCH character of the active diagonal
+    state changed without a hop)."""
+
+    task: str
+    time_fs: float
+    from_state: int
+    to_state: int
+    at_hop: bool
+    included: bool
+    after_horizon: bool
+
+
+def transitions(t: Trajectory, *, included: bool, horizon_fs: float) -> list[Transition]:
+    """Every change of `t.active` between consecutive records. An accepted hop that keeps the
+    spin-free state (between the Ms components of one triplet) is not a transition.
+
+    For a schema-2 trajectory (triplets) only: output.h5 keeps every row where the spin-free
+    state changes (Task 7 fix ruling), so a hop record's `hop_from`/`hop_to` must be the
+    previous record's and its own `active`; otherwise ValueError naming the record (an
+    inconsistent file; the missing change is not reconstructed).
+    """
+    for j in np.flatnonzero(t.hop_to[1:] >= 0) + 1:
+        seen = (int(t.hop_from[j]), int(t.hop_to[j]))
+        if seen != (int(t.active[j - 1]), int(t.active[j])):
+            raise ValueError(
+                f"{t.task}: record {j} (t = {float(t.time_fs[j]):g} fs) has a hop "
+                f"{seen[0]} -> {seen[1]} but the active spin-free states are "
+                f"{int(t.active[j - 1])} -> {int(t.active[j])}: the file is inconsistent"
+            )
+    changed = np.flatnonzero(t.active[1:] != t.active[:-1]) + 1
+    out: list[Transition] = []
+    for j in changed:
+        time = float(t.time_fs[j])
+        out.append(
+            Transition(
+                t.task,
+                time,
+                int(t.active[j - 1]),
+                int(t.active[j]),
+                bool(int(t.hop_to[j]) >= 0),
+                included,
+                time > horizon_fs + _TOL,
+            )
+        )
+    return out
+
+
+def _multiplicity(label: str) -> str:
+    return "T" if label.startswith("T") else "S"
+
+
+def transition_statistics(
+    events: Sequence[Transition],
+    included: Sequence[Trajectory],
+    labels: Sequence[str],
+    horizon_fs: float,
+) -> dict[str, Any]:
+    """Counts by kind (S-S, S-T, T-S, T-T; at a hop or without one) and by label pair over the
+    included trajectories up to the horizon, and the first singlet-to-triplet time of every
+    included trajectory: `None` (censored, like the S0 arrival) when it has none by then."""
+    counted = [e for e in events if e.included and not e.after_horizon]
+    kinds = {k: {"at_hop": 0, "without_hop": 0} for k in KINDS}
+    for e in counted:
+        kind = f"{_multiplicity(labels[e.from_state])}-{_multiplicity(labels[e.to_state])}"
+        kinds[kind]["at_hop" if e.at_hop else "without_hop"] += 1
+    pairs = Counter(f"{labels[e.from_state]}->{labels[e.to_state]}" for e in counted)
+    first: dict[str, float | None] = {}
+    for t in included:
+        times = [
+            e.time_fs
+            for e in counted
+            if e.task == t.task
+            and _multiplicity(labels[e.from_state]) == "S"
+            and _multiplicity(labels[e.to_state]) == "T"
+        ]
+        first[t.task] = min(times) if times else None
+    crossed = [v for v in first.values() if v is not None]
+    mean, median = _stats(crossed)
+    return {
+        "kinds": kinds,
+        "pairs": dict(sorted(pairs.items())),
+        "first_singlet_to_triplet_fs": {
+            "per_trajectory": first,
+            "n_crossed": len(crossed),
+            "n_censored": len(first) - len(crossed),
+            "mean": mean,
+            "median": median,
+        },
+    }

@@ -1,8 +1,12 @@
 """Canned upstream data and a fake backend for dynamics-stage tests (no PySCF needed).
 
-The LVC template comes from the environment variable ``LVC_TEMPLATE_ENV``; the model has no
-spin-orbit coupling. Faults for the fake backend come from ``FAULTS_ENV`` as JSON
-``{"traj_00001": {"5": "kill"}}`` (task id, then 1-based compute call number, then fault kind).
+The LVC template comes from the environment variable ``LVC_TEMPLATE_ENV``; the model has
+spin-orbit coupling only when ``LVC_SOC_ENV`` is ``"1"`` (plan ruling PR5: the canned spin-orbit
+pipeline uses ``tests/data/lvc/lvc_soc.template``). Faults for the fake backend come from
+``FAULTS_ENV`` as JSON ``{"traj_00001": {"5": "kill"}}`` (task id, then 1-based compute call
+number, then fault kind). ``lvc_backend_factory`` builds a fresh ``ModelBackend`` with
+``calls = 0`` on every worker start, so after a kill (or a retry) the scripted faults are numbered
+from the restart: call ``5`` is the fifth compute call of that worker, not of the trajectory.
 """
 
 from __future__ import annotations
@@ -21,10 +25,25 @@ from gqteashmd.util.fileio import write_json_atomic
 
 LVC_TEMPLATE_ENV = "GQTEASHMD_CANNED_LVC_TEMPLATE"
 FAULTS_ENV = "GQTEASHMD_CANNED_FAULTS"
+LVC_SOC_ENV = "GQTEASHMD_CANNED_LVC_SOC"
+
+
+def soc() -> bool:
+    """True when the canned pipeline runs the spin-orbit model (``LVC_SOC_ENV`` is "1")."""
+    return os.environ.get(LVC_SOC_ENV) == "1"
 
 
 def canned_model() -> LVCModel:
-    return LVCModel.from_template(Path(os.environ[LVC_TEMPLATE_ENV]), spin_orbit=False)
+    return LVCModel.from_template(Path(os.environ[LVC_TEMPLATE_ENV]), spin_orbit=soc())
+
+
+def canned_selection() -> list[tuple[int, str]]:
+    """The (sample, initial state) entries of the canned selection: three trajectories, or
+    with spin-orbit coupling four, all in S1 (that model has two singlets; trajectories start
+    in a singlet)."""
+    if soc():
+        return [(1, "S1"), (2, "S1"), (3, "S1"), (4, "S1")]
+    return [(1, "S1"), (2, "S2"), (3, "S1")]
 
 
 def write_canned_molecule(stage_dir: Path, model: LVCModel) -> None:

@@ -136,6 +136,8 @@ allow_fewer = false           # accept fewer trajectories if too few pass the se
 # hopping = "sharc"
 # decoherence = "edc"
 # hop_energy = "current"             # or "previous": SHARC 4.1's convention at a hop
+# gradient_transformation = "ngt"    # "none" is required with [electronic] triplets > 0
+# eselect_eV = 0.5                   # gradients only within 0.5 eV of the active state
 # energy_drift_limit_eV = 0.5
 # energy_jump_limit_eV = 0.1         # reject a step whose E_tot jumps by more
 

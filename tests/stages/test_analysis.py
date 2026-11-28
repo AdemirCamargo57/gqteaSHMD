@@ -3,6 +3,7 @@
 import json
 import logging
 import types
+from collections import Counter
 
 import h5py
 import numpy as np
@@ -17,7 +18,7 @@ from gqteashmd.stages import analysis as analysis_module
 from gqteashmd.stages.analysis import AnalysisStage
 from gqteashmd.stages.base import StageContext
 from gqteashmd.testing import canned_lvc
-from gqteashmd.trajectory.store import log_dtype, log_row, write_output_h5
+from gqteashmd.trajectory.store import log_dtype, log_row, read_output_h5, write_output_h5
 from gqteashmd.util.fileio import write_json_atomic
 
 ELECTRONIC = '[electronic]\nmethod = "tda"\nbasis = "sto-3g"\nfunctional = "hf"\nsinglets = 2\n'
@@ -36,7 +37,12 @@ def _write_traj(
     labels=LABELS,
     dt_fs=0.5,
     output_every=1,
+    triplets=0,
+    hops=None,
 ):
+    if triplets:
+        _write_soc_traj(dyn_dir, task, outcome, active_by_step, labels, triplets, hops, dt_fs)
+        return
     n = len(labels)
     dtype = log_dtype(n, 3)
     rows = []
@@ -81,8 +87,76 @@ def _write_traj(
     )
 
 
+def _write_soc_traj(dyn_dir, task, outcome, active_by_step, labels, triplets, hops, dt_fs):
+    """A schema-2 output.h5 (triplets, spec 4.2): `active_by_step` holds the active spin-free
+    state of every record; `hops` the records with an accepted diagonal hop (default: those
+    where the spin-free state changes). The diagonal index is taken equal to the spin-free one
+    (the analysis reads only the spin-free datasets)."""
+    n_sf = len(labels)
+    n_singlets = n_sf - triplets
+    n_exp = n_singlets + 3 * triplets
+    dtype = log_dtype(n_exp, 3, n_spin_free=n_sf)
+    if hops is None:
+        hops = [
+            k for k in range(1, len(active_by_step)) if active_by_step[k - 1] != active_by_step[k]
+        ]
+    rows = []
+    for k, active in enumerate(active_by_step):
+        pops = np.zeros(n_sf)
+        pops[active] = 1.0
+        c = np.zeros(n_exp)
+        c[active] = 1.0
+        hopped = k in hops
+        rows.append(
+            log_row(
+                dtype,
+                step=k,
+                grid_step=k,
+                ticks=0,
+                depth=0,
+                time_au=k * dt_fs / AU_TIME_IN_FS,
+                active=active,
+                hop_from=active_by_step[k - 1] if hopped else -1,
+                hop_to=active if hopped else -1,
+                e_total=-1.0,
+                c_real=c,
+                active_mch=active,
+                populations_mch=pops,
+            )
+        )
+    task_dir = dyn_dir / "tasks" / task
+    task_dir.mkdir(parents=True, exist_ok=True)
+    write_output_h5(
+        task_dir / "output.h5",
+        np.array(rows, dtype=dtype),
+        labels=labels,
+        n_atoms=1,
+        output_every=1,
+        attrs={
+            "dt_fs": dt_fs,
+            "outcome": outcome,
+            "task": task,
+            "initial_state": labels[active_by_step[0]],
+            "sample": 1,
+            "symbols": ["H"],
+            "soc_operator": "somf",
+        },
+        n_singlets=n_singlets,
+        n_triplets=triplets,
+    )
+
+
 def _context(
-    tmp_path, write_input, trajs, *, analysis="", seed=None, file_only=(), estimator="complete"
+    tmp_path,
+    write_input,
+    trajs,
+    *,
+    analysis="",
+    seed=None,
+    file_only=(),
+    estimator="complete",
+    electronic=ELECTRONIC,
+    dynamics=DYNAMICS,
 ):
     """`trajs`: list of (outcome, active_by_step, kwargs) or None (no file, in the summary).
 
@@ -91,8 +165,8 @@ def _context(
     tmp_path.mkdir(parents=True, exist_ok=True)
     path = write_input(
         tmp_path,
-        extra=ELECTRONIC
-        + DYNAMICS
+        extra=electronic
+        + dynamics
         + f'[analysis]\nn_bootstrap = 100\nestimator = "{estimator}"\n'
         + analysis,
     )
@@ -956,3 +1030,164 @@ def test_without_a_censored_trajectory_there_is_no_hold_in_s0_block(tmp_path, wr
     data = _analysis(ctx)
     assert data["estimators"]["hold_in_s0"] is None
     assert "hold_in_s0_P_S0" not in (ctx.stage_dir / "populations.csv").read_text()
+
+
+# ------------------------------------------------- triplets (sub-project 3, spec 4.3)
+ELECTRONIC_SOC = ELECTRONIC + "triplets = 2\n"
+DYNAMICS_SOC = DYNAMICS + 'gradient_transformation = "none"\n'
+SOC_LABELS = ("S0", "S1", "T1", "T2")
+
+
+def _soc_context(tmp_path, write_input, trajs, **kwargs):
+    specs = [
+        None if t is None else (t[0], t[1], {"labels": SOC_LABELS, "triplets": 2, **t[2]})
+        for t in trajs
+    ]
+    return _context(
+        tmp_path, write_input, specs, electronic=ELECTRONIC_SOC, dynamics=DYNAMICS_SOC, **kwargs
+    )
+
+
+SOC_TRAJS = [
+    # S1 -> T1 at a hop, T1 -> T2 without a hop, T2 -> S0 at a hop
+    (FIN, [1, 1, 2, 3, 0], {"hops": [2, 4]}),
+    # S1 -> T1 at a hop, then a hop within T1 (between its Ms components): no transition
+    (FIN, [1, 2, 2, 2, 2], {"hops": [1, 2]}),
+    (FIN, [1, 1, 1, 1, 1], {}),
+]
+
+
+def _at_hop_pairs(ctx):
+    """The label pairs of the spin-free changes at a hop record, from the output.h5 files,
+    with hop_from/hop_to (PR1) checked against the records' active states."""
+    pairs: Counter = Counter()
+    for path in sorted(ctx.upstream["dynamics"].glob("tasks/traj_*/output.h5")):
+        data = read_output_h5(path)
+        a, hop_from, hop_to = data["active"], data["hop_from"], data["hop_to"]
+        for j in range(1, a.size):
+            if hop_to[j] >= 0:
+                assert (hop_from[j], hop_to[j]) == (a[j - 1], a[j]), (path, j)
+                if a[j] != a[j - 1]:
+                    pairs[f"{data.labels[a[j - 1]]}->{data.labels[a[j]]}"] += 1
+    return dict(pairs)
+
+
+def test_a_triplet_project_reports_its_spin_free_transitions(tmp_path, write_input):
+    ctx = _soc_context(tmp_path, write_input, SOC_TRAJS)
+    run_stage(ctx)
+    data = _analysis(ctx)
+    t = data["transitions"]
+    assert t["kinds"] == {
+        "S-S": {"at_hop": 0, "without_hop": 0},
+        "S-T": {"at_hop": 2, "without_hop": 0},
+        "T-S": {"at_hop": 1, "without_hop": 0},
+        "T-T": {"at_hop": 0, "without_hop": 1},
+    }
+    assert t["pairs"] == {"S1->T1": 2, "T1->T2": 1, "T2->S0": 1}
+    assert t["first_singlet_to_triplet_fs"] == {
+        "per_trajectory": {"traj_00000": 1.0, "traj_00001": 0.5, "traj_00002": None},
+        "n_crossed": 2,
+        "n_censored": 1,
+        "mean": 0.75,
+        "median": 0.75,
+    }
+    # the hop table keeps the hop within T1 (ledger ruling)
+    assert data["hops"]["pairs"] == {"S1->T1": 2, "T1->T1": 1, "T2->S0": 1}
+    # every transition at a hop is that hop, so the two pair tables agree on it (Task 7 fix)
+    at_hop = _at_hop_pairs(ctx)
+    assert at_hop == {"S1->T1": 2, "T2->S0": 1}
+    for pair, count in at_hop.items():
+        assert data["hops"]["pairs"][pair] >= count and t["pairs"][pair] >= count
+    report_md = (ctx.stage_dir / "report.md").read_text()
+    assert "\n## Intersystem crossing\n" in report_md
+    assert "- S-T: at hop 2, without hop 0\n" in report_md
+    assert "- first S-to-T time (fs): n_crossed 2, n_censored 1, mean 0.75, median 0.75" in (
+        report_md
+    )
+
+
+def test_a_triplet_project_fits_the_excited_singlets_by_default(tmp_path, write_input):
+    ctx = _soc_context(tmp_path, write_input, SOC_TRAJS)
+    run_stage(ctx)
+    data = _analysis(ctx)
+    assert data["fit"]["states"] == ["S1"]  # owner decision 6: not S1, T1, T2
+    assert list(data["table"][0]["P"]) == list(SOC_LABELS)
+    with h5py.File(ctx.stage_dir / "populations.h5") as f:
+        np.testing.assert_array_equal(f["fit_target"][()], f["classical"][()][:, 1])
+        assert list(f.attrs["fit_states"]) == ["S1"]
+        np.testing.assert_allclose(f["classical"][()][:, 2], [0, 1 / 3, 2 / 3, 1 / 3, 1 / 3])
+
+
+def test_an_explicit_fit_states_is_kept_with_triplets(tmp_path, write_input):
+    ctx = _soc_context(tmp_path, write_input, SOC_TRAJS, analysis='fit_states = ["S1"]\n')
+    run_stage(ctx)
+    assert _analysis(ctx)["fit"]["states"] == ["S1"]
+
+
+@pytest.mark.parametrize(
+    ("labels", "n_singlets", "n_triplets", "expected"),
+    [
+        (["S0", "S1", "T1", "T2"], 2, 2, ["S1"]),
+        (["S0", "S1", "S2", "T1", "T2", "T3"], 3, 3, ["S1", "S2"]),
+        (["S0", "S1", "S2"], 3, 0, ["S1", "S2"]),  # without triplets: labels[1:]
+        (["S0", "S1"], 2, 0, ["S1"]),
+    ],
+)
+def test_the_default_fit_states(labels, n_singlets, n_triplets, expected):
+    assert analysis_module._default_fit_states(labels, n_singlets, n_triplets) == expected
+
+
+def test_a_singlet_project_has_no_transitions(tmp_path, write_input):
+    ctx = _context(tmp_path, write_input, [(FIN, [1, 1, 0, 0, 0], {})])
+    run_stage(ctx)
+    assert "transitions" not in _analysis(ctx)
+    assert "Intersystem crossing" not in (ctx.stage_dir / "report.md").read_text()
+
+
+def test_a_stopped_triplet_analysis_has_a_null_transitions_key(tmp_path, write_input):
+    ctx = _soc_context(tmp_path, write_input, [("energy_drift", [1, 1], {})])
+    with pytest.raises(StageFailedError):
+        run_stage(ctx)
+    data = _analysis(ctx)
+    assert "transitions" in data and data["transitions"] is None
+    assert "## Intersystem crossing\nnot computed\n" in (ctx.stage_dir / "report.md").read_text()
+
+
+@pytest.mark.parametrize(("attr", "value"), [("n_singlets", 3), ("n_triplets", 1)])
+def test_spin_counts_that_do_not_fit_the_labels_are_a_task_error(
+    tmp_path, write_input, attr, value
+):
+    ctx = _soc_context(tmp_path, write_input, SOC_TRAJS)
+    path = ctx.upstream["dynamics"] / "tasks" / "traj_00001" / "output.h5"
+    with h5py.File(path, "a") as f:
+        f.attrs[attr] = value
+    with pytest.raises(TaskError, match="--rerun-from dynamics") as info:
+        run_stage(ctx)
+    assert attr in str(info.value) and "traj_00001" in str(info.value)
+    assert info.value.retryable is False
+
+
+def test_a_hop_record_that_does_not_follow_the_previous_one_is_a_task_error(tmp_path, write_input):
+    # Task 7 fix ruling: an inconsistent file is refused, the missing change not reconstructed
+    ctx = _soc_context(tmp_path, write_input, SOC_TRAJS)
+    path = ctx.upstream["dynamics"] / "tasks" / "traj_00000" / "output.h5"
+    with h5py.File(path, "a") as f:
+        hop_from = f["hop_from"][()]
+        hop_from[2] = 3  # the hop at record 2 now claims to come from T2, not S1
+        f["hop_from"][...] = hop_from
+    with pytest.raises(TaskError, match="--rerun-from dynamics") as info:
+        run_stage(ctx)
+    assert "traj_00000" in str(info.value) and "record 2" in str(info.value)
+    assert info.value.retryable is False
+
+
+def test_a_singlet_file_with_a_wrong_n_singlets_is_a_task_error(tmp_path, write_input):
+    # n_singlets is compared whenever it is present (Task 7 fix, minor 2)
+    ctx = _context(tmp_path, write_input, [(FIN, [1, 1, 1, 1, 1], {})])
+    path = ctx.upstream["dynamics"] / "tasks" / "traj_00000" / "output.h5"
+    with h5py.File(path, "a") as f:
+        f.attrs["n_singlets"] = 3
+        f.attrs["n_triplets"] = 0
+    with pytest.raises(TaskError, match="n_singlets and n_triplets") as info:
+        run_stage(ctx)
+    assert info.value.retryable is False and "--rerun-from dynamics" in str(info.value)

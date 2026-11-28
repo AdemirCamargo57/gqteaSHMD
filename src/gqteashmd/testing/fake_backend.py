@@ -15,6 +15,13 @@ ElectronicStructureError), ``energy_jump`` (every returned energy is shifted by
 ``ENERGY_JUMP_SHIFT_EH``, a stand-in for a CASSCF solution change) and ``energy_jump_rung`` (that
 shift together with the ``rung`` fault, to test the order of the rejection signals). Only the
 returned result is faulty; the backend's own state stays clean.
+
+A model with triplets (``state_counts == (n, 0, m)``, e.g. an LVC model with spin-orbit coupling)
+is served as its spin-free view, as PySCF serves one (plan ruling PR4): states S0..S(n-1),
+T1..Tm; the energies, gradients, NACs and overlaps of a triplet are those of its Ms = -1 component
+(``spin_expansion.expanded_index(n, m, n + j, 0)``), and with ``Request(soc=True)`` the result
+carries the model's expanded Hamiltonian (``Capabilities.soc``). A model without triplets refuses
+``soc=True``.
 """
 
 from __future__ import annotations
@@ -31,8 +38,10 @@ import numpy as np
 from gqteashmd.core.states import StateLabel, states_from_counts
 from gqteashmd.dynamics.models import ElectronicModel
 from gqteashmd.dynamics.records import ElectronicSnapshot
+from gqteashmd.dynamics.spin import expanded_states
 from gqteashmd.electronic.base import Capabilities, ElectronicBackend, ElectronicResult, Request
 from gqteashmd.errors import ElectronicStructureError
+from gqteashmd.trajectory.spin_expansion import expanded_index
 from gqteashmd.util.fileio import write_bytes_atomic
 
 FAULTS = (
@@ -72,7 +81,15 @@ class ModelBackend(ElectronicBackend):
         if bad:
             raise ValueError(f"unknown fault kind(s) {bad}; known: {', '.join(FAULTS)}")
         self._model = model
-        self._states = states_from_counts(int(model.n_states))
+        counts = tuple(int(c) for c in model.state_counts)
+        n, m = counts[0], (counts[2] if len(counts) == 3 else 0)
+        self._triplets = m
+        self._states = states_from_counts(n, m)
+        # the model row of every spin-free state: S_I itself, T_J its Ms = -1 component
+        self._rows = tuple(range(n)) + tuple(expanded_index(n, m, n + j, 0) for j in range(m))
+        self._hamiltonian_labels = (
+            tuple(state.label() for state in expanded_states(counts)) if m else None
+        )
         self._faults = dict(faults or {})
         self.calls = int(calls)
         self._nacs = bool(nacs)
@@ -88,11 +105,16 @@ class ModelBackend(ElectronicBackend):
     @property
     def capabilities(self) -> Capabilities:
         return Capabilities(
-            gradients=True, nacs=self._nacs, overlaps=True, transition_dipoles=False
+            gradients=True,
+            nacs=self._nacs,
+            overlaps=True,
+            transition_dipoles=False,
+            soc=self._triplets > 0,
         )
 
     def compute(self, request: Request) -> ElectronicResult:
-        if request.soc:  # refused, not ignored: a caller must not get a silent None Hamiltonian
+        if request.soc and not self._triplets:
+            # refused, not ignored: a caller must not get a silent None Hamiltonian
             raise ValueError("ModelBackend does not compute spin-orbit couplings (Request.soc)")
         self.calls += 1
         self._live = None
@@ -118,11 +140,12 @@ class ModelBackend(ElectronicBackend):
             meta["casscf"] = "SCF orbitals"
         else:
             assert snap.overlaps is not None
-            meta["overlap_min_singular_value"] = float(
-                np.linalg.svd(np.asarray(snap.overlaps, dtype=float), compute_uv=False).min()
-            )
+            raw = np.asarray(snap.overlaps, dtype=float)
+            if self._triplets:
+                raw = raw[np.ix_(self._rows, self._rows)]
+            meta["overlap_min_singular_value"] = float(np.linalg.svd(raw, compute_uv=False).min())
             if request.overlaps and fault != "no_overlaps":
-                overlaps = np.array(snap.overlaps, dtype=float)
+                overlaps = np.array(raw, dtype=float)
         if fault == "low_overlap":
             meta["overlap_min_singular_value"] = 0.1
         if fault in ("rung", "energy_jump_rung"):
@@ -131,6 +154,12 @@ class ModelBackend(ElectronicBackend):
         self._live = snap
         self._more_error = fault == "more_error"
         result = self._result(snap, request.gradients, request.nacs, overlaps, meta)
+        if request.soc:
+            result = dataclasses.replace(
+                result,
+                hamiltonian=np.array(snap.hamiltonian, dtype=complex),
+                hamiltonian_labels=self._hamiltonian_labels,
+            )
         if fault == "nan_energy":
             result = dataclasses.replace(
                 result, energies={label: float("nan") for label in result.energies}
@@ -173,7 +202,7 @@ class ModelBackend(ElectronicBackend):
         overlaps: np.ndarray | None,
         meta: dict[str, Any],
     ) -> ElectronicResult:
-        index = {label: i for i, label in enumerate(self._states)}
+        index = {label: self._rows[i] for i, label in enumerate(self._states)}
         natom = snap.gradients.shape[1] // 3
         return ElectronicResult(
             states=self._states,

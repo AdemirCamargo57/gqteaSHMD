@@ -267,10 +267,199 @@ def test_hop_energy_reaches_the_options_and_the_fingerprint_only_when_set(tmp_pa
     assert {k: v for k, v in fp_previous.items() if k != "hop_energy"} == fp_default
 
 
-def test_triplets_are_refused(tmp_path, write_input):
+THIOFORMALDEHYDE = Path(__file__).resolve().parents[1] / "data" / "thioformaldehyde.xyz"
+AMMONIA_XYZ = (
+    "4\nammonia\nN 0.0 0.0 0.1\nH 0.0 0.94 -0.27\nH 0.81 -0.47 -0.27\nH -0.81 -0.47 -0.27\n"
+)
+
+
+def _with_triplets(ctx, geometry, *, soc_operator="effective_charge", triplets=2):
+    electronic = ctx.config.electronic.model_copy(
+        update={"triplets": triplets, "soc_operator": soc_operator}
+    )
+    molecule = ctx.config.molecule.model_copy(update={"geometry": geometry})
+    return ctx.config.model_copy(update={"electronic": electronic, "molecule": molecule})
+
+
+def test_triplets_are_no_longer_refused(tmp_path, write_input):
     ctx = _context(tmp_path, write_input)
     two = ctx.config.electronic.model_copy(update={"triplets": 1})
-    assert _stage().check_config(ctx.config.model_copy(update={"electronic": two})) == [
-        "Stage 'dynamics' with [electronic] triplets > 0 is planned (spin-orbit coupling, "
-        "sub-project 3); set [electronic] triplets = 0"
-    ]
+    problems = _stage().check_config(ctx.config.model_copy(update={"electronic": two}))
+    assert not [p for p in problems if "is planned" in p]
+    assert problems == []
+
+
+def test_the_effective_charge_operator_names_a_missing_element(tmp_path, write_input):
+    ctx = _context(tmp_path, write_input)
+    ammonia = tmp_path / "ammonia.xyz"
+    ammonia.write_text(AMMONIA_XYZ)
+    problems = _stage().check_config(_with_triplets(ctx, ammonia))
+    assert len(problems) == 1
+    assert "effective nuclear charge for N (" in problems[0]  # N only, not H
+    assert "soc_operator" in problems[0] and "triplets" in problems[0]
+
+
+def test_the_effective_charge_operator_accepts_h_c_s(tmp_path, write_input):
+    ctx = _context(tmp_path, write_input)
+    assert _stage().check_config(_with_triplets(ctx, THIOFORMALDEHYDE)) == []
+
+
+def test_the_element_check_applies_only_with_triplets_and_effective_charges(tmp_path, write_input):
+    ctx = _context(tmp_path, write_input)
+    ammonia = tmp_path / "ammonia.xyz"
+    ammonia.write_text(AMMONIA_XYZ)
+    stage = _stage()
+    assert stage.check_config(_with_triplets(ctx, ammonia, soc_operator="somf")) == []
+    assert stage.check_config(_with_triplets(ctx, ammonia, triplets=0)) == []
+
+
+def test_an_unreadable_geometry_is_left_to_prepare(tmp_path, write_input):
+    ctx = _context(tmp_path, write_input)
+    assert _stage().check_config(_with_triplets(ctx, tmp_path / "missing.xyz")) == []
+    broken = tmp_path / "broken.xyz"
+    broken.write_text("not a geometry\n")
+    assert _stage().check_config(_with_triplets(ctx, broken)) == []
+
+
+def test_the_new_keys_are_left_out_of_the_fingerprint_at_their_defaults(tmp_path, write_input):
+    default = _context(tmp_path / "a", write_input)
+    fp_default = _stage().fingerprint_inputs(default)["dynamics"]
+    assert "gradient_transformation" not in fp_default and "eselect_eV" not in fp_default
+    assert set(fp_default) == MAIN_DYNAMICS_FINGERPRINT_KEYS
+    explicit = _context(
+        tmp_path / "b",
+        write_input,
+        dynamics='tmax_fs = 2.0\ndt_fs = 0.25\ngradient_transformation = "ngt"\n',
+    )
+    assert _stage().fingerprint_inputs(explicit)["dynamics"] == fp_default
+    for lines, key, value in (
+        ('gradient_transformation = "none"\n', "gradient_transformation", "none"),
+        ("eselect_eV = 0.5\n", "eselect_eV", 0.5),
+    ):
+        ctx = _context(
+            tmp_path / key, write_input, dynamics="tmax_fs = 2.0\ndt_fs = 0.25\n" + lines
+        )
+        fp = _stage().fingerprint_inputs(ctx)["dynamics"]
+        assert fp[key] == value
+        assert {k: v for k, v in fp.items() if k != key} == fp_default
+
+
+def test_run_settings_passes_the_new_keys(tmp_path, write_input):
+    default = _context(tmp_path / "a", write_input)
+    options = run_settings(default.config.dynamics).options
+    assert options.gradient_transformation == "ngt" and options.eselect_Eh is None
+    lines = 'tmax_fs = 2.0\ndt_fs = 0.25\ngradient_transformation = "none"\neselect_eV = 0.5\n'
+    ctx = _context(tmp_path / "b", write_input, dynamics=lines)
+    options = run_settings(ctx.config.dynamics).options
+    assert options.gradient_transformation == "none"
+    assert options.eselect_Eh == 0.5 / HARTREE_IN_EV
+
+
+# ---------------------------------------------------------------- triplets (sub-project 3)
+LVC_SOC = Path(__file__).resolve().parents[1] / "data" / "lvc" / "lvc_soc.template"
+ELECTRONIC_SOC = (
+    '[electronic]\nmethod = "tda"\nbasis = "sto-3g"\nfunctional = "hf"\nsinglets = 2\n'
+    'triplets = 2\nsoc_operator = "effective_charge"\n'
+)
+
+
+def _soc_context(
+    tmp_path, write_input, monkeypatch, entries=((1, "S1"), (2, "S1")), dynamics_extra=""
+):
+    monkeypatch.setenv(canned_lvc.LVC_TEMPLATE_ENV, str(LVC_SOC))
+    monkeypatch.setenv(canned_lvc.LVC_SOC_ENV, "1")
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    dynamics = '[dynamics]\ntmax_fs = 2.0\ndt_fs = 0.25\ngradient_transformation = "none"\n'
+    dynamics += dynamics_extra
+    cfg = load_config(write_input(tmp_path, extra=ELECTRONIC_SOC + dynamics)).config
+    layout = ProjectLayout(tmp_path / "run")
+    model = canned_lvc.canned_model()
+    dirs = {name: tmp_path / "run" / name for name in ("00_prepare", "01_sampling", "02_selection")}
+    for d in dirs.values():
+        d.mkdir(parents=True)
+    canned_lvc.write_canned_molecule(dirs["00_prepare"], model)
+    canned_lvc.write_canned_samples(dirs["01_sampling"], model, 4)
+    canned_lvc.write_canned_trajectories(dirs["02_selection"], list(entries), cfg.project.seed)
+    upstream = {
+        "prepare": dirs["00_prepare"],
+        "sampling": dirs["01_sampling"],
+        "selection": dirs["02_selection"],
+    }
+    stage_dir = tmp_path / "run" / "03_dynamics"
+    stage_dir.mkdir()
+    return StageContext(cfg, layout, stage_dir, upstream)
+
+
+def _attrs(path):
+    import h5py
+
+    with h5py.File(path, "r") as f:
+        return dict(f.attrs)
+
+
+def test_a_triplet_run_records_the_operator_and_the_final_spin_free_state(
+    tmp_path, write_input, monkeypatch
+):
+    ctx = _soc_context(tmp_path, write_input, monkeypatch)
+    assert ctx.config.electronic.soc_operator == "effective_charge"
+    stage = _stage()
+    results = _run_all(ctx, stage)
+    assert {r["outcome"] for r in results.values()} == {"finished"}
+    for task_id, result in results.items():
+        attrs = _attrs(ctx.stage_dir / "tasks" / task_id / "output.h5")
+        assert attrs["soc_operator"] == "effective_charge" and attrs["schema_version"] == 2
+        assert attrs["initial_state"] == "S1"
+        assert result["final_state"] in ("S0", "S1", "T1", "T2")
+    stage.finalize(ctx, results)
+    summary = json.loads((ctx.stage_dir / "dynamics_summary.json").read_text())
+    for row in summary["trajectories"]:
+        assert row["final_state"] == results[row["task"]]["final_state"]
+    markdown = (ctx.stage_dir / "dynamics_summary.md").read_text()
+    assert "| final state |" in markdown
+
+
+def test_a_triplet_initial_state_is_refused(tmp_path, write_input, monkeypatch):
+    ctx = _soc_context(tmp_path, write_input, monkeypatch, entries=((1, "T1"),))
+    stage = _stage()
+    task = stage.plan(ctx)[0]
+    with pytest.raises(TaskError, match="--rerun-from selection") as info:
+        stage.run_task(ctx, task, ctx.stage_dir / "tasks" / task.task_id)
+    assert info.value.retryable is False and "singlet" in str(info.value)
+
+
+def test_without_triplets_the_output_and_the_summary_are_unchanged(tmp_path, write_input):
+    ctx = _context(tmp_path, write_input)
+    stage = _stage()
+    results = _run_all(ctx, stage)
+    for task_id, result in results.items():
+        assert "final_state" not in result
+        attrs = _attrs(ctx.stage_dir / "tasks" / task_id / "output.h5")
+        assert "soc_operator" not in attrs and attrs["schema_version"] == 1
+    stage.finalize(ctx, results)
+    summary = json.loads((ctx.stage_dir / "dynamics_summary.json").read_text())
+    assert all("final_state" not in row for row in summary["trajectories"])
+    assert "final state" not in (ctx.stage_dir / "dynamics_summary.md").read_text()
+
+
+@pytest.mark.parametrize("eselect_eV", [None, 0.5])
+def test_eselect_reaches_the_backend_model(tmp_path, write_input, monkeypatch, eselect_eV):
+    from gqteashmd.stages import dynamics as dynamics_module
+    from gqteashmd.trajectory.model import BackendModel
+
+    built = []
+
+    class Recording(BackendModel):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            built.append(self)
+
+    monkeypatch.setattr(dynamics_module, "BackendModel", Recording)
+    extra = "" if eselect_eV is None else f"eselect_eV = {eselect_eV}\n"
+    ctx = _soc_context(
+        tmp_path, write_input, monkeypatch, entries=((1, "S1"),), dynamics_extra=extra
+    )
+    results = _run_all(ctx, _stage())
+    assert results["traj_00000"]["outcome"] == "finished"
+    assert len(built) == 1
+    expected = None if eselect_eV is None else eselect_eV / HARTREE_IN_EV
+    assert built[0].eselect_Eh == expected

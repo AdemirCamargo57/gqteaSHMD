@@ -109,7 +109,7 @@
             <li><code>sampling</code>: harmonic Wigner sampling with exact thermal widths; linear and angular momentum removed; an exact energy check per mode</li>
             <li><code>excitations</code>: vertical excitation energies and oscillator strengths at every sample, and the absorption spectrum as a CSV file</li>
             <li><code>selection</code>: the initial state of every trajectory, by bright-state selection (weight f/dE&sup2; or f) in an energy window, or a fixed state</li>
-            <li>Reproducible: every random number derives from <code>project.seed</code>, so the same input gives the same samples, also after a restart</li>
+            <li>Reproducible: every random number derives from <code>project.seed</code>, so the same seed and the same frequencies give the same samples, also after a restart (across fresh projects the normal-mode signs can flip)</li>
           </ul>
         </div>
 

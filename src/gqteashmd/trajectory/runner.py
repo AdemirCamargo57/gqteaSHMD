@@ -23,10 +23,16 @@ from gqteashmd.dynamics.driver import initial_state, kinetic_energy, step
 from gqteashmd.dynamics.options import DynamicsOptions
 from gqteashmd.dynamics.randomness import RandomSource, source_from_state
 from gqteashmd.dynamics.records import StepRecord, TrajectoryState
+from gqteashmd.dynamics.representation import diagonal_energies, mch_coefficients, mch_state
 from gqteashmd.dynamics.restart import load_state, save_state
 from gqteashmd.errors import ElectronicStructureError
 from gqteashmd.trajectory.model import BackendModel
 from gqteashmd.trajectory.outcomes import TrajectoryOutcome
+from gqteashmd.trajectory.spin_expansion import (
+    spin_free_index,
+    spin_free_populations,
+    spin_free_rows,
+)
 from gqteashmd.trajectory.store import RestartStore, StepLog, log_row, write_output_h5
 from gqteashmd.util.fileio import read_json, write_json_atomic
 
@@ -149,7 +155,14 @@ class TrajectoryRunner:
         self.directory = Path(directory)
         self.attrs = dict(attrs or {})
         self.restarts = RestartStore(self.directory / "restart")
-        self.log = StepLog(self.directory / LOG_FILE, model.n_states, model.n_dof)
+        # with triplets the log gains the MCH columns (spec 4.1); without, today's layout
+        self.triplets = model.n_triplets > 0
+        self.log = StepLog(
+            self.directory / LOG_FILE,
+            model.n_states,
+            model.n_dof,
+            n_spin_free=model.n_spin_free if self.triplets else None,
+        )
 
     # ---------------------------------------------------------------- public
     def run(self, initial: InitialConditions, source: RandomSource) -> dict[str, Any]:
@@ -239,6 +252,7 @@ class TrajectoryRunner:
         )
         saved = source.state()
         self.model.active = state.active
+        self.model.u = state.u
         signal: str | None = None
         message = ""
         try:
@@ -300,10 +314,13 @@ class TrajectoryRunner:
         if limit is None:
             return None
         previous = progress.last_e_total_au
-        if previous is None:  # a restart written before this field existed
+        if previous is None and state.u is None:  # a restart written before this field existed
             previous = float(
                 state.snapshot.energies[state.active] + kinetic_energy(state.v, self.model.masses)
             )
+        elif previous is None:  # the same with U: the active state's diagonal energy
+            e_diag = diagonal_energies(state.snapshot.hamiltonian, state.u)
+            previous = float(e_diag[state.active] + kinetic_energy(state.v, self.model.masses))
         # A non-finite E_tot gives a NaN jump, rejected here as an energy jump (practically
         # unreachable: BackendModel already rejects non-finite energies as electronic failures).
         # Under hop_energy = "previous" an accepted hop's e_total equals the previous record's
@@ -346,7 +363,9 @@ class TrajectoryRunner:
         if not math.isfinite(drift):
             drift = math.inf
         progress.max_drift_au = max(progress.max_drift_au, drift)
-        progress.s0_time_au = progress.s0_time_au + dt if state.active == 0 else 0.0
+        # PR8: in S0 when the active spin-free state is S0 (the diagonal index without triplets)
+        in_s0 = self.model.active_spin_free(state.u, state.active) == 0
+        progress.s0_time_au = progress.s0_time_au + dt if in_s0 else 0.0
         self._append(state, record, progress, depth=depth_used, flagged=flagged)
         progress.last_e_total_au = float(record.e_total)
         if not drift <= settings.options.energy_drift_limit_au:
@@ -423,9 +442,33 @@ class TrajectoryRunner:
             rejections=progress.pending_rejections,
             min_singular_value=math.nan if sv is None else sv,
         )
+        if self.triplets:
+            values.update(self._mch_columns(state, record))
         self.log.append(log_row(self.log.dtype, **values))
         progress.log_records += 1
         progress.pending_rejections = 0
+
+    def _mch_columns(self, state: TrajectoryState, record: StepRecord | None) -> dict[str, Any]:
+        """The MCH columns of a triplet run's log row (spec 4.1): from the StepRecord, or for
+        the t = 0 row from the state (its U and diagonal coefficients)."""
+        n, m = self.model.n_singlets, self.model.n_triplets
+        if record is None:
+            energies = state.snapshot.energies
+            energies_diag = diagonal_energies(state.snapshot.hamiltonian, state.u)
+            c_mch = mch_coefficients(state.u, state.c)
+            active_mch = mch_state(state.u, state.active)
+        else:
+            if record.energies_diag is None or record.c_mch is None or record.active_mch is None:
+                raise ValueError("a step record of a triplet run lacks its MCH data")
+            energies, energies_diag = record.energies, record.energies_diag
+            c_mch, active_mch = record.c_mch, record.active_mch
+        rows = spin_free_rows(n, m)
+        return {
+            "energies_diag": energies_diag,
+            "active_mch": spin_free_index(n, m, active_mch),
+            "energies_sf": np.asarray(energies, dtype=float)[rows],
+            "populations_mch": spin_free_populations(np.abs(c_mch) ** 2, n, m),
+        }
 
     def _save(self, state: TrajectoryState, source: RandomSource, progress: Progress) -> None:
         def fill(directory: Path) -> None:
@@ -434,9 +477,11 @@ class TrajectoryRunner:
             write_json_atomic(directory / META_FILE, progress.to_json())
 
         self.restarts.write(fill)
-        self._write_progress(progress, state.active)
+        # PR6: the active spin-free state (the diagonal index itself without triplets)
+        self._write_progress(progress, self.model.active_spin_free(state.u, state.active))
 
     def _write_progress(self, progress: Progress, active: int | None) -> None:
+        """progress.json; ``active`` indexes the spin-free ``labels``."""
         write_json_atomic(
             self.directory / PROGRESS_FILE,
             {
@@ -456,6 +501,9 @@ class TrajectoryRunner:
         }
         if progress.message is not None:
             attrs["message"] = progress.message
+        counts: dict[str, int] = {}
+        if self.triplets:  # schema 2 (spec 4.2); without triplets schema 1, today's bytes
+            counts = {"n_singlets": self.model.n_singlets, "n_triplets": self.model.n_triplets}
         write_output_h5(
             self.directory / OUTPUT_FILE,
             self.log.read(),
@@ -463,10 +511,16 @@ class TrajectoryRunner:
             n_atoms=self.model.n_dof // 3,
             output_every=self.settings.output_every,
             attrs=attrs,
+            **counts,
         )
         rows = self.log.read()
-        self._write_progress(progress, int(rows["active"][-1]) if rows.size else None)
+        column = "active_mch" if self.triplets else "active"  # PR6: the spin-free state
+        final = int(rows[column][-1]) if rows.size else None
+        self._write_progress(progress, final)
         drift = progress.max_drift_au
+        extra: dict[str, Any] = {}
+        if self.triplets:  # PR6: the last record's active spin-free state; without, today's keys
+            extra["final_state"] = None if final is None else str(self.model.labels[final])
         return {
             "outcome": outcome,
             "t_final_fs": self._time_au(progress) * AU_TIME_IN_FS,
@@ -481,4 +535,5 @@ class TrajectoryRunner:
             "max_drift_eV": drift * HARTREE_IN_EV if math.isfinite(drift) else None,
             "message": progress.message,
             "wall_time_s": elapsed,
+            **extra,
         }

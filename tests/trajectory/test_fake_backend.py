@@ -144,3 +144,89 @@ def test_energy_jump_fault_shifts_every_energy():
     shifted = ModelBackend(model, faults={1: "energy_jump"}).compute(Request(q))
     for label, e in plain.energies.items():
         assert shifted.energies[label] == pytest.approx(e + ENERGY_JUMP_SHIFT_EH, abs=1e-15)
+
+
+# ---------------------------------------------------------------- spin-orbit models (PR4)
+
+LVC_SOC = LVC.parent / "lvc_soc.template"
+T1, T2 = StateLabel(3, 1), StateLabel(3, 2)
+SPIN_FREE = (S0, S1, T1, T2)
+ROWS = (0, 1, 2, 3)  # the Ms = -1 expanded rows of S0, S1, T1, T2 (n = 2, m = 2)
+
+
+def _soc_model():
+    return LVCModel.from_template(LVC_SOC, spin_orbit=True)
+
+
+def test_a_spin_orbit_model_is_served_as_its_spin_free_view():
+    model = _soc_model()
+    backend = ModelBackend(model)
+    assert backend.states == SPIN_FREE
+    assert backend.capabilities.soc is True
+    q = _coords(model)
+    result = backend.compute(Request(q, gradients=frozenset(SPIN_FREE), soc=True))
+    snap = model.evaluate(q.reshape(-1), None)
+    assert result.states == SPIN_FREE
+    np.testing.assert_allclose(
+        [result.energies[s] for s in SPIN_FREE], snap.energies[list(ROWS)], rtol=0, atol=1e-12
+    )
+    for label, row in zip(SPIN_FREE, ROWS, strict=True):
+        np.testing.assert_allclose(
+            result.gradients[label].reshape(-1), snap.gradients[row], rtol=0, atol=1e-12
+        )
+    assert result.hamiltonian is not None and result.hamiltonian.shape == (8, 8)
+    np.testing.assert_allclose(result.hamiltonian, snap.hamiltonian, rtol=0, atol=1e-12)
+    assert result.hamiltonian_labels == (
+        "S0", "S1", "T1(-1)", "T2(-1)", "T1(0)", "T2(0)", "T1(+1)", "T2(+1)"
+    )  # fmt: skip
+    assert backend.compute(Request(q)).hamiltonian is None  # only when requested
+
+
+def test_the_spin_free_overlaps_and_nacs_have_exact_zero_cross_blocks():
+    model = _soc_model()
+    backend = ModelBackend(model)
+    first = model.evaluate(_coords(model).reshape(-1), None)
+    backend.compute(Request(_coords(model)))
+    result = backend.compute(
+        Request(
+            _coords(model, 0.01),
+            overlaps=True,
+            nacs=frozenset({(S0, S1), (S0, T1), (T1, T2)}),
+            soc=True,
+        )
+    )
+    snap = model.evaluate(_coords(model, 0.01).reshape(-1), first)
+    assert result.overlaps.shape == (4, 4)
+    assert np.all(result.overlaps[:2, 2:] == 0.0) and np.all(result.overlaps[2:, :2] == 0.0)
+    np.testing.assert_allclose(
+        result.overlaps, snap.overlaps[np.ix_(ROWS, ROWS)], rtol=0, atol=1e-12
+    )
+    assert np.all(result.nacs[(S0, T1)] == 0.0)
+    np.testing.assert_allclose(result.nacs[(T1, T2)].reshape(-1), snap.nacs[2, 3], atol=1e-12)
+    np.testing.assert_allclose(result.nacs[(S0, S1)].reshape(-1), snap.nacs[0, 1], atol=1e-12)
+    assert 0.9 < result.meta["overlap_min_singular_value"] <= 1.0 + 1e-12
+    np.testing.assert_allclose(result.hamiltonian, snap.hamiltonian, rtol=0, atol=1e-12)
+
+
+def test_compute_more_serves_triplet_gradients():
+    model = _soc_model()
+    backend = ModelBackend(model)
+    backend.compute(Request(_coords(model), soc=True))
+    more = backend.compute_more(gradients=frozenset({T2}))
+    snap = model.evaluate(_coords(model).reshape(-1), None)
+    assert set(more.gradients) == {T2}
+    np.testing.assert_allclose(more.gradients[T2].reshape(-1), snap.gradients[3], atol=1e-12)
+
+
+@pytest.mark.parametrize(("flag", "spin_orbit"), [(None, False), ("0", False), ("1", True)])
+def test_the_canned_model_switches_on_spin_orbit_coupling(monkeypatch, flag, spin_orbit):
+    from gqteashmd.testing import canned_lvc
+
+    monkeypatch.setenv(canned_lvc.LVC_TEMPLATE_ENV, str(LVC_SOC))
+    if flag is None:
+        monkeypatch.delenv(canned_lvc.LVC_SOC_ENV, raising=False)
+    else:
+        monkeypatch.setenv(canned_lvc.LVC_SOC_ENV, flag)
+    assert canned_lvc.LVC_SOC_ENV == "GQTEASHMD_CANNED_LVC_SOC"
+    model = canned_lvc.canned_model()
+    assert model.spin_orbit is spin_orbit and model.state_counts == (2, 0, 2)
