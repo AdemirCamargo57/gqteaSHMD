@@ -16,7 +16,9 @@ Linux only.
     spin-expanded order. Trajectories start in a singlet.
   - New `[dynamics]` keys `gradient_transformation = "ngt" | "none"` (default `"ngt"`) and
     `eselect_eV` (default off: every spin-free gradient at every step; set: only the gradients
-    within this energy of the active state, with the core's own mask). With triplets the input
+    within this energy of the active state, with the core's own mask; without triplets it saves
+    nothing, but with `coupling = "nacdr"` the mask also zeroes the couplings outside the
+    window, so it changes the dynamics). With triplets the input
     must use `coupling = "overlap"`, `gradient_transformation = "none"` (no couplings between
     two triplets from PySCF 2.14), `hopping = "sharc"` or `"none"` and
     `ekin_correction = "parallel_vel"`; every violation is reported at once (exit 2), and
@@ -30,8 +32,10 @@ Linux only.
     runs only).
   - The `analysis` stage fits the excited singlets by default with triplets, and reports the
     changes of the active spin-free state by kind (S-S, S-T, T-S, T-T; at a hop or without
-    one), the pairs and the first singlet-to-triplet time (`analysis.json` `transitions`;
-    `report.md` `## Intersystem crossing`).
+    one), the pairs and the first change to a triplet-dominated active state, which can be a
+    flicker without a hop (`analysis.json` `transitions`; `report.md` `## Intersystem crossing`;
+    the counts cover the complete trajectories only, so they are zeros, not null, when none is
+    complete).
   - Validated by the SHARC 4.1 swap test (`sharc.x` driving our PySCF backend through our own
     `QM.out` provider) on thioformaldehyde/6-31G, within bounds fixed before the runs:
     SA-CASSCF(4,3) 2S+2T and CIS 3S+3T hopping off over 41 steps, CIS hopping on over 85 steps
@@ -42,7 +46,7 @@ Linux only.
     the coupling term of the force is left out with triplets (its singlet part measured at
     most 1.5e-5 of the force on one trajectory); the spin-orbit operator and every spin-free
     gradient are computed at every step (thioformaldehyde SA-CASSCF about 4.1 s per step with
-    8 threads); no singlet-triplet hop has run through the stage in a test; no
+    8 threads); no test runs a singlet-triplet hop through the stage; no
     energy-conservation test with spin-orbit coupling.
 - Spin-orbit coupling matrix elements from PySCF (triplets and SOC, sub-project 2;
   USER_MANUAL 4.2, 5.3, 8.6.10; report
@@ -138,7 +142,8 @@ excitations`); `optimize` and `frequencies` are not affected.
 The dynamics with triplets make no existing project stale: no stage version changed
 (`dynamics` 3, `analysis` 4), the two new keys are left out of the `dynamics` fingerprint at
 their defaults, and without triplets the requests, `steps.log`, `output.h5` (`schema_version`
-1), the summaries and the analysis are unchanged. `.gqteashmd/config.json` of a project with
+1), the summaries and the analysis are unchanged (a whole canned singlet run byte-identical to
+`main`'s apart from the wall time, checked by the final review). `.gqteashmd/config.json` of a project with
 `[dynamics]` gains the keys `gradient_transformation` and `eselect_eV` (no check compares it).
 A project that turns triplets on for its dynamics needs `gradient_transformation = "none"`;
 for `casscf` it is stale from `optimize` (the triplets join the state average).
