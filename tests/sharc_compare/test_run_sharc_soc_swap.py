@@ -332,6 +332,79 @@ def test_our_run_does_not_halve_a_step_sharc_takes_whole(tmp_path):
     assert len(ours["rows"]) == 5 and np.all(ours["rows"]["ticks"] == 0)
 
 
+def _stub_search(monkeypatch, outcomes):
+    """``search`` over the LVC model with ``run_sharc`` replaced: ``outcomes[sample]`` is
+    ("records", n_printed, active, active_sf) or ("raise", message)."""
+    model = _lvc_model()
+    start = _lvc_start(model)
+    monkeypatch.setattr(swap, "SETTINGS", {**swap.SETTINGS, "lvc": {"singlets": 2, "triplets": 2}})
+    monkeypatch.setattr(swap, "read_start", lambda path, sample: start)
+    monkeypatch.setattr(swap, "make_backend", lambda *a, **k: ModelBackend(model))
+    monkeypatch.setattr(swap, "masses_per_coordinate", lambda s: model.masses)
+
+    def fake_run_sharc(provider, start, options, *, n_steps, work_dir, sharc_home):
+        sample = int(Path(work_dir).name.split("_")[1])
+        outcome = outcomes[sample]
+        if outcome[0] == "raise":
+            raise RuntimeError(outcome[1])
+        _, n_printed, active, active_sf = outcome
+        return SimpleNamespace(n=n_printed, active=active, active_sf=active_sf)
+
+    def fake_records(traj, n, m):
+        return {
+            "steps": np.arange(traj.n),
+            "active": np.full(traj.n, 4) if traj.active is None else np.asarray(traj.active),
+            "active_sf": np.full(traj.n, 1)
+            if traj.active_sf is None
+            else np.asarray(traj.active_sf),
+        }
+
+    monkeypatch.setattr(swap, "run_sharc", fake_run_sharc)
+    monkeypatch.setattr(swap, "sharc_records", fake_records)
+
+
+def test_the_search_stops_at_the_first_sample_with_a_singlet_triplet_hop(monkeypatch, tmp_path):
+    full = swap.MAX_STEPS + 1
+    active = np.full(full, 4)
+    active[30:] = 6  # a hop at step 30 ...
+    active_sf = np.full(full, 1)
+    active_sf[30:] = 2  # ... from S1 to T1
+    _stub_search(
+        monkeypatch,
+        {0: ("records", full, None, None), 1: ("records", full, active, active_sf)},
+    )
+    report = swap.search(
+        samples_h5=tmp_path / "unused.h5",
+        method="lvc",
+        sharc_home=tmp_path,
+        work_dir=tmp_path / "w",
+        out=tmp_path / "search.json",
+    )
+    assert [r["sample"] for r in report["runs"]] == [0, 1]
+    assert report["found"] == {"sample": 1, "first_singlet_triplet_hop": 30}
+    assert "stopped" not in report
+
+
+@pytest.mark.parametrize(
+    "outcome", [("raise", "sharc.x failed"), ("records", 120, None, None)], ids=["fail", "short"]
+)
+def test_an_undetermined_sample_stops_the_search(monkeypatch, tmp_path, outcome):
+    """A failed run, or one that printed fewer than 201 steps without a hop, is neither "no hop"
+    nor a reason to go on: the rule takes the first sample by index."""
+    _stub_search(monkeypatch, {0: ("records", swap.MAX_STEPS + 1, None, None), 1: outcome})
+    report = swap.search(
+        samples_h5=tmp_path / "unused.h5",
+        method="lvc",
+        sharc_home=tmp_path,
+        work_dir=tmp_path / "w",
+        out=tmp_path / "search.json",
+    )
+    assert [r["sample"] for r in report["runs"]] == [0, 1]
+    assert report["found"] is None
+    assert report["stopped"]["sample"] == 1 and "error" in report["runs"][1]
+    assert "error" not in report["runs"][0]
+
+
 def test_the_start_round_trips_through_json():
     model = _lvc_model()
     start = _lvc_start(model)

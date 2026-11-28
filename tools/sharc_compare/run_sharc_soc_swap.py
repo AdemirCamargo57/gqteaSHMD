@@ -517,7 +517,10 @@ def search(
 ) -> dict[str, Any]:
     """SHARC's own runs (sharc.x on our provider, hopping on, ``rngseed`` 2029, 200 steps) on
     samples ``first``, ``first + 1``, ... (at most sample 19) until one has a singlet-triplet hop;
-    every sample's result is written to ``out`` (JSON) as soon as it is known."""
+    every sample's result is written to ``out`` (JSON) as soon as it is known. A sample whose run
+    failed, or printed fewer than 201 steps without a singlet-triplet hop, is undetermined: it is
+    recorded with ``error``, ``stopped`` names it, and the search stops (it counts neither as "no
+    hop" nor as a reason to go on, because the rule takes the first sample by index)."""
     work_dir, out = Path(work_dir), Path(out)
     work_dir.mkdir(parents=True, exist_ok=True)
     options = dynamics_options(hopping="sharc", hop_energy="previous")
@@ -564,16 +567,24 @@ def search(
                     "min_singular_value": min(model.min_singular_values, default=None),
                 }
             )
-        except Exception as exc:  # recorded; the search goes on with the next sample
+            if not hops and len(records["steps"]) < MAX_STEPS + 1:
+                entry["error"] = (
+                    f"SHARC printed {len(records['steps'])} of {MAX_STEPS + 1} steps and no "
+                    "singlet-triplet hop: the sample is undetermined"
+                )
+        except Exception as exc:  # recorded; the search stops (below)
             entry["error"] = f"{type(exc).__name__}: {exc}"
             hops = []
         entry["wall_time_s"] = time.perf_counter() - started
         report["runs"].append(entry)
         if hops:
             report["found"] = {"sample": sample, "first_singlet_triplet_hop": hops[0]}
+        elif "error" in entry:
+            # the rule takes the first sample by index, so an undetermined sample ends the search
+            report["stopped"] = {"sample": sample, "reason": entry["error"]}
         out.write_text(json.dumps(jsonable(report), indent=1) + "\n")
         print(json.dumps(jsonable(entry)), flush=True)
-        if hops:
+        if hops or "error" in entry:
             break
     return report
 

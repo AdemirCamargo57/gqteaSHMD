@@ -155,6 +155,7 @@ def test_swap_hopping_off(hopping_off):
     run, last = hopping_off, hopping_off["last"]
     assert np.array_equal(run["theirs"]["steps"], np.arange(last + 1)), "SHARC's printed steps"
     assert run["result"]["outcome"] == "finished", run["result"]
+    assert run["result"]["n_rejections"] == 0, f"our run rejected steps: {run['result']}"
     assert np.array_equal(run["diffs"]["steps"], np.arange(last + 1)), "our records' steps"
     found = swap.violations(run["diffs"], last)
     assert not found, "; ".join(found[:20]) + f" ... ({len(found)} in all); {_summary(run, last)}"
@@ -183,7 +184,8 @@ def hopping_on(request, tmp_path_factory):
     hops = swap.singlet_triplet_hops(run["theirs"], run["n_singlets"])
     run["sharc_hops"] = hops
     run["our_hops"] = swap.singlet_triplet_hops(run["ours"], run["n_singlets"])
-    run["last"] = swap.window_end(hops[0]) if hops else None
+    run["recorded_hop"] = int(recorded)
+    run["last"] = swap.window_end(int(recorded))  # the pre-registered window
     print(f"\n[soc swap b] {method}:\n{swap.format_table(run['diffs'])}")
     changes = np.flatnonzero(np.diff(run["theirs"]["active"])) + 1
     print(
@@ -192,16 +194,15 @@ def hopping_on(request, tmp_path_factory):
         f"active sf SHARC {run['theirs']['active_sf'].tolist()}, "
         f"ours {run['ours']['active_sf'].tolist()}"
     )
-    if run["last"] is not None:
-        last = run["last"]
-        print(f"[soc swap b] {_summary(run, last)}; our result {run['result']}")
-        probabilities = run["diffs"]["probabilities"][run["diffs"]["steps"] <= last]
-        print(
-            f"[soc swap b] {method}: max |d probability| {float(probabilities.max()):.3e} "
-            f"(reported); near ties SHARC {swap.near_ties(run['theirs'], last)}, "
-            f"ours {swap.near_ties(run['ours'], last)}"
-        )
-        _report(f"swap_b_{method}", {**run, "maxima": swap.maxima(run["diffs"], run["last"])})
+    last = run["last"]
+    print(f"[soc swap b] {_summary(run, last)}; our result {run['result']}")
+    probabilities = run["diffs"]["probabilities"][run["diffs"]["steps"] <= last]
+    print(
+        f"[soc swap b] {method}: max |d probability| {float(probabilities.max()):.3e} "
+        f"(reported); near ties SHARC {swap.near_ties(run['theirs'], last)}, "
+        f"ours {swap.near_ties(run['ours'], last)}"
+    )
+    _report(f"swap_b_{method}", {**run, "maxima": swap.maxima(run["diffs"], last)})
     return run
 
 
@@ -210,9 +211,15 @@ def test_swap_hopping_on(hopping_on):
     and the same active spin-free state (spec 5.1)."""
     swap = _load("run_sharc_soc_swap")
     run, last = hopping_on, hopping_on["last"]
-    assert last is not None, (
-        f"SHARC's run has no singlet-triplet hop (recorded {run['recorded_hop']})"
+    # the window was fixed by the start search's hop: the re-run must reproduce it (an earlier
+    # hop would shorten the pre-registered window, a later one change it)
+    hops, recorded = run["sharc_hops"], run["recorded_hop"]
+    assert hops and hops[0] == recorded, (
+        f"the re-run's first singlet-triplet hop is at step {hops[0] if hops else None}, "
+        f"the start search recorded step {recorded}"
     )
+    # a halved step would shift the replayed random stream: the replay needs none
+    assert run["result"]["n_rejections"] == 0, f"our run rejected steps: {run['result']}"
     assert last <= int(run["theirs"]["steps"][-1]), f"SHARC's run ends before step {last}"
     assert int(run["diffs"]["steps"][-1]) >= last, f"our records end before step {last}"
     assert np.array_equal(run["diffs"]["steps"][: last + 1], np.arange(last + 1))
