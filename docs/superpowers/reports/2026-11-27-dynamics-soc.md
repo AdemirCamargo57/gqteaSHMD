@@ -1,0 +1,304 @@
+# The `dynamics` stage with triplets and spin-orbit coupling (triplets and SOC, sub-project 3): report
+
+Status: **the `dynamics` stage runs surface hopping with singlets, triplets and spin-orbit coupling (SOC) from PySCF, for SA-CASSCF and TDA/TDDFT, in the diagonal basis of the dynamics core; `output.h5` stores the spin-free (MCH) populations beside the diagonal ones; the `analysis` stage reports singlet and triplet populations, the singlet-triplet transitions and the fit of the excited singlets.** Every comparison that could run passes its pre-registered bounds (spec 5.1: |dq| <= 1e-5 bohr, |dv| <= 1e-6 a.u., |dE| <= 1e-6 Eh, |dP| <= 1e-5, per step and component):
+
+- the SHARC swap test (`sharc.x` driving our PySCF backend through our own `QM.out` provider) on thioformaldehyde (H2CS)/6-31G, hopping off over 41 steps (the largest over the recorded runs): SA-CASSCF(4,3) 2S+2T |dq| 2.18e-7 bohr, |dP| 5.31e-9; CIS 3S+3T |dq| 1.85e-6 bohr, |dP| 5.86e-6 (asserted);
+- the swap test with hopping on and SHARC's random numbers replayed, CIS 3S+3T, steps 0-84 (a singlet-triplet hop at step 64 plus 20 steps): |dq| 5.92e-7 bohr, |dP| 6.05e-6 (the largest over the recorded runs), the same active spin-free state at all 85 steps, the hops at the same steps 1, 60 and 64 (asserted);
+- the analytic spin-orbit pipeline through `dynamics` and `analysis` (a fake backend serving the LVC spin-orbit model of P7a-2): populations equal a direct run of the core to 2.8e-15, positions and the random stream exactly; a kill and resume byte-identical (asserted, development tests);
+- a PySCF smoke run per method on H2CS: finite records, spin-free populations summing to 1 within 1.6e-15, the Hamiltonian Hermitian within 2e-18 Eh (asserted).
+
+**One comparison is BLOCKED and waits for the owner (section 5.4):** the SA-CASSCF swap with hopping on has no start under the pre-registered rule, because none of the 20 Wigner samples hops at all in SHARC's 200-step run; so **the SA-CASSCF hopping path is not compared with SHARC**. **Margins:** the CIS population differences vary between runs of the same code (CIS (a) 1.9e-6 to 5.9e-6, CIS (b) 9.5e-7 to 6.0e-6, against 1e-5; section 5.3), a flakiness risk of a pre-registered bound, not loosened. **The force term that `gradient_transformation = "none"` drops** (required with triplets, owner decision 3) is at most 1.505e-5 of the force used along one SA-CASSCF trajectory (report, section 6), which says nothing about a hopping or triplet-dominated trajectory. **Not in scope or not available:** triplet-triplet NACs (PySCF 2.14), so `coupling = "overlap"` only; the NGT term with triplets; triplet initial states; an ISC ensemble study; a direct comparison with `SHARC_PYSCF.py` (it refuses triplets). **Without triplets nothing changes:** no stage version and no fingerprint changed at the defaults, and the singlet outputs are byte-identical (section 12).
+
+Date: 2026-11-27 to 2026-11-28. Branch `feat/dynamics-soc` (from `main` `5f0f2c1`). The spec is `docs/superpowers/specs/2026-11-27-dynamics-soc-design.md` (owner-approved 2026-11-27; spec commit `dfcad1e`; erratum at its top). The plan is `docs/superpowers/plans/2026-11-27-dynamics-soc.md` (plan commit `df5ee82`; its "Conventions" and "Plan rulings" PR1-PR8 are binding where they differ from the spec). The tasks are these commits:
+
+- `789bef3`: Task 1, the SHARC spin-orbit `QM.in`/`QM.out`/`output.dat` probe fixtures (`tests/data/sharc/soc/`); the facts and timings are a measurement;
+- `227be7b`: Task 2, `trajectory/spin_expansion.py`;
+- `14f3160`: Task 3, the configuration (the two keys, the triplet rules, the fingerprint rule);
+- `c2d6d8f` and its fix `b77b877`: Task 4, the fake backend with SOC and `BackendModel` with triplets (the fix checks the order and Hermiticity of the Hamiltonian);
+- `32b6164`: Task 5, the step log and `output.h5` schema 2;
+- `8bd67a9` and its fix `8a63b59`: Task 6, the stage and the canned spin-orbit pipeline (the fix pins the random stream and the active states against a direct run);
+- `7926171` and its fix `d1e77b1`: Task 7, the analysis (the fix keeps every spin-free change in `output.h5` and checks the hop records);
+- `432a9ea` and its follow-up `f522327`: Task 8, the PySCF smoke tests (the follow-up replaces the CIS hop assertion by a triplet-population bound);
+- `a5f140d` and its fix `547f0fa`: Task 9, the SHARC swap harness and the asserted swap tests (the fix pins the recorded singlet-triplet hop);
+- `0cfa0d7`: Task 10, the dropped-term report.
+
+Task 11 (the test tiers) is the controller's measurement, with no diff; Task 12 is this report and the documents.
+
+**Sources of every number:**
+
+- the task reports in the git-ignored ledger `.superpowers/sdd/2026-11-27-dynamics-soc/` (`task-1-report.md` to `task-10-report.md`, `progress.md` with every ruling, the Task 11 counts and the deferred minors);
+- the throwaway scripts and runs named there (in WSL `~/dynsoc_task1/`, `~/task7_probe/`, `~/dynsoc_task9/`, `~/dynsoc_task10/`; the Task 9 `pnohop.py` in the scratchpad). None is in the repository.
+
+**Labels:**
+
+- *Asserted*: a pytest assertion.
+- *Report*: measured, with no rule.
+- *Inference*: not established by a measurement.
+
+## 1. What was built
+
+### 1.1 The spin expansion (Task 2, `trajectory/spin_expansion.py`)
+
+The backend stays spin-free: energies and gradients per state `S0 ... S(n-1), T1 ... Tm`, block-diagonal overlaps, and with `Request(soc=True)` the phased spin-expanded Hamiltonian (sub-project 2). The new pure-NumPy module (it imports NumPy and `dynamics/spin.py` only) is the one statement, for the stage, of the core's canonical expanded order: size `N = n + 3m`; the expanded index of S_I is I, of (T_J, M) `n + M_index m + (J - 1)` with M_index 0, 1, 2 for Ms = -1, 0, +1. `expand_energies` and `expand_gradients` repeat each triplet's value in its three Ms rows; `expand_overlaps` builds the block-diagonal matrix (the singlet block as is, the triplet block `kron(I_3, S_TT)`, the cross blocks zero); `spin_free_index`, `expanded_index` and `spin_free_populations` (sums over Ms) go the other way. 9 tests (asserted: the order equals `dynamics.spin.expanded_states`, the `kron` blocks, the round trips).
+
+### 1.2 The input (Task 3, `config/schema.py`, `stages/dynamics.py`)
+
+- Two new `[dynamics]` keys: `gradient_transformation = "ngt" | "none"` (default `"ngt"`, the `DynamicsOptions` default; without triplets both are identical in effect, because U is `None`) and `eselect_eV` (default off; finite and > 0 otherwise; passed to the core as `eselect_Eh = eselect_eV / HARTREE_IN_EV`). `fingerprint_inputs` leaves out `gradient_transformation` when it is `"ngt"` and `eselect_eV` when it is `None` (the `hop_energy` precedent), so no fingerprint changes at the defaults (asserted against `main`'s key set, `MAIN_DYNAMICS_FINGERPRINT_KEYS`).
+- The "is planned" refusal of `triplets > 0` is gone. With `[electronic] triplets > 0` and a `[dynamics]` table, `ShmdConfig._consistent` reports every violation at once (joined by `; `, exit 2), each naming its key: `coupling = 'nacdr'` (no triplet-triplet NACs; use `'overlap'`), `gradient_transformation = 'ngt'` (its NAC term needs the NACs between all states; set `'none'`), `hopping = 'fssh'` and `ekin_correction = 'parallel_nac'` (they do not work with SOC, P7a-2 ruling R4). `hopping = "none"` is allowed (controller ruling; spec erratum). `DynamicsStage.check_config` refuses `soc_operator = "effective_charge"` with an element outside H, C, O, S before any trajectory (*Stage 'dynamics' with [electronic] triplets = 2 and soc_operator = 'effective_charge': no established effective nuclear charge for N (available: H, C, O, S); use soc_operator = 'somf'*); an unreadable geometry gives no problem there (`prepare` reports it).
+- `config.json` gains the two keys for every project with `[dynamics]` (controller ruling, the `hop_energy` precedent); no check compares `config.json` with `main`, and no fingerprint changes.
+- **Layering (deferred minor):** a rule of the `[dynamics]` table itself (`hopping = "fssh"` or `ekin_correction = "parallel_nac"` needs `coupling = "nacdr"`) is checked first and stops the validation there, so it hides the triplet rules, and following its advice ("set nacdr") leads to the triplet refusal on the next `validate`. Measured for this report with `gqteashmd validate` on the example input of USER_MANUAL 5.11 with `hopping = "fssh"`: the only message is *dynamics.hopping = 'fssh' needs coupling = 'nacdr'*.
+
+### 1.3 The adapter (Task 4, `trajectory/model.py`, `testing/fake_backend.py`, `testing/canned_lvc.py`)
+
+- `BackendModel(backend, masses, *, coupling, eselect_Eh=None)` with triplets: `labels` the spin-free labels; `n_states = N`; `n_singlets`, `n_triplets`, `n_spin_free`; `u` and `active` set by the runner before each step; `state_counts = (n, 0, m)`; `active_spin_free(u, active) = spin_free_index(n, m, mch_state(u, active))`. The constructor checks the canonical state order, refuses `coupling != "overlap"` with triplets and a backend without `Capabilities.soc`, and checks `eselect_Eh`.
+- Each evaluation requests energies, `soc = True`, overlaps (always), no NACs, and every spin-free gradient (or none under the window, below). The snapshot holds the expanded energies and gradients (NaN rows for states without a gradient, the P7b tripwire), zero NACs (N, N, f), the backend's Hamiltonian as a complex copy and the overlaps Löwdin-orthonormalised **per spin-free block** and then expanded (controller decision: the same matrix as a whole-matrix Löwdin, measured difference 0.0, but the cross blocks stay exactly zero). The core then finds an off-diagonal H and takes its diagonal-basis path (P7a-2): U tracked, restart format 2 stores it. The raw smallest singular value of the spin-free overlap matrix stays the overlap rejection signal.
+- Checks (fix `b77b877`): a missing or non-finite Hamiltonian is a non-retryable `ElectronicStructureError`, a wrong shape a `ValueError`; when the backend supplies `hamiltonian_labels` they must equal the canonical order; `max |H - H^dagger|` must be at most `HERMITICITY_TOLERANCE_EH = 1e-12` Eh. Without triplets the old code path runs line for line.
+- **The `eselect` window, the core's mask exactly** (spec 3.3): at the first geometry every spin-free gradient is requested (PR3: the active diagonal state is not known before U0). At a later geometry with `eselect_Eh`: `compute` with no gradient; `diagonal_basis(H', U)` on the very array stored as the snapshot's Hamiltonian; `selection_mask` around the active state's diagonal energy on the expanded energies stored in the snapshot; one `compute_more` for the kept spin-free states (a triplet's three Ms rows have one energy, so they are kept or dropped together). After a hop, `refresh_active_gradient` fetches the gradients the new active state's mask keeps and the snapshot lacks. A kept state without a gradient is a non-retryable electronic error. Without `eselect_eV` every gradient comes with `compute` and `compute_more` is never called. An empty window (no state within `eselect_eV`, the active one included) gives a zero force silently, the P7a-2 ruling R5 semantics (deferred minor).
+- `ModelBackend` over a model with `state_counts == (n, 0, m)` serves the spin-free view (PR4: a triplet's energy, gradient and overlaps from its Ms = -1 component; the model's expanded H with `Request(soc=True)`; `Capabilities.soc = m > 0`); `GQTEASHMD_CANNED_LVC_SOC=1` switches the canned LVC model to `spin_orbit=True` (PR5).
+- The runner sets `model.u = state.u` before each step.
+
+### 1.4 The step log and `output.h5` schema 2 (Task 5, `trajectory/store.py`, `trajectory/runner.py`)
+
+- `steps.log` of a triplet run keeps every existing column in the core's basis (`active`, `hop_from`, `hop_to`, `c_*`, `probabilities` diagonal, N columns; `energies` the snapshot's expanded MCH energies, N columns) and adds four columns after `v`: `energies_diag` (N), `active_mch` (the active **spin-free** index, `spin_free_index(n, m, mch_state(U', active))`), `energies_sf` (n + m) and `populations_mch` (the spin-free sums of `|U' c|^2`, computed when the record is made, so U is not logged). Without triplets the dtype is today's (asserted against a hard-coded list).
+- `output.h5` of a triplet run: `schema_version` 2, attributes `n_singlets`, `n_triplets` and (from the stage) `soc_operator`; `state_labels` the spin-free labels; `active`, `energies`, `populations` the spin-free values; **`hop_from`/`hop_to` the spin-free states before and after an accepted hop** (PR1: the active spin-free state of the previous log row and of this row, derived on the full log before thinning), so `analysis/hops.py` works on spin-free labels unchanged; new datasets at the end `active_diag`, `populations_diag`, `energies_diag`, `hop_from_diag`, `hop_to_diag`; `coefficients_*` and `probabilities` stay diagonal (N columns). Without triplets the file is `schema_version` 1 with today's datasets (asserted).
+- **The kept-row rule of schema 2** (Task 7 fix `d1e77b1`, controller ruling after the review): besides the rows kept today (full steps at multiples of `output_every`, every hop, frustrated hop, flag, row after a rejection, the last row), every row whose active spin-free state differs from the previous row's is kept, so every spin-free change is a record at its own time. Before the fix a change on a dropped substep row of a halved interval first appeared at the next kept record, and when that was a hop the analysis counted one wrong transition (the review's demonstration). Triplet files therefore get more records in halved intervals; schema 1 is unchanged.
+- An accepted diagonal hop whose spin-free state does not change is stored as such, e.g. (T1, T1) (controller ruling, PR1 literally); in the 20-step reference run of Task 5, 2 of 4 hops were within one triplet (report).
+- Runner fixes for triplets: `progress.json` and the result name the active spin-free label (PR6; a triplet run crashed with an `IndexError` before); `stop_after_s0_fs` counts a record as in S0 when its active spin-free state is S0 (PR8; tested with a model whose T1 lies below S0); the energy-jump fallback for a restart without `last_e_total_au` uses the diagonal energy with U (untested before, now tested).
+
+### 1.5 The stage (Task 6, `stages/dynamics.py`)
+
+- `run_task` passes `eselect_Eh` to `BackendModel`, writes `soc_operator` into the `output.h5` attributes of a triplet run, and refuses a triplet initial state with a non-retryable `TaskError` (*trajectory traj_… starts in T1; trajectories start in a singlet (an MCH state, P7a-2 ruling R7); rerun with --rerun-from selection*; `selection` already refuses triplets, so this is a guard). The MCH index of S_I is I, as without triplets.
+- The runner result of a triplet run gains `final_state` (the spin-free label of the last record's active state); `dynamics_summary.json` rows carry it and `dynamics_summary.md` gets a `final state` column, both for triplet runs only. A singlet summary has no such key or column (asserted).
+
+### 1.6 The analysis (Task 7, `analysis/hops.py`, `analysis/report.py`, `stages/analysis.py`)
+
+- The estimators read the spin-free `active` and `populations` of schema 2, so they run unchanged.
+- **The fit default with triplets** is the summed population of the excited singlets S1 ... S(n-1) (owner decision 6); without triplets every excited state, as before. `fit_states` still takes excited singlet labels only.
+- **Transitions** (`analysis.json` key `transitions`, triplet projects only): every change of the active spin-free state between consecutive records, by kind `S-S`, `S-T`, `T-S`, `T-T`, each split into `at_hop` (the later record has an accepted hop) and `without_hop` (the MCH character changed while the diagonal state stayed); `pairs`; `first_singlet_to_triplet_fs` (`per_trajectory`, `n_crossed`, `n_censored`, `mean`, `median`; censored like the S0 arrival; a change without a hop counts). They are counted **over the complete trajectories up to the horizon**, like the hops (controller decision; under `estimator = "censored"` with no complete trajectory the counts are zeros). A same-state hop such as T1 -> T1 is in the hop table (`hops.pairs`) but is not a transition.
+- **Consistency checks:** a schema-2 file whose `n_singlets`/`n_triplets` do not give its `state_labels` is a non-retryable `TaskError` (`--rerun-from dynamics`); at every hop record `(hop_from, hop_to)` must equal the active states of the previous and this record, over every trajectory an estimator uses, else a non-retryable `TaskError` (`--rerun-from dynamics`). The missing change is not reconstructed.
+- `report.md` gains `## Intersystem crossing` after `## Hops (complete trajectories)` (`not computed` when `transitions` is `null`; no block without triplets).
+- `hops.csv` is unchanged: in schema 2 its `from`/`to` are already spin-free (PR1); changes without a hop are listed in `analysis.json` only (controller ruling; spec erratum).
+- No stage version changed; the singlet `analysis.json` and `report.md` of 108 test files were byte-identical to the base (the Task 7 review's check).
+
+### 1.7 The tools (Tasks 9 and 10)
+
+- `tools/sharc_compare/run_sharc_soc_swap.py`: `SocSwapModel` (our `BackendModel` behind `run_sharc_lvc.QmServer` and `format_qm_out`, with `backend.reset()` at a fresh start, so `sharc.x` gets exactly the expanded snapshot our core sees), `dynamics_options`, `sharc_input`, `run_sharc`, `run_ours` (`TrajectoryRunner` with `ReplaySource` of SHARC's block-9 random numbers), `sharc_records`/`our_records` (the gauge-invariant quantities), `differences`, `maxima`, `violations`, `singlet_triplet_hops`, `window_end`, `near_ties`, and the start-search CLI `search`. Reused unchanged: `run_sharc_lvc.lvc_input`, `run_lvc_trajectory`, `parse_lvc_output_dat`, `run_sharc_pyscf_dynamics.interface_geometry`. Clean room: SHARC executed only.
+- `tools/validation/ngt_term_report.py` (PR7): the force term `"none"` drops, along one trajectory (section 6). A report script: JSON out, nothing asserted.
+
+## 2. Task 1: facts (report)
+
+The public SHARC 4.1 manual (sections 4.1, 5.3.1, 6.34.1, 6.34.2, 8.28; text extracted with a throwaway pypdf) and a probe: `sharc.x` for 3 steps of 0.5 a.u. on the P7a-2 LVC spin-orbit model (`lvc_soc.template`, 2S+2T, 8 expanded states) served by our own provider, with `coupling overlap`, `nogradcorrect`, `surf diagonal`, `ekincorrect parallel_vel`, EDC 0.1, `rngseed 7`, in three variants (no `grad_*` line, `grad_all`/`nac_all`, `grad_select`/`nac_select`/`eselect 0.5`). No SHARC source was read.
+
+- **The state order SHARC expects equals ours (no permutation).** The manual: n innermost, then Ms, then S. Observed: the MCH H that `sharc.x` printed equals our `QM.out` within 5.8e-17 off the diagonal and 4.5e-14 on it (print precision), the printed gradients ours within 4.1e-14, the overlaps within 4.0e-14. `sharc.x` adds its own +0.96e-12 to +1.04e-12 Eh to expanded indices 4, 5 (T1(0), T2(0)) and +1.96e-12 to +2.04e-12 Eh to 6, 7 (T1(+1), T2(+1)), nothing to 2, 3 (Ms = -1): the pattern of "state innermost, Ms in the middle" (the P7a-2 offsets).
+- **Requests:** step 0 `SOC`, `DM`, `GRAD all`; steps 1-3 the same plus `OVERLAP`; never `H` (`SOC` stands for the full Hamiltonian), `NACDR` or `PHASES`; one call per step. With `grad_select` and `eselect 0.5` step 0 still requests every gradient and steps 1-3 `GRAD 2 4 6 8` (1-based expanded indices of the states within 0.5 eV), but SHARC still expects every gradient in `QM.out` (manual 6.34.2). The interface sees the geometry with 7 decimals in angstrom.
+- **`output.dat`:** blocks 0-12 and 15 (step, MCH H, U with rows MCH and columns diagonal, dipoles, overlaps (at step 0 a placeholder of -123), diagonal coefficients, hopping probabilities, Ekin, the active state (diagonal, MCH), the random number (0.0 at step 0, the draws from step 1), runtime, geometry, velocities, gradients per expanded state), 13 significant digits, all read by the existing `parse_lvc_output_dat`. **E_tot is not printed:** it is `Re(U^dagger H U)[a, a] + Ekin`; the value from `output.dat` (0.16654314837831505 Eh at step 0) equals `output.lis`'s `tot` column (4.531870 eV). `state 2 mch` started in diagonal state 5 (1-based), MCH state 2, because S1 lies above the three T1 components; so the comparison uses the MCH (spin-free) state.
+- **Time per step (H2CS/6-31G at the committed geometry, 8 threads, `Request(gradients=all, overlaps=True, soc=True)`, SOMF; call 1 fresh, call 2 at a 0.01-bohr random displacement with a previous geometry; two repetitions with fresh backends; report):**
+
+| method | call | compute (s) | SOMF inside (s) | SOMF share | without SOC (s) |
+|---|---|---|---|---|---|
+| SA-CASSCF(4,3) 2S+2T | fresh (rep 1, 2) | 4.703, 4.474 | 0.688, 0.681 | 14.6 %, 15.2 % | 3.768 |
+| | previous orbitals (rep 1, 2) | 4.102, 4.167 | 0.671, 0.683 | 16.3 %, 16.4 % | 3.562 |
+| CIS 3S+3T (`td_conv_tol` 1e-7) | fresh (rep 1, 2) | 2.296, 2.299 | 0.692, 0.692 | 30.2 %, 30.1 % | 1.560 |
+| | previous orbitals (rep 1, 2) | 2.214, 2.232 | 0.679, 0.684 | 30.7 %, 30.6 % | 1.568 |
+
+  The SOMF operator alone takes 0.67-0.69 s for both methods (the AO operator does not depend on the method); turning SOC on costs +0.5 to +0.9 s per step for CASSCF and +0.65 to +0.74 s for CIS, nearly all of it the SOMF build. The fresh CASSCF call includes the reference search (guess `[10, 11, 12]` of 6, 1 solved, SA -436.4157948365 Eh, `reference_active_min_sv` 0.9967). Two repetitions of one displacement: lower estimates (deferred minor).
+
+## 3. The development tests (asserted; Tasks 2-7)
+
+These are written to test the code, not counted as validation (owner decision 4).
+
+- **The adapter against the model (Task 4; `lvc_soc.template` 2S+2T, Wigner seed 2, 30 steps of 10 a.u., `gradient_transformation = "none"`, replay `0.1 * default_rng(2).random(30)`):** round trip energies, gradients and H 0.0, overlaps 3.33e-16 (bounds 1e-12, 1e-10); the direct model against `BackendModel(ModelBackend(model))`: q and v exactly equal, c 1.82e-14 / 2.41e-14 (default kernel / SandyBridge) without `eselect` and 1.05e-14 / 1.01e-14 with `eselect_Eh` 0.05 (bound 1e-10); hops at step 1 (diagonal 4 -> 7) and at step 22 (7 -> 4, S1 -> T2(+1), p 0.144), asserted to contain the singlet-triplet hop. Non-orthogonal raw triplet overlaps: the adapter's equal `lowdin_orthonormalize(expand_overlaps(raw))` (0.0), orthonormal (8.9e-16), cross blocks exactly 0.
+- **The step log and `output.h5` (Task 5):** over 20 steps of the same model with `ReplaySource([0.0] * 400)`, `populations_mch` sums to 1 within 1e-12 and equals `spin_free_populations(|c_mch|^2)` within 1e-15; the run has a singlet-triplet hop and steps where the diagonal and spin-free active indices differ; a spin-orbit crash at compute call 12 and resume gives a byte-identical `steps.log` and equal `output.h5` datasets and attributes; `stop_after_s0_fs` ends as `stopped_in_s0` after 3 grid steps with T1 below S0, where the old diagonal-index rule would never stop; the energy-jump fallback uses the diagonal energy.
+- **The canned spin-orbit pipeline (Task 6; `lvc_soc.template`, 4 trajectories from S1, 20 fs at dt 0.25 fs, the stage's own seeds):** every trajectory equals a direct `run_trajectory` of the LVC model with the stage's sample, MCH index 1 and `task_rng(seed, "dynamics", k)` over all 81 records: populations 2.8e-15, positions 0.0 (bound 1e-10), the random numbers and the active spin-free states exactly (fix `8a63b59`: before it the comparison passed with the stream k + 1 too; with that stream 80 of 80 random numbers now mismatch); `final_state` against the direct run; a kill at compute call 30 and resume byte-identical `output.h5` for all 4 tasks (`slow`); raising `tmax_fs` from 10 to 20 fs extends all four to the direct 80-step run; `eselect_eV` reaches `BackendModel`. The run has 1 hop, (S1, S1), and **no singlet-triplet hop**; the triplet population reaches 0.0065-0.0229 per trajectory (report), so the test asserts a triplet population > 1e-3 (ruling, section 11).
+- **The analysis (Task 7):** transitions on hand-built files (S1 -> T1 at a hop, T1 -> T2 without, T2 -> S0 at a hop; a T1 -> T1 hop in the hop table only), the fit default, the ISC block, the consistency refusals (3 cases plus the stage, and a wrong `n_singlets` on a singlet file); the canned spin-orbit pipeline through `canned_analysis`: classical populations equal a recount exactly, quantum populations to 1e-15, `fit_states == ["S1"]`, `transitions.kinds` equal to a recount (a structural check: the canned run has **no spin-free transition**; seeds 0-3 probed, report), `(hop_from, hop_to) == (active[r-1], active[r])` at every hop record.
+
+## 4. PySCF smoke tests (Task 8; `tests/validation/test_pyscf_soc_dynamics.py`, marker `pyscf`)
+
+H2CS/6-31G at the committed geometry displaced by 0.01 bohr along the unit vector of `default_rng(7).standard_normal(12)`, zero velocities, S1, dt 0.25 fs, 8 steps, `ReplaySource([0.0] * 400)`, `hopping = "sharc"`, `coupling = "overlap"`, `gradient_transformation = "none"`, 8 threads, `TrajectoryRunner` with the library `RunSettings` defaults (the energy-jump signal off); SA-CASSCF(4,3) 2S+2T (`scf_conv_tol` 1e-12, `conv_tol` 1e-11, `conv_tol_grad` 1e-6) and CIS 3S+3T (`td_conv_tol` 1e-7). Nothing is asserted about energy conservation (owner decision 4).
+
+| | SA-CASSCF | CIS | bound |
+|---|---|---|---|
+| finished, 8 grid steps, no rejection, finite records | yes | yes | asserted |
+| largest \|sum `populations_mch` - 1\| (default / SandyBridge) | 8.9e-16 / 6.7e-16 | 1.55e-15 / 1.11e-15 | 1e-10 |
+| max \|H - H^dagger\|, last snapshot | 1.95e-18 Eh | 5.4e-19 Eh | 1e-12 Eh |
+| max \|H - H^dagger\| over the 9 backend results (report) | 1.95e-18 Eh | 8.7e-19 Eh | |
+| hops | 5 (asserted >= 1) | 0 | |
+| triplet population at 2 fs | | 2.15e-3 (T1 7.6e-12, T2 2.04e-3, T3 1.08e-4) | > 1e-4 (asserted) |
+| time | 38.7 s | 25.7 s | |
+
+- **SA-CASSCF hops (report):** S1 -> S0 (step 1), S0 -> T1 (2), T1 -> S0 (4), S0 -> T1 (6), T1 -> S0 (8); the largest probability per record between 0 and 4.1e-4, the step-1 hop on 1.6e-18. They are forced by xi = 0 (a hop goes to the first state with a positive probability, however small): a bookkeeping test, not physics. The S0 population 0.329 after the step-1 hop is the EDC damping after a release of about 0.084 Eh into kinetic energy (inference from the numbers, tau about 26 a.u.).
+- **CIS has no hop (report):** every probability is exactly 0 under both kernels, because the active diagonal population rises at every step (0.99769 -> 0.99818) and `sharc_probabilities` returns zeros when the active population does not fall. The triplet population rises through the SOC mixing of the amplitudes. The plan's "at least one hop" assertion therefore holds for CASSCF only (ruling, section 11).
+- Under SandyBridge: the same hop sequence, the probabilities agree to about 3 digits; 4 passed in 65.59 s.
+
+## 5. The SHARC swap test (asserted; Task 9; `tests/validation/test_sharc_soc_swap.py`, markers `sharc`, `pyscf`, `slow`)
+
+### 5.1 Setup
+
+- `sharc.x` drives our PySCF backend through `SocSwapModel` (section 1.7): every step it gets our complex spin-orbit H, the n + 3m expanded gradients, from step 1 the expanded overlaps, zero dipoles; no permutation (section 2). SHARC settings: `coupling overlap`, `nogradcorrect`, `surf diagonal`, `ekincorrect parallel_vel`, `reflect_frustrated none`, EDC 0.1 Eh, SHARC hopping, 25 substeps, dt 0.5 fs, `state 2 mch` (S1), `coeff auto`. Ours: `coupling "overlap"`, `gradient_transformation "none"`, `parallel_vel`, frustrated `keep`, EDC `"sharc"`, `substep_interpolation "endpoint"`; `hop_energy "previous"` for (b) (SHARC's rule, P9b), `"current"` for (a) (no effect without hops). Two independent `PySCFBackend`s with the Task 8 settings, 8 threads, the CASSCF reference at the samples' equilibrium geometry.
+- **Our step rejection is kept out of the way:** `overlap_threshold = 1e-9` and the energy-jump signal off (the library default), because SHARC has no rejection and a halved step on our side would change the integrator and the replayed stream (decided after a number was seen, section 11). The 0.5 eV drift stop stays (it ends a run, it does not alter one); the CASSCF rung signal cannot be switched off and did not fire. Both live tests assert `n_rejections == 0`.
+- **Quantities, per step and component** (gauge-invariant under U): q, v, E_tot (SHARC: `Re(U^dagger H U)[a, a] + E_kin`; ours `e_total`), the active state's diagonal energy, the spin-free MCH populations (`|U c|^2` summed over Ms); for (b) also the active spin-free state (SHARC's from its printed MCH state, ours `active_mch`). Probabilities and near ties (`|cumulative p - xi| < 1e-5`) are reported only.
+- Both runs start from the sample rounded to 7 decimals in angstrom; afterwards our provider evaluates `sharc.x`'s rounded interface geometry, our own run its unrounded one (P7b precedent).
+
+### 5.2 The start search (plan Task 1 Step 3, moved to Task 9 by the pre-flight ruling; report)
+
+- **Samples:** a throwaway project (`~/dynsoc_task9/samples/`): `tests/data/thioformaldehyde.xyz` (the RHF/6-31G\* optimum), `tda`/`hf`/`6-31g*` so that S0 is RHF/6-31G\*, `[optimize] enabled = false`, analytic frequencies (1098, 1158, 1181, 1658, 3300, 3390 cm-1), `[sampling] n_samples = 20`, T = 0, `project.seed = 2029`; 17 s. **The samples come from RHF/6-31G\* frequencies** (the plan's text) **and the dynamics run in 6-31G** (the spec's system): the samples are not drawn from the harmonic surface of the dynamics' own level (disclosed, not reconciled).
+- **The rule** (spec 5.1, fixed before any comparison): the first sample by index whose SHARC run (hopping on, 200 steps of 0.5 fs, from S1) has a singlet-triplet hop (the active diagonal index changes and the spin-free state of SHARC's printed MCH state changes multiplicity); none in the first 20 is BLOCKED. Chosen from SHARC's runs alone. A failed run, or one that printed fewer than 201 steps without such a hop, stops the search (fix `547f0fa`); all 8 CIS and 20 CASSCF runs printed 201 steps with no error.
+- **`rngseed` 2029 for every sample** (the project seed): all 20 SHARC runs saw the same 200 random numbers.
+- **CIS 3S+3T:** samples 0-6 have no hop of any kind; **sample 7** hops at steps 1, 60, 64, 126 and 128. Steps 1 and 60 are reorderings between S1 and the T2 cluster (S1 -> S1 in spin-free terms); **step 64 is the first singlet-triplet hop, S1 -> T2**, into a strongly mixed S1/T2 state whose dominant character returns to S1 at step 65 without a hop. So (b) compares steps 0-84. CPU 8624 s summed over the 8 runs (1024-1140 s per 200-step run, 817 s for sample 7).
+- **SA-CASSCF(4,3) 2S+2T: no hop of any kind in samples 0-19** (`~/dynsoc_task9/search/casscf_merged.json`): the summed hopping probability per 200-step run 0.005-0.18, the largest single-step probability 4.1e-3, the smallest raw overlap singular value 0.966. **(b) is BLOCKED**, and CASSCF (a) starts from sample 0 (spec 5.1 assumed one start per method chosen by the (b) rule; it gave none). CPU 29600 s summed (three workers; the rule still takes the lowest index overall).
+- **The effect of the shared `rngseed`** (the Task 9 review's measurement, checked by the implementer; report): the hopping probabilities summed over steps 1-200 of all 20 CASSCF runs come to **1.432**. Treating each step's total hop probability as independent, with independent random streams per sample, P(no hop of any kind in samples 0-19) = prod(1 - p) = **0.238** (exp(-1.432) = 0.239), so a hop of **any kind** somewhere in the 20 samples would have had a probability of about 0.76. **A singlet-triplet hop alone would have had a lower probability** (these sums count hops of every kind; the share of singlet-triplet hops was not computed). The independence is an approximation (inference). With the shared stream the observed "no hop" is not 20 independent trials.
+- **Wall clock of the search:** 2026-11-27 20:45 to 2026-11-28 12:59, including about 10.5 h in which the host was asleep (about 21:50-08:25; the processes resumed on their own; the monotonic CPU times above exclude it).
+- **A smoke comparison before the search** (20:44, disclosed in the fix round): a 3-step CIS run of sample 0, SHARC then ours, to check the harness (differences up to 3e-9 bohr, 1.9e-10 a.u., 5e-9 Eh, 4.6e-10). The rule and its seed were already in the code; sample 0 was then searched like the others and had no hop.
+
+### 5.3 The maxima (asserted; each cell the maximum and its step)
+
+**Run 1, Task 9 at `a5f140d`** (`pytest tests/validation/test_sharc_soc_swap.py -s -W error`, alone on the machine): **3 passed, 1 skipped in 992.45 s** (the skip is CASSCF (b), BLOCKED).
+
+| method, part | steps | q (bohr) | v (a.u.) | E_tot (Eh) | E_active (Eh) | P |
+|---|---|---|---|---|---|---|
+| CASSCF (a), sample 0 | 0-40 | 2.177e-7, 30 | 2.233e-9, 34 | 3.496e-8, 1 | 3.399e-8, 1 | 5.312e-9, 40 |
+| CIS (a), sample 7 | 0-40 | 8.926e-7, 40 | 2.794e-9, 32 | 4.476e-8, 1 | 4.259e-8, 1 | 5.856e-6, 8 |
+| CIS (b), sample 7 | 0-84 | 5.924e-7, 84 | 5.522e-9, 69 | 4.995e-8, 58 | 5.197e-8, 64 | 9.850e-7, 75 |
+| CASSCF (b) | – | BLOCKED (no start) | | | | |
+| bound | | 1e-5 | 1e-6 | 1e-6 | 1e-6 | 1e-5 |
+
+**Run 2, the fix round at `547f0fa`** (the whole live file again, because the fix touched (a) too): **3 passed, 1 skipped in 977.65 s**. The CIS (b) re-run reproduced the hop at step 64 (asserted since the fix: the re-run's first singlet-triplet hop must equal the recorded 64, and the window is the pre-registered 0-84); both sides hopped at steps 1, 60 and 64, ours with 0 rejections.
+
+| method, part | q (bohr) | v (a.u.) | E_tot (Eh) | E_active (Eh) | P |
+|---|---|---|---|---|---|
+| CASSCF (a) | 2.177e-7, 30 | 2.233e-9, 34 | 3.498e-8, 1 | 3.400e-8, 1 | 5.312e-9, 40 |
+| CIS (a) | 1.846e-6, 40 | 6.010e-9, 33 | 6.368e-8, 7 | 5.712e-8, 28 | 1.919e-6, 13 |
+| CIS (b), steps 0-84 | 5.706e-7, 82 | 6.076e-9, 69 | 4.254e-8, 22 | 5.785e-8, 74 | 6.046e-6, 75 |
+
+**An earlier run of the CIS pair, same code as run 1** (`pytest -k cis`, 2 passed in 1057.86 s, concurrent with the CASSCF search):
+
+| method, part | q (bohr) | v (a.u.) | E_tot (Eh) | E_active (Eh) | P |
+|---|---|---|---|---|---|
+| CIS (a) | 1.629e-6, 40 | 5.362e-9, 34 | 7.248e-8, 27 | 7.228e-8, 27 | 4.190e-6, 9 |
+| CIS (b) | 5.766e-7, 84 | 7.101e-9, 70 | 5.574e-8, 58 | 6.175e-8, 61 | 9.475e-7, 75 |
+
+- **Run-to-run variation (report):** the CIS numbers vary between runs of the same code; the CIS population maxima over the three runs are **CIS (a) 1.9e-6 to 5.9e-6** (4.190e-6, 5.856e-6, 1.919e-6) and **CIS (b) 9.5e-7 to 6.0e-6** (9.475e-7, 9.850e-7, 6.046e-6), against the bound 1e-5; CIS (a) q 8.9e-7 to 1.8e-6 against 1e-5. These are independent PySCF solves on the two sides at `td_conv_tol` 1e-7 with 8 threads (the cause is an inference). The tightest margin is a factor of 1.7 (CIS (a) P 5.86e-6, CIS (b) P 6.05e-6): a flaky failure on another machine or kernel cannot be excluded. The bound was not loosened; it goes to the owner. The CASSCF (a) numbers repeat to about 1e-11.
+- **The Task 11 tier** (`pytest -m sharc` at `0cfa0d7`, section 7) ran the swap file a fourth time and passed; its maxima were not recorded.
+- **CIS (b) details (run 1; report):** the active spin-free state is the same at all 85 steps (S1, except T2 at step 64 in both runs); ours finished with 3 hops, 0 frustrated, 0 rejections; the largest probability difference 7.05e-6; no near tie in either run. The smallest raw overlap singular value of our CIS (b) run was 0.37688, at **step 48**, the only step below 0.5 (measured in the fix round from the kept `steps.log`; the backend's "far from unitary (0.377)" warning fires there); with the stage default 0.5 our runner would have halved that step.
+- **SHARC's E_tot at the hop step 64 equals step 63 to all printed digits**, as `"previous"` requires (the Task 9 review's hand check; report). The review also checked by hand that the random numbers are equal step for step at steps 1, 30, 63, 64, 65 and 84.
+- **Our outcomes (report):** CASSCF (a) finished, drift 0.0059 eV, final S1; CIS (a) finished, drift 0.045 eV, final state T2 (with hopping off the active diagonal state changes character at the S1/T2 crossing that SHARC's hopping run crosses at steps 1 and 60); CIS (b) finished, drift 0.0106 eV, final S1.
+- **Run times (run 1, sequential, 8 threads each; report):** CASSCF (a) 346.8 s (ours 171.7 s), CIS (a) 211.1 s (ours 103.4 s), CIS (b) 433.7 s (ours 216.9 s).
+
+### 5.4 What is BLOCKED (for the owner)
+
+The SA-CASSCF swap with hopping on (spec 5.1 (b)) has no start under the pre-registered rule: no hop of any kind in samples 0-19 with `rngseed` 2029. By the rule this goes to the owner with no window, seed or setting changed; the test is a skip that names BLOCKED and the samples searched. **The SA-CASSCF hopping path (the velocity adjustment, `hop_energy = "previous"` and the EDC after a hop, with SOC) is therefore not compared with SHARC**; CIS (b) covers one singlet-triplet hop, a borderline one into a strongly mixed state. Options for the owner (none chosen): more samples; another `rngseed` per sample (the shared stream is section 5.2's caveat); accept the case as not compared.
+
+## 6. The force term that `gradient_transformation = "none"` drops (report; Task 10)
+
+With triplets the stage requires `"none"` (owner decision 3), so the core's G^MCH is diagonal (the spin-free gradients expanded over Ms) and the force on the active diagonal state lambda is `F = -Re[U^dagger G^MCH U]_{lambda lambda}`. `"ngt"` would add the off-diagonal tensor; its computable part is the singlet-singlet one, `G_offdiag[a, b] = (E_b - E_a) K_ab` for singlets a != b (spin-free energies, ruling R3 of P7a-2; triplet rows and columns zero). The dropped gradient term is `d = Re[(U^dagger G_offdiag U)]_{lambda lambda}`, computed with the core's `gradient_tensor`, `diagonal_tensor` and `diagonal_gradient`; with 2 singlets `d = 2 Re(conj(U_0,lambda) U_1,lambda) (E_1 - E_0) K_01`. 7 helper tests (asserted, fast tier: the hand sum for n = 3, m = 2, the 2-singlet form, the tensor's symmetry, `used_force`, U `None`, the norms, the summary).
+
+**Run:** the SA-CASSCF (a) trajectory of Task 9 (H2CS SA-CASSCF(4,3)/6-31G 2S+2T, sample 0, hopping off, steps 0-40, 8 threads), advanced by a hand-written loop over `driver.initial_state`/`driver.step` that mirrors the runner (`steps.log` stores no U), with `compute_more(nacs={(S0, S1)})` after each compute (phased by the backend, used for the measurement only). It is the Task 9 trajectory: against `~/dynsoc_task9/reports/fix1/swap_a_casscf.json` q 1.05e-13 bohr, v 1.19e-15 a.u., E_tot 1.31e-12 Eh. Every step stayed on the rung "previous orbitals"; smallest raw overlap 0.973. 213.4 s (the 41 NAC calls 42.7 s). JSON `~/dynsoc_task10/ngt_term.json` (WSL).
+
+| | value |
+|---|---|
+| **max \|d\|/\|F\|** | **1.505e-5, at step 32** (\|d\| 1.460e-6, \|F\| 9.699e-2 Eh/bohr) |
+| **median \|d\|/\|F\|** | **7.93e-6** (41 steps) |
+| max \|d\| | 1.594e-6 Eh/bohr (step 29) |
+| smallest ratio | 4.95e-8 (step 7) |
+
+The ratio grows from 4.0e-7 at step 0 to 1.35e-5 at step 22 (where |F| has its minimum, 5.96e-2) and then stays between 8e-6 and 1.5e-5. The active diagonal state is S1-dominated at every step (S1 weight 0.9996 -> 0.952 as the triplet admixture grows to 0.048; S0 weight 1e-13 to 5.8e-9). Gap 0.089 -> 0.022 Eh, |K_01| 0.35-0.51 1/bohr.
+
+**Why it is so small (inference):** the dropped term needs the active diagonal state to contain two singlets at once, and S0 enters S1's diagonal state only at second order in the SOC, through the triplets; the numbers match `|d| ~ 2 sqrt(w_S0 w_S1) gap |K|`.
+
+**What this does not cover:** the triplet-triplet NAC terms (T1-T2 and within the Ms blocks), the other part `"none"` drops, are not measured (PySCF 2.14 cannot compute them in a mixed-spin average); CIS (no analytic NACs); a hopping trajectory or a triplet-dominated active state (the SA-CASSCF (b) start is BLOCKED; in CIS (a) the active state turned to T2); any effect on the dynamics (a per-step force ratio, not a rerun with `"ngt"`). **The 1.5e-5 holds for this S1-dominated, hopping-off SA-CASSCF trajectory only.**
+
+## 7. Tests (asserted)
+
+| Task | Command | Result |
+|---|---|---|
+| 2 | `pytest tests/trajectory/test_spin_expansion.py -q -W error` | RED 1 error (`ImportError`); GREEN **9 passed** in 0.65 s; SandyBridge 9 passed |
+| 3 | `pytest tests/config/test_dynamics_section.py tests/stages/test_dynamics.py -m "not slow and not pyscf"` | RED 17 failed, 36 passed; GREEN **53 passed**; `tests/config tests/stages/test_dynamics.py tests/test_cli.py -m "not slow and not pyscf"` **191 passed**, 2 deselected in 47.53 s; `tests/stages tests/trajectory` 267 passed; SandyBridge 53 |
+| 4 | `pytest tests/trajectory/test_model.py tests/trajectory/test_fake_backend.py -m "not slow"` | RED 15 failed (+3 canned); GREEN **40 passed**; `tests/trajectory tests/dynamics -m "not slow"` **504 passed** in 45.65 s (the golden test unchanged); stage files 37 passed; SandyBridge 84 passed. Fix `b77b877`: RED 2 failed; `tests/trajectory -m "not slow"` **111 passed**; SandyBridge 45 |
+| 5 | `pytest tests/trajectory -q -W error -m "not slow"` | RED 8 failed; **119 passed** in 15.58 s; SandyBridge 8 new passed; dynamics, analysis, golden, diagnosis files 147 passed |
+| 6 | `pytest tests/stages/test_dynamics.py tests/stages/test_dynamics_pipeline.py -q -W error` (all markers) | RED 3 failed, 5 passed (the kill and extension tests passed at RED: behaviour from Tasks 4-5); **36 passed** in 160.06 s; fix `8a63b59` **38 passed** in 161.19 s; SandyBridge 10 passed; `tests/trajectory`, the analysis stage files and the golden test 184 passed |
+| 7 | `pytest tests/analysis tests/stages/test_analysis.py tests/stages/test_analysis_pipeline.py -q -W error -m "not slow"` | RED 12 failed, 1 collection error; **142 passed**, 2 deselected in 177.93 s; SandyBridge 20. Fix `d1e77b1`: RED 7 failed; with `tests/trajectory` **268 passed**, 2 deselected in 198.54 s; dynamics stage files and golden 44 passed; SandyBridge 25 |
+| 8 | `pytest tests/validation/test_pyscf_soc_dynamics.py -W error` | first 3 passed, 1 xfailed in 66.5 s; after `f522327` **4 passed** in 65.13 s; SandyBridge 4 passed in 65.59 s |
+| 9 | `pytest tests/sharc_compare/test_run_sharc_soc_swap.py -q -W error` | 16 passed, then after the fix **19 passed** in 2.4 s; SandyBridge 19 |
+| 9 | with `SHARC_HOME`/`SHARC_PYTHON`: `pytest tests/validation/test_sharc_soc_swap.py -s -W error` | **3 passed, 1 skipped** in 992.45 s (`a5f140d`) and in 977.65 s (`547f0fa`); the skip is CASSCF (b), BLOCKED |
+| 10 | `pytest tests/validation/test_ngt_term_report.py -q -W error` | RED collection error; **7 passed** in 1.16 s; SandyBridge 7 |
+| 11 (controller, at `0cfa0d7`) | fast tier `pytest -m "not slow and not pyscf" -W error -q` | **1577 passed, 22 skipped, 365 deselected in 968.10 s** |
+| 11 | `pytest tests/trajectory tests/stages tests/analysis -W error -q` (all markers) | **413 passed in 399.69 s** |
+| 11 | `pytest -m "pyscf or slow" -W error -q --ignore=tests/validation/test_tully_exact.py --ignore=tests/validation/test_tully_overlap_exact.py --ignore=tests/validation/test_wavepacket2d.py` (no SHARC/ORCA) | **264 passed, 66 skipped, 1590 deselected, 2 xfailed in 846.71 s** (the two strict P7b xfails) |
+| 11 | with `SHARC_HOME`/`SHARC_PYTHON`/`ORCA_EXE`: `pytest -m sharc -W error -q` | **71 passed, 3 skipped, 1888 deselected, 2 xfailed in 2938.00 s** (skips: the `overlap` phase-drift case of `test_sharc_lvc.py`, CASSCF swap (b) BLOCKED, the SHARC triplet refusal; xfails: the P9b replay window, the 3000 K `wigner.py` case) |
+
+**What ran on the branch:** the four tiers of Task 11 and the task runs above. **Not run on the branch:** `tests/validation/test_tully_exact.py`, `test_tully_overlap_exact.py` and `test_wavepacket2d.py` (analytic models; the core's code is untouched), the ORCA tests as a tier (`-m orca`), and the full suite `pytest -W error` in one run. The existing tests passed with unchanged assertions in those runs, except the replaced refusal test (`test_triplets_are_refused` -> `test_triplets_are_no_longer_refused`, Task 3) and the expected rows of one Task 5 test updated by the Task 7 fix (the kept-row rule).
+
+## 8. Report items and limits (measured, no rule)
+
+- **The cost per step** (Task 1, section 2): H2CS/6-31G with 8 threads, SA-CASSCF(4,3) 2S+2T 4.1-4.2 s with previous orbitals (SOMF 15-16 %), CIS 3S+3T 2.2 s (SOMF about 30 %); the SOMF build is recomputed at every (sub)step (reusing it between steps is out of scope). For larger molecules sub-project 2's final review measured the SOMF at 10-14 s for benzene against 0.3-0.7 s for the SCF (not re-measured).
+- **No singlet-triplet hop at the stage level:** neither the canned spin-orbit pipeline (default seed and seeds 1-3) nor a PySCF run through the stage has one; the hop path across spin blocks is covered by the adapter test (Task 4), the runner tests (Task 5), the CASSCF smoke test (runner, not stage) and the CIS swap (b).
+- **Frequent within-state hops:** diagonal hops that keep the spin-free state (T1 -> T1 within a triplet's Ms cluster, and S1 -> S1 between two S1-dominated diagonal states) are counted in the hop table; 2 of 4 hops in the Task 5 reference run, the one hop of the canned pipeline, and two of the three CIS (b) hops.
+- **The CIS singlet-triplet hop of (b) is borderline:** it goes into a strongly mixed S1/T2 state whose dominant character returns to S1 one step later; it still exercises a hop between diagonal states with different dominant spin-free states, the velocity adjustment under `"previous"` and the EDC after it.
+- **The empty `eselect` window gives zero force** (R5 semantics, not flagged); no test asserts that the window dropped a state in a trajectory.
+- **Transitions over complete trajectories only:** the crossings of lost trajectories before their loss are not counted, and with no complete trajectory the block is zeros, not `null`.
+- **The analysis of PySCF triplet projects was not run end to end:** the analysis tests use hand-built files and the canned pipeline.
+
+## 9. Where the work differs from the owner-approved design
+
+1. **`hopping = "none"` is allowed with triplets** (spec 2.3 said `hopping = "sharc"`): the core refuses only `fssh` with U (R4), `"none"` runs in the diagonal basis, and the swap test (a) runs hopping off (controller ruling, Task 3).
+2. **`output.h5` naming (PR1):** `hop_from`/`hop_to` hold the **spin-free** states before and after an accepted hop and the diagonal indices are `hop_from_diag`/`hop_to_diag` (spec 4.2 said "the diagonal `hop_from`/`hop_to`" beside the MCH data). So `analysis/hops.py` works unchanged.
+3. **`steps.log` keeps `energies` expanded** (N columns, the core's MCH energies) **and adds `energies_sf`** (n + m) (spec 4.1 said `energies` holds the spin-free energies). `output.h5` `energies` is the spin-free one.
+4. **The start search of swap (b) was done in Task 9**, after the harness existed (spec 6 put it in Task 1; pre-flight ruling). The rule was unchanged and fixed before any comparison.
+5. **The schema-2 kept-row rule** (not in the spec): every row where the active spin-free state changes is kept (Task 7 fix), so every change is a record at its own time.
+6. **`hops.csv` is unchanged** (spec 4.3 said "`hops.csv` the spin-free transitions"): its accepted hops are spin-free by PR1; the changes without a hop are in `analysis.json` `transitions` only.
+7. **The CIS smoke test asserts a triplet population, not a hop** (spec 5.3 said "a hop present when a replayed zero random stream forces it"): no CIS hop occurs at those settings (section 4).
+8. **Transitions are counted over the complete trajectories only**, like the hops (spec 4.3 did not say).
+9. **The `final_state` key** (the spin-free label of the last record) in the runner result, `dynamics_summary.json` rows and a `final state` column of `dynamics_summary.md`, triplet runs only (PR6, Task 6).
+10. **A triplet initial state is refused** by the stage (a guard; `selection` refuses triplets anyway).
+11. **The swap comparison settings:** our `overlap_threshold` 1e-9 and the energy-jump signal off (no step rejection on our side, section 5.1); `rngseed` 2029 for every sample of the search; CASSCF (a) from sample 0 because (b) gave no start (spec 5.1 assumed one start per method); the samples from RHF/6-31G\* frequencies while the dynamics run in 6-31G.
+12. **SA-CASSCF swap (b) is BLOCKED** (section 5.4).
+
+Smaller: the constructor of `BackendModel` checks the canonical state order and the Hamiltonian's label order and Hermiticity (fix `b77b877`); the Löwdin orthonormalisation is per spin-free block; under the `eselect` window `compute` requests no gradient and one `compute_more` fetches the kept ones; the analysis checks that `n_singlets`/`n_triplets` fit the labels and that the hop records follow the previous record; `config.json` gains the two keys for projects with `[dynamics]`; an unreadable geometry gives no effective-charge problem in `check_config`.
+
+## 10. Plan rulings PR1-PR8 and the controller's rulings
+
+- **PR1** `output.h5` schema 2 with spin-free `hop_from`/`hop_to` and `*_diag` (section 9 item 2). **PR2** the `BackendModel` attributes (`labels`, `n_states = N`, `n_singlets`, `n_triplets`, `n_spin_free`, `u`). **PR3** the first evaluation requests every gradient. **PR4** `ModelBackend`'s spin-free view of a spin-orbit model. **PR5** the canned spin-orbit pipeline (`GQTEASHMD_CANNED_LVC_SOC=1`, `lvc_soc.template`). **PR6** `progress.json`, the summary and log messages name the active spin-free label. **PR7** the dropped-term report as `tools/validation/ngt_term_report.py`. **PR8** `stop_after_s0_fs` by the active spin-free state.
+- Controller (ledger): the start search moved to Task 9; Task 5 derives the spin-free `hop_from`/`hop_to` from the previous accepted log row; `hopping = "none"` allowed with triplets; an unreadable geometry gives no effective-charge problem; `config.json` gains the two keys; Task 4 minor 5 (the Hamiltonian's order and Hermiticity) promoted to a fix with minors 1, 2, 3, 6; `soc_operator` in the attributes supplied by the stage (Task 6); a same-state diagonal hop stored as e.g. (T1, T1), in the hop table but not a transition; the canned stage test asserts a triplet population instead of a hop; `hops.csv` unchanged; the kept-row rule and the hop-record guard (Task 7 fix), with one Task 5 test's expected rows updated as its direct consequence; the CIS hop assertion replaced; the swap comparison without step rejection. The two "Carry to" items were closed: Task 4's (the runner's labels and the energy-jump fallback with the core's state index) in Task 5, Task 5's (frequent intra-triplet hops) in Task 7.
+
+## 11. What was decided after numbers were seen
+
+1. **The swap comparison runs ours with `overlap_threshold` 1e-9 and the energy-jump signal off** (Task 9): decided after SHARC's own search run of CIS sample 7 showed a raw overlap of 0.377 (provider data), **before any comparison of that sample**. Cost if wrong: our rejection path is not exercised by the swap test (the runner tests exercise it).
+2. **The CIS smoke test's hop assertion was replaced by a triplet-population bound** (Task 8): the plan's "at least one hop" failed for CIS (every probability exactly 0); first kept as a strict xfail, then, by controller ruling, the xfail removed and `summed T populations at 2 fs > 1e-4` asserted (measured about 2.15e-3, a factor of about 20 above the bound). **No setting was changed** (system, dt, steps, start, stream). Cost if wrong: no PySCF CIS test exercises a hop (the swap (b) does).
+3. **Task 4's replay numbers** (`0.1 * default_rng(2).random(30)`) were chosen after a probe so that the 30 steps of the adapter test contain a singlet-triplet hop (unscaled, the hops were S1 -> S1 reorderings and a triplet -> singlet hop); the test asserts that hop.
+4. **The canned stage test asserts a triplet population > 1e-3 instead of a singlet-triplet hop** (Task 6): none occurs in the 4 x 20 fs default-seed run (measured 0.0065-0.0229).
+5. **The canned analysis test compares `transitions.kinds` to a recount** instead of a fixed count (Task 7): seeds 0-3 at 20 fs gave no transition.
+6. **The (b) window is pinned to the recorded hop** (Task 9 fix, after the review): the re-run's first singlet-triplet hop must be the recorded step 64, and the window is the pre-registered 0-84 (before the fix a re-run's earlier hop would have shortened the window silently). A strengthening; no bound or setting changed.
+
+**No pre-registered bound was changed** (the four swap bounds, the windows, the start rule, the 20-sample limit). The CIS margins and the BLOCKED (b) go to the owner unchanged.
+
+## 12. What a project sees
+
+- **Every existing project:** nothing becomes stale. No stage version changed (`DynamicsStage.version` 3, `AnalysisStage.version` 4); the new keys are left out of the `dynamics` fingerprint at their defaults (asserted equal to `main`'s keys); without triplets the requests, U (`None`), `steps.log`, `output.h5` (`schema_version` 1, today's bytes), the summaries and the analysis are unchanged (asserted; the singlet `analysis.json`/`report.md` of 108 test files byte-identical by the Task 7 review). **`config.json` gains `gradient_transformation` and `eselect_eV`** for every project with `[dynamics]`; no check compares it.
+- **A project with `[electronic] triplets > 0` and `[dynamics]`** is now accepted when it sets `gradient_transformation = "none"` and keeps `coupling = "overlap"`, `hopping = "sharc"` or `"none"` and `ekin_correction = "parallel_vel"`; the default `"ngt"` is refused (exit 2) with advice. Its trajectories run in the diagonal basis with the SOC from `[electronic] soc_operator`, its `output.h5` is schema 2, and its analysis fits the excited singlets and reports the transitions. Initial states stay singlets.
+- **Changing `gradient_transformation` or `eselect_eV`** from its default adds it to the fingerprint: `--rerun-from dynamics`.
+
+## 13. Honest summary
+
+- *Asserted:* with SOC on thioformaldehyde, `sharc.x` driving our electronic structure and our runner agree within the pre-registered bounds over 41 steps hopping off for SA-CASSCF(4,3) 2S+2T and CIS 3S+3T, and over 85 steps hopping on for CIS with one singlet-triplet hop (the same hops, the same active spin-free state); the adapter, the step log, `output.h5` schema 2, the stage and the analysis follow an analytic spin-orbit model exactly (populations 2.8e-15, the random stream exact, resume byte-identical); the PySCF smoke runs give finite records, normalised populations and a Hermitian H; without triplets nothing changes.
+- *Report:* the time per step (CASSCF 4.1-4.2 s, CIS 2.2 s on H2CS/6-31G with 8 threads; SOMF 15-30 %); the run-to-run variation of the CIS population differences (CIS (a) 1.9e-6 to 5.9e-6, CIS (b) 9.5e-7 to 6.0e-6, bound 1e-5); the dropped NGT singlet term at most 1.505e-5 of the force (median 7.93e-6) on one S1-dominated, hopping-off SA-CASSCF trajectory; no SA-CASSCF hop of any kind in 20 x 100 fs with a shared stream (summed probability 1.432).
+- *Inference:* why the dropped term is small (second order in the SOC); the run-to-run variation from independent PySCF solves; P(no hop) 0.238 under independence.
+- *Not compared or not covered:* **the SA-CASSCF hopping path with SOC against SHARC (BLOCKED, the owner's decision)**; the triplet-triplet NAC terms of the force (PySCF 2.14); a singlet-triplet hop at the stage level; a hopping or triplet-dominated trajectory for the dropped term; any energy-conservation claim with SOC (owner decision 4); an ISC ensemble; `eselect` against SHARC; TDDFT (non-TDA) dynamics with triplets.
+- *Decided after numbers were seen:* six test or setting choices (section 11); no pre-registered bound changed.
+- *Not run on the branch:* the three analytic-model validation files, the ORCA tier, the full suite in one run.
+
+## 14. Deferred minors (ledger, "minor (deferred)" lines)
+
+- Task 1: the SOMF share rounding 30.2 vs 30.1 %; the `QM.in` fixtures carry the probe's absolute savedir path (disclosed in the README); the timings are two repetitions of one displacement (lower estimates).
+- Task 2: no range validation in `spin_free_index`/`expanded_index` (a `ZeroDivisionError` for k >= n with m = 0; a silent wrong index for a negative k); no shape checks in `expand_*`; the RED recorded by moving the implementation aside.
+- Task 3: a section-level rule (`fssh`/`parallel_nac` need `nacdr`) fires first and hides the triplet rules (pydantic stops at the inner validator; the advice "set nacdr" then leads to a second refusal; to document or to move those checks into `_consistent`); the `check_config` element problem comes in a second round after schema errors; a duplicate coupling message with TDA + `nacdr` + triplets; a redundant assertion; a wording-dependent spot check.
+- Task 4: the mask test recomputes the mask with the same functions (not a capture of the core's mask), and the `eselect` trajectory test does not assert that the window dropped anything; an empty window gives zero force silently (R5); `hamiltonian_labels` `None` skips the order check (both backends supply labels; a strict variant would require them with triplets); the absolute 1e-12 Eh Hermiticity tolerance could refuse a backend with unsymmetrised round-off at large SOC (a loud failure).
+- Task 5: no SOC resume test across a hop or inside a halved interval (the review's probe passed: byte-identical); `output.h5` compared per dataset, not bit for bit; a misleading local name `spin_free_populations` in `write_output_h5`; no `n_singlets + n_triplets == len(labels)` check in the store (the analysis checks it since Task 7); `progress.json` during the run not read by a test; spec 4.1's `energies` (this report's section 9 item 3).
+- Task 6: no stage-level singlet-triplet hop (ruling); the SOC kill test is `slow`, unlike the file's singlet kill test (a fast SOC resume test exists at the runner level); the kill and extension tests were green at RED (regression tests); `runner.py` touched for `final_state` (justified).
+- Task 7: transitions over complete trajectories only (lost trajectories' crossings before the loss not counted; with no complete trajectory the block is zeros, not `null`); a quadratic first-S-to-T scan; the "(fs)" label on the counts of the first-S-to-T line of `report.md`; test (c) passes before the fix too (an agreement guard only); triplet outputs get more records in halved intervals (the kept-row rule); a cancelled rise and fall can now show in the energy-jump flag (more records, more sensitive).
+- Task 8: the Hermiticity assertion is nearly tautological (the adapter already refuses; the per-call deviations are printed, not asserted); the CIS test shows SOC mixing of the MCH amplitudes, not transfer (rename or docstring); the CASSCF hop test does not require a singlet-triplet hop (S0 -> T1 occurs at step 2; `spin_free_hops` could assert one); a redundant `hop_to` assertion.
+- Task 9: the "a hop somewhere in samples 0-19 about 0.76" counts hops of any kind (reworded here, section 5.2); the 0.377 step-48 location was measured in the fix round, not at the original run; the CIS (a) population margin is thin (for the owner); CASSCF (a) starts from sample 0 because (b) gave no start.
+- Task 10: no test ties `singlet_nac_tensor` to `gradient_tensor("ngt") - gradient_tensor("none")` directly; the "why so small" explanation is an inference (labelled here); the 1.5e-5 ratio is for this S1-dominated, hopping-off SA-CASSCF trajectory only; edge cases of `summarise`/`singlet_nac_tensor`.
+
+## 15. Pending owner decision
+
+**SA-CASSCF swap (b) BLOCKED** (section 5.4): no SA-CASSCF hop of any kind in 20 samples with `rngseed` 2029 shared by all of them (summed probability 1.432; P(no hop of any kind) about 0.24 with independent streams; these count hops of any kind, so the chance of a singlet-triplet hop alone is lower than the 0.76 they imply). Options, e.g.: more samples; another seed per sample; accept the case as not compared. Also for the owner: the CIS population margins (a factor of 1.7 at worst, varying run to run), a flakiness risk of a pre-registered bound.

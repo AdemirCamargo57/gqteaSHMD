@@ -6,6 +6,44 @@ Linux only.
 ## Unreleased
 
 ### Added
+- The `dynamics` stage with triplets and spin-orbit coupling (triplets and SOC, sub-project 3;
+  USER_MANUAL 4.2, 5.11, 6, 8.13, 8.16.10; report
+  `docs/superpowers/reports/2026-11-27-dynamics-soc.md`):
+  - `[electronic] triplets > 0` with a `[dynamics]` table is accepted (it was refused). The
+    trajectories hop between the eigenstates of the spin-orbit Hamiltonian of the PySCF backend
+    (the diagonal basis of the dynamics core); the new module `trajectory/spin_expansion.py`
+    expands the backend's spin-free energies, gradients and block overlaps into the core's
+    spin-expanded order. Trajectories start in a singlet.
+  - New `[dynamics]` keys `gradient_transformation = "ngt" | "none"` (default `"ngt"`) and
+    `eselect_eV` (default off: every spin-free gradient at every step; set: only the gradients
+    within this energy of the active state, with the core's own mask). With triplets the input
+    must use `coupling = "overlap"`, `gradient_transformation = "none"` (no couplings between
+    two triplets from PySCF 2.14), `hopping = "sharc"` or `"none"` and
+    `ekin_correction = "parallel_vel"`; every violation is reported at once (exit 2), and
+    `soc_operator = "effective_charge"` with an element outside H, C, O, S is refused before any
+    trajectory.
+  - `output.h5` of a triplet run is `schema_version` 2: `active`, `populations`, `energies`,
+    `hop_from`, `hop_to` hold the spin-free states (triplets summed over Ms), beside them
+    `active_diag`, `populations_diag`, `energies_diag`, `hop_from_diag`, `hop_to_diag`;
+    attributes `n_singlets`, `n_triplets`, `soc_operator`; every record where the active
+    spin-free state changes is kept. `dynamics_summary.json`/`.md` gain `final_state` (triplet
+    runs only).
+  - The `analysis` stage fits the excited singlets by default with triplets, and reports the
+    changes of the active spin-free state by kind (S-S, S-T, T-S, T-T; at a hop or without
+    one), the pairs and the first singlet-to-triplet time (`analysis.json` `transitions`;
+    `report.md` `## Intersystem crossing`).
+  - Validated by the SHARC 4.1 swap test (`sharc.x` driving our PySCF backend through our own
+    `QM.out` provider) on thioformaldehyde/6-31G, within bounds fixed before the runs:
+    SA-CASSCF(4,3) 2S+2T and CIS 3S+3T hopping off over 41 steps, CIS hopping on over 85 steps
+    through one singlet-triplet hop.
+  - **Limitations:** the SA-CASSCF comparison with hopping is BLOCKED (no start sample hopped
+    in SHARC's runs; the owner's decision is pending), so that path is not compared with SHARC;
+    the CIS population differences vary between runs (up to 6.0e-6 against the bound 1e-5);
+    the coupling term of the force is left out with triplets (its singlet part measured at
+    most 1.5e-5 of the force on one trajectory); the spin-orbit operator and every spin-free
+    gradient are computed at every step (thioformaldehyde SA-CASSCF about 4.1 s per step with
+    8 threads); no singlet-triplet hop has run through the stage in a test; no
+    energy-conservation test with spin-orbit coupling.
 - Spin-orbit coupling matrix elements from PySCF (triplets and SOC, sub-project 2;
   USER_MANUAL 4.2, 5.3, 8.6.10; report
   `docs/superpowers/reports/2026-11-27-soc-matrix-elements.md`):
@@ -37,7 +75,7 @@ Linux only.
     thioformaldehyde CIS 3S+3T/6-31G does not converge at the default `td_conv_tol`;
     the SOMF operator is expensive (benzene 10-14 s against 0.3-0.7 s for the SCF)
     and `single-point` with triplets always computes it.
-    The `dynamics` stage still refuses triplets (sub-project 3).
+    The `dynamics` stage uses them since sub-project 3 (above).
 - Triplet states in the PySCF backend, without spin-orbit coupling (triplets and SOC,
   sub-project 1; USER_MANUAL 4.2, 5.3, 6, 8.6.9; report
   `docs/superpowers/reports/2026-11-26-triplets-backend.md`):
@@ -52,8 +90,8 @@ Linux only.
   - `excitations` records the S0 -> T excitation energies (`excitations.h5` `triplet_labels`,
     `triplet_energies`; `excitations.json` `triplet_labels`, `triplet_states`). The spectrum
     and the selection stay singlet-only.
-  - `dynamics` refuses `triplets > 0` (exit 2); dynamics with triplets and spin-orbit coupling
-    is planned.
+  - `dynamics` refused `triplets > 0` (exit 2) until sub-project 3 (above), which runs the
+    dynamics with triplets and spin-orbit coupling.
   - Validated against ORCA 6.1.1 (energies within 1.1e-8 Eh) and finite differences (triplet
     gradients within 8.6e-7 Eh/bohr). SHARC 4.1's `SHARC_PYSCF.py` refuses triplets, so there
     is no SHARC comparison.
@@ -96,6 +134,14 @@ default is left out of every dump, so `config.json` and every fingerprint are un
 stage version changed. Setting `soc_operator = "effective_charge"` in a project changes the
 `excitations` and `dynamics` fingerprints, also with `triplets = 0` (`--rerun-from
 excitations`); `optimize` and `frequencies` are not affected.
+
+The dynamics with triplets make no existing project stale: no stage version changed
+(`dynamics` 3, `analysis` 4), the two new keys are left out of the `dynamics` fingerprint at
+their defaults, and without triplets the requests, `steps.log`, `output.h5` (`schema_version`
+1), the summaries and the analysis are unchanged. `.gqteashmd/config.json` of a project with
+`[dynamics]` gains the keys `gradient_transformation` and `eselect_eV` (no check compares it).
+A project that turns triplets on for its dynamics needs `gradient_transformation = "none"`;
+for `casscf` it is stale from `optimize` (the triplets join the state average).
 
 ## 0.1.0 - 2026-11-26
 
